@@ -4,7 +4,12 @@ Date: 2026-08-22 · Status: approved for planning
 
 ## 1. Purpose
 
-A personal macOS desktop app for photographers: **ingest** media from cards/drives into named archive drives (copy + verify + organize by date), then **browse** the catalog (gallery, lightbox with full EXIF, tags, places, search).
+**A cloud-photo-library experience without the subscription and without centralising the files.** Photos stay spread across the user's own drives (external SSDs/HDDs, card ingests), yet browsing, categorising and finding them is as easy and intuitive as iCloud/Google Photos: one unified library, always available, regardless of which drive is plugged in.
+
+Three pillars, in priority order:
+1. **Unified offline catalog** — every file on every registered drive is indexed once (hash, metadata, thumbnails). The whole library is browsable with zero drives attached; the app tells you which drive holds the original and prompts to plug it in for full-res/export.
+2. **Proper storage** — ingest from cards/drives into named archive drives with copy+verify, date-based organisation, optional mirror, duplicate detection across all drives.
+3. **Navigation** — gallery by time, filters, tags, places (map), camera, full-text search; later faces.
 
 Design source: Claude Design project `e091e781-9f05-4811-8087-8d7c22805b23` (screens: Sidebar, dashboard, drive, gallery, organize, search, tags, settings). Visual language: flat dark UI, `#0a0a0a` bg / `#f4f4f2` fg, Outfit (UI) + JetBrains Mono (data), square corners, 1px borders.
 
@@ -76,7 +81,10 @@ Shared: `src/components/ui/*` (shadcn, generated), `src/components/<Domain>/*` (
 | Reverse geocode | `reverse_geocoder` (offline GeoNames) |
 | Templates | `handlebars` |
 
-Thumbnails: WebP at `~/Library/Application Support/drophoto/thumbs/<hash>/{400,2000}.webp`. Keyed by content hash → shared across duplicates, catalog browsable with drive unplugged.
+Thumbnails: WebP at `~/Library/Application Support/drophoto/thumbs/<hash>/{400,2000}.webp`. Keyed by content hash → shared across duplicates. **The catalog + thumbnails are the product**: the 2000px lightbox preview is generated at index time so the library is fully browsable with every drive unplugged. Originals are only needed for full-res view, export, or re-ingest.
+
+### 5.1 Drive presence
+`VolumeProvider::watch()` updates `drives.mount_path` / `last_seen_at` live. Every `media` row resolves to `online` / `offline` (drive not mounted) / `missing` (drive mounted, file gone → `missing_at`). UI shows the holding drive name everywhere (grid hover, lightbox "Drive" row) and an "Insert **Kodachrome** to view original" affordance when offline.
 
 ## 6. Data model (SQLite)
 
@@ -106,13 +114,13 @@ media_fts     FTS5(filename, tags, place, camera)   -- kept in sync by triggers
 | Phase | Scope |
 |---|---|
 | 0 Scaffold | Tauri+React+Tailwind+shadcn, tokens, Sidebar, app shell, empty routes, registry, Storybook, CI |
-| 1 Drives & scan | Volume list, register/name drive, scan job, metadata + thumbs, progress. **Starts with a thumbnail spike on the user's real formats.** |
-| 2 Gallery & lightbox | Virtualized masonry by month, type chips, sort, density, lightbox + EXIF panel, ←/→/Esc, video badge |
+| 1 Drives & scan | Volume list, register/name drive, scan job, metadata + 400/2000px thumbs, progress, drive presence tracking. **Starts with a thumbnail spike on the user's real formats.** |
+| 2 Gallery & lightbox | Virtualized masonry by month, type chips, sort, density, lightbox + EXIF panel, ←/→/Esc, video badge. Works fully offline from thumbs; online/offline drive indicator; "insert drive" prompt for originals |
 | 3 Ingest | Organize screen: source/dest/template editor, dry-run table, execute, job log; Dashboard: recent jobs, drive capacity |
 | 4 Tags, places, search | Bulk tag from selection, offline geocode + manual override, Places map (mapcn), FTS search screen |
 | 5 Settings & polish | Sidecar health check, cache location, templates defaults, rescan/rehash, missing-file detection |
 
-Later: faces, dedupe tooling, APFS clone strategy, cross-platform, auto-update.
+Later: faces, dedupe/consolidation tooling across drives, export/"bring originals here", APFS clone strategy, cross-platform, auto-update.
 
 ## 9. Conventions
 
