@@ -22,6 +22,7 @@ Audience: single user, macOS only for v1. No signing/updater.
 3. Ingest **never deletes or modifies the source**. Copy, verify, then record.
 4. Per-item failures never abort a job.
 5. Single-responsibility files; component folder convention (see §9).
+6. **Always shippable.** Every phase — and every plan task within it — ends with a runnable app that does something real end-to-end (vertical slices), never a pile of scaffolding waiting on a later phase. Phase 0 already ends with the app launching, showing the shell, and listing mounted volumes.
 
 ## 3. Stack
 
