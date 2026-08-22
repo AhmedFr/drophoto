@@ -121,13 +121,17 @@ fn do_rename(rename_fn: &RenameFn, from: &Path, to: &Path) -> DpResult<Option<(P
 /// inode) — as opposed to merely having string-equal (or case-variant)
 /// paths, which is *not* a reliable "same file" signal on case-sensitive
 /// filesystems (two distinct files can share a case-insensitive name
-/// there). Returns `Ok(false)` (rather than an error) whenever either
-/// path can't be stat'd, since "can't prove it's the same file" should
-/// be treated as "assume it isn't" by callers.
+/// there). Uses `symlink_metadata` on *both* sides — never follows a
+/// symlink at either path — since a `from` that's a symlink pointing at
+/// `to` would otherwise compare equal to `to` itself, and a bare rename
+/// down that path replaces the real file at `to` with the symlink.
+/// Returns `false` (rather than erroring) whenever either path can't be
+/// stat'd, since "can't prove it's the same file" should be treated as
+/// "assume it isn't" by callers.
 fn same_file(from: &Path, to: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
 
-    let Ok(from_meta) = std::fs::metadata(from) else {
+    let Ok(from_meta) = std::fs::symlink_metadata(from) else {
         return false;
     };
     let Ok(to_meta) = std::fs::symlink_metadata(to) else {
@@ -149,7 +153,25 @@ fn checked_rename(from: &Path, to: &Path) -> io::Result<()> {
     if same_file(from, to) {
         // Identical file (typically differing only by letter case): a
         // plain rename is always safe and is exactly what that needs.
-        return std::fs::rename(from, to);
+        std::fs::rename(from, to)?;
+
+        // POSIX rename(2): "If oldpath and newpath are existing hard
+        // links referring to the same file, rename() does nothing, and
+        // returns a success status." That's exactly right for a genuine
+        // case-only rename (the one directory entry really was renamed)
+        // — but for two *separate* hard links to the same inode, "does
+        // nothing" means `from`'s own directory entry is silently left
+        // behind: a successful-looking call that didn't actually move
+        // anything. Distinguish the two by checking whether a *literal*
+        // (case-sensitive, unresolved) directory entry named `from`
+        // still exists — not by stat'ing `from` itself, which on a
+        // case-insensitive volume would resolve straight through to the
+        // very entry we just renamed and falsely look "still there".
+        if from != to && has_literal_dir_entry(from) {
+            return Err(io::Error::other("move did not take effect"));
+        }
+
+        return Ok(());
     }
 
     if std::fs::symlink_metadata(to).is_ok() {
@@ -157,6 +179,20 @@ fn checked_rename(from: &Path, to: &Path) -> io::Result<()> {
     }
 
     std::fs::rename(from, to)
+}
+
+/// Whether `path`'s parent directory contains an entry whose on-disk
+/// name is byte-for-byte equal to `path`'s file name — i.e. a real,
+/// distinct directory entry, as opposed to something a case-insensitive
+/// (but case-preserving) filesystem would merely *resolve* `path` to.
+fn has_literal_dir_entry(path: &Path) -> bool {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return false;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|e| e.file_name() == name)
 }
 
 /// Attempts `primary` (macOS's atomic, exclusive `renamex_np`) first;
@@ -459,6 +495,58 @@ mod tests {
 
         checked_rename(&from, &to).unwrap();
 
+        assert_eq!(std::fs::read(&to).unwrap(), b"hello");
+    }
+
+    /// MEDIUM regression test: a symlink `from` pointing at the real file
+    /// `to` must NOT be treated as "the same file" via a metadata call
+    /// that follows the symlink — that would make `checked_rename` take
+    /// the same-file branch and replace `to`'s real content with the
+    /// symlink itself. It must instead be refused like any other
+    /// pre-existing destination.
+    #[test]
+    fn checked_rename_refuses_symlink_pointing_at_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("dst.txt");
+        std::fs::write(&to, b"real content").unwrap();
+        let from = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&to, &from).unwrap();
+
+        let err = checked_rename(&from, &to).unwrap_err();
+
+        assert_eq!(err.raw_os_error(), Some(EEXIST));
+        assert_eq!(
+            std::fs::read(&to).unwrap(),
+            b"real content",
+            "the real file must survive untouched"
+        );
+        assert!(
+            std::fs::symlink_metadata(&from).is_ok(),
+            "the symlink itself must be untouched too"
+        );
+    }
+
+    /// LOW regression test: two hard links to the same inode look
+    /// "same-file" to `same_file`, but POSIX `rename(2)` explicitly
+    /// defines renaming one hard link onto another referring to the same
+    /// file as a no-op that still reports success — leaving the `from`
+    /// link behind. `checked_rename` must notice the source is still
+    /// there and report a failure rather than a false "moved".
+    #[test]
+    fn checked_rename_reports_failure_when_hard_link_rename_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("dst.txt");
+        std::fs::write(&to, b"hello").unwrap();
+        let from = dir.path().join("src.txt");
+        std::fs::hard_link(&to, &from).unwrap();
+
+        let err = checked_rename(&from, &to).unwrap_err();
+
+        assert_eq!(err.to_string(), "move did not take effect");
+        assert!(
+            std::fs::symlink_metadata(&from).is_ok(),
+            "the source link is still there"
+        );
         assert_eq!(std::fs::read(&to).unwrap(), b"hello");
     }
 }
