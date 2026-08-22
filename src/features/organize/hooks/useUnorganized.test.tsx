@@ -29,6 +29,7 @@ const offlineDrive = { ...onlineDrive, id: 2, name: "Offline Drive", online: fal
 const summary = {
   drive_id: 1,
   count: 3,
+  total: 5,
   bytes: 3000,
   photos: 2,
   videos: 1,
@@ -69,6 +70,7 @@ it("synthesizes a zero-count summary for a drive never scanned", async () => {
   expect(result.current.rows[0]).toMatchObject({
     drive_id: 1,
     count: 0,
+    total: 0,
     bytes: 0,
     photos: 0,
     videos: 0,

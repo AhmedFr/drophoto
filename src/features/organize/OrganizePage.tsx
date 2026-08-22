@@ -21,6 +21,7 @@ export function OrganizePage() {
   const back = useWizardStore((s) => s.back);
 
   const { rows, organizedCount, scan, scanningDriveId } = useUnorganized();
+  const drives = rows.map((r) => r.drive);
 
   const planQuery = usePlan(selectedDriveIds);
   const rule = useRule(selectedDriveIds);
@@ -95,6 +96,7 @@ export function OrganizePage() {
                 plan={planQuery.data}
                 isPlanning={planQuery.isLoading}
                 rule={rule}
+                drives={drives}
                 running={run.running}
               />
             </div>
@@ -115,11 +117,15 @@ export function OrganizePage() {
       {run.done && (
         <DoneOverlay
           moved={run.totals.moved}
-          skipped={run.totals.skipped + (planQuery.data?.skipped_dup ?? 0)}
+          // `run.totals.skipped` already includes every SkippedDup item —
+          // the job records and counts them itself. Adding the plan's
+          // `skipped_dup` on top double-counted the very same photos.
+          skipped={run.totals.skipped}
           failed={run.totals.failed}
           fileTpl={rule.rule?.file_tpl ?? ""}
           folders={doneFolders}
           foldersHint={doneFoldersHint}
+          cancelled={run.cancelled}
         />
       )}
     </div>

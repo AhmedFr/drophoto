@@ -12,8 +12,14 @@ function dateRange(earliest: string | null, latest: string | null): string {
 }
 
 export function SourceRow({ summary, selected, onToggle, onScan, scanning }: SourceRowProps) {
-  const { drive, count, photos, videos, bytes, earliest, latest } = summary;
-  const neverScanned = count === 0;
+  const { drive, count, total, photos, videos, bytes, earliest, latest } = summary;
+  // A drive with no media rows at all has never been scanned. A drive
+  // that *does* have rows but nothing left unorganized is simply done —
+  // it used to be mislabelled "scan to index" and offered a pointless
+  // rescan, because both cases share `count === 0`.
+  const neverScanned = total === 0;
+  const allOrganized = !neverScanned && count === 0;
+  const selectable = !neverScanned && !allOrganized;
 
   return (
     <li
@@ -27,9 +33,10 @@ export function SourceRow({ summary, selected, onToggle, onScan, scanning }: Sou
       ) : (
         <Checkbox
           checked={selected}
+          disabled={!selectable}
           onCheckedChange={onToggle}
           aria-label={`Select ${drive.name}`}
-          className="size-5 flex-none rounded-sm border-border-3 data-[state=checked]:border-primary"
+          className="size-5 flex-none rounded-sm border-border-3 data-[state=checked]:border-primary disabled:opacity-40"
         />
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -37,11 +44,13 @@ export function SourceRow({ summary, selected, onToggle, onScan, scanning }: Sou
           <span className="truncate text-[14px] font-medium">{drive.name}</span>
           <span className="truncate font-mono text-[10.5px] text-dim">{drive.mount_path}</span>
         </div>
-        {neverScanned ? (
+        {neverScanned && (
           <span className="font-mono text-[10px] text-muted-foreground">
-            No unorganized photos — scan to index
+            No photos indexed yet — scan to index
           </span>
-        ) : (
+        )}
+        {allOrganized && <span className="font-mono text-[10px] text-muted-foreground">All organized</span>}
+        {selectable && (
           <span className="font-mono text-[10px] text-muted-foreground">
             {photos} photos · {videos} videos · {dateRange(earliest, latest)} · {formatBytes(bytes)}
           </span>

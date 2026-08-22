@@ -21,6 +21,7 @@ const summaries: UnorganizedRow[] = [
   {
     drive_id: 1,
     count: 10,
+    total: 12,
     bytes: 1_000_000,
     photos: 8,
     videos: 2,
@@ -31,6 +32,7 @@ const summaries: UnorganizedRow[] = [
   {
     drive_id: 2,
     count: 5,
+    total: 5,
     bytes: 500_000,
     photos: 5,
     videos: 0,
@@ -115,6 +117,7 @@ it("calls onScan with the drive id for a never-scanned drive", () => {
   const neverScanned: UnorganizedRow = {
     drive_id: 3,
     count: 0,
+    total: 0,
     bytes: 0,
     photos: 0,
     videos: 0,

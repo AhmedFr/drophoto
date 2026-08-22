@@ -6,6 +6,7 @@ import { SourceRow } from "./SourceRow";
 const summary: UnorganizedRow = {
   drive_id: 1,
   count: 3,
+  total: 5,
   bytes: 3_000_000,
   photos: 2,
   videos: 1,
@@ -62,23 +63,32 @@ it("shows the checkbox checked when selected", () => {
 });
 
 it("shows a SCAN NOW prompt instead of a checkbox when the drive has never been scanned", () => {
-  const neverScanned: UnorganizedRow = { ...summary, count: 0, photos: 0, videos: 0, bytes: 0, earliest: null, latest: null };
+  const neverScanned: UnorganizedRow = { ...summary, count: 0, total: 0, photos: 0, videos: 0, bytes: 0, earliest: null, latest: null };
   render(<SourceRow summary={neverScanned} selected={false} onToggle={vi.fn()} onScan={vi.fn()} />);
-  expect(screen.getByText("No unorganized photos — scan to index")).toBeInTheDocument();
+  expect(screen.getByText("No photos indexed yet — scan to index")).toBeInTheDocument();
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /scan now/i })).toBeInTheDocument();
 });
 
+it("shows All organized with a disabled checkbox when the drive is indexed but has nothing left to organize", () => {
+  const allOrganized: UnorganizedRow = { ...summary, count: 0, total: 5, photos: 0, videos: 0, bytes: 0, earliest: null, latest: null };
+  render(<SourceRow summary={allOrganized} selected={false} onToggle={vi.fn()} onScan={vi.fn()} />);
+  expect(screen.getByText("All organized")).toBeInTheDocument();
+  expect(screen.getByRole("checkbox")).toBeDisabled();
+  expect(screen.queryByRole("button", { name: /scan now/i })).not.toBeInTheDocument();
+  expect(screen.queryByText(/scan to index/)).not.toBeInTheDocument();
+});
+
 it("calls onScan when SCAN NOW is clicked", () => {
   const onScan = vi.fn();
-  const neverScanned: UnorganizedRow = { ...summary, count: 0, photos: 0, videos: 0, bytes: 0, earliest: null, latest: null };
+  const neverScanned: UnorganizedRow = { ...summary, count: 0, total: 0, photos: 0, videos: 0, bytes: 0, earliest: null, latest: null };
   render(<SourceRow summary={neverScanned} selected={false} onToggle={vi.fn()} onScan={onScan} />);
   fireEvent.click(screen.getByRole("button", { name: /scan now/i }));
   expect(onScan).toHaveBeenCalled();
 });
 
 it("disables the SCAN NOW button while scanning", () => {
-  const neverScanned: UnorganizedRow = { ...summary, count: 0, photos: 0, videos: 0, bytes: 0, earliest: null, latest: null };
+  const neverScanned: UnorganizedRow = { ...summary, count: 0, total: 0, photos: 0, videos: 0, bytes: 0, earliest: null, latest: null };
   render(
     <SourceRow summary={neverScanned} selected={false} onToggle={vi.fn()} onScan={vi.fn()} scanning />,
   );

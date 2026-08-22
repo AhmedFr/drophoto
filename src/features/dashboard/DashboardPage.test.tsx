@@ -49,6 +49,7 @@ const job = {
 const summary = {
   drive_id: 1,
   count: 4,
+  total: 6,
   bytes: 4000,
   photos: 3,
   videos: 1,

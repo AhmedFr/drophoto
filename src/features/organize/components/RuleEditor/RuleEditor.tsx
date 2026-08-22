@@ -14,6 +14,7 @@ import type { RuleEditorProps } from "./RuleEditor.types";
 export function RuleEditor({
   rule,
   driveIds,
+  drives,
   activeDriveId,
   onSelectDrive,
   onChange,
@@ -40,7 +41,7 @@ export function RuleEditor({
             >
               {driveIds.map((id) => (
                 <option key={id} value={id}>
-                  Drive {id}
+                  {drives.find((d) => d.id === id)?.name ?? `Drive ${id}`}
                 </option>
               ))}
             </select>

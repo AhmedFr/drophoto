@@ -15,7 +15,16 @@ const TOTAL_MEDIA_QUERY: MediaQuery = {
 };
 
 function emptySummary(driveId: number): UnorganizedSummary {
-  return { drive_id: driveId, count: 0, bytes: 0, photos: 0, videos: 0, earliest: null, latest: null };
+  return {
+    drive_id: driveId,
+    count: 0,
+    total: 0,
+    bytes: 0,
+    photos: 0,
+    videos: 0,
+    earliest: null,
+    latest: null,
+  };
 }
 
 /**
@@ -35,8 +44,11 @@ export function useUnorganized(): UseUnorganizedResult {
     queryFn: () => countMedia(TOTAL_MEDIA_QUERY),
   });
 
+  // `cancelled` counts too: a cancelled scan or organize run still moved
+  // (or indexed) everything it got through before stopping, so the
+  // summaries on screen are just as stale as after a clean finish.
   useTauriEvent<JobEvent>("job", (event) => {
-    if (event.kind === "finished") {
+    if (event.kind === "finished" || event.kind === "cancelled") {
       queryClient.invalidateQueries({ queryKey: ["unorganized"] });
       queryClient.invalidateQueries({ queryKey: ["media-count"] });
     }

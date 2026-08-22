@@ -37,6 +37,7 @@ const plan: OrganizePlan = {
 const summary: UnorganizedSummary = {
   drive_id: 1,
   count: 3,
+  total: 5,
   bytes: 3000,
   photos: 2,
   videos: 1,

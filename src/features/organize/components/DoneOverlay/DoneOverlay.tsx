@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Check } from "lucide-react";
+import { Ban, Check } from "lucide-react";
 import type { router } from "@/app/router";
 import { Button } from "@/components/ui/button";
 import { useWizardStore } from "../../store/wizardStore";
@@ -17,19 +17,31 @@ function resetWizard() {
   useWizardStore.getState().reset();
 }
 
-export function DoneOverlay({ moved, skipped, failed, fileTpl, folders, foldersHint }: DoneOverlayProps) {
+export function DoneOverlay({
+  moved,
+  skipped,
+  failed,
+  fileTpl,
+  folders,
+  foldersHint,
+  cancelled = false,
+}: DoneOverlayProps) {
+  const title = cancelled ? "Cancelled" : "Organized";
+
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Organized"
+      aria-label={title}
       className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5 bg-background"
     >
       <div className="flex size-14 items-center justify-center border border-border-3">
-        <Check className="size-6" aria-hidden />
+        {cancelled ? <Ban className="size-6" aria-hidden /> : <Check className="size-6" aria-hidden />}
       </div>
-      <span className="font-mono text-[10px] tracking-[3px] text-dim">ORGANIZED</span>
-      <h1 className="text-[38px] font-semibold">{moved} photos filed</h1>
+      <span className="font-mono text-[10px] tracking-[3px] text-dim">{title.toUpperCase()}</span>
+      <h1 className="text-[38px] font-semibold">
+        {moved} photos filed{cancelled ? " before cancelling" : ""}
+      </h1>
       <div className="flex flex-col items-center gap-1 font-mono text-[12px] text-muted-foreground">
         <span>Renamed to {fileTpl}</span>
         <span>
@@ -39,6 +51,7 @@ export function DoneOverlay({ moved, skipped, failed, fileTpl, folders, foldersH
         <span>
           {skipped} skipped · {failed} failed
         </span>
+        {cancelled && <span>Remaining photos were left in place.</span>}
       </div>
       <div className="mt-4 flex items-center gap-3">
         <Button asChild size="sm" className="font-mono text-[10.5px] tracking-[1.5px]">

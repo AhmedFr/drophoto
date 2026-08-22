@@ -81,3 +81,28 @@ it("resets the wizard to step 0 with no selection when DASHBOARD is clicked", as
   fireEvent.click(await screen.findByRole("link", { name: "DASHBOARD" }));
   expect(useWizardStore.getState()).toMatchObject({ step: 0, selectedDriveIds: [] });
 });
+
+it("reports a cancelled run as CANCELLED, not as a success", async () => {
+  renderWithRouter(
+    <DoneOverlay moved={7} skipped={1} failed={0} fileTpl="t" folders={["a/2024"]} cancelled />,
+  );
+
+  expect(await screen.findByText("CANCELLED")).toBeInTheDocument();
+  expect(screen.queryByText("ORGANIZED")).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "7 photos filed before cancelling" }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Remaining photos were left in place.")).toBeInTheDocument();
+});
+
+it("is labelled Cancelled as a dialog when the run was cancelled", async () => {
+  renderWithRouter(<DoneOverlay moved={0} skipped={0} failed={0} fileTpl="t" folders={[]} cancelled />);
+  const dialog = await screen.findByRole("dialog", { name: "Cancelled" });
+  expect(dialog).toHaveAttribute("aria-modal", "true");
+});
+
+it("omits the cancelled note on a run that completed", async () => {
+  renderWithRouter(<DoneOverlay moved={7} skipped={0} failed={0} fileTpl="t" folders={[]} />);
+  expect(await screen.findByRole("heading", { name: "7 photos filed" })).toBeInTheDocument();
+  expect(screen.queryByText("Remaining photos were left in place.")).not.toBeInTheDocument();
+});

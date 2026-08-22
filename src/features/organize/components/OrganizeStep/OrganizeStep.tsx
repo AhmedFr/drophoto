@@ -3,7 +3,7 @@ import { PlanPreview } from "../PlanPreview";
 import { RuleEditor } from "../RuleEditor";
 import type { OrganizeStepProps } from "./OrganizeStep.types";
 
-export function OrganizeStep({ plan, isPlanning, rule, running }: OrganizeStepProps) {
+export function OrganizeStep({ plan, isPlanning, rule, drives, running }: OrganizeStepProps) {
   if (isPlanning) {
     return <div className="flex-1 p-6 font-mono text-[11px] text-faint">Planning…</div>;
   }
@@ -18,6 +18,7 @@ export function OrganizeStep({ plan, isPlanning, rule, running }: OrganizeStepPr
         <RuleEditor
           rule={rule.rule}
           driveIds={rule.driveIds}
+          drives={drives}
           activeDriveId={rule.activeDriveId}
           onSelectDrive={rule.setActiveDriveId}
           onChange={rule.onChange}

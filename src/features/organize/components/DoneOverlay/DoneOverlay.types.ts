@@ -8,4 +8,6 @@ export type DoneOverlayProps = {
   folders: string[];
   /** Shown next to "Filed into…" while `folders` is still the pre-run plan, not the confirmed result. */
   foldersHint?: string | null;
+  /** True when the run stopped because the user cancelled it — the overlay then reports what was filed *before* cancelling, never a success. */
+  cancelled?: boolean;
 };

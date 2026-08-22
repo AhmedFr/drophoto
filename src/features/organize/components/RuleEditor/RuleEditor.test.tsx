@@ -23,6 +23,10 @@ function renderEditor(props: Partial<Parameters<typeof RuleEditor>[0]> = {}) {
     <RuleEditor
       rule={rule()}
       driveIds={[1]}
+      drives={[
+        { id: 1, name: "Kodachrome" },
+        { id: 2, name: "Ektachrome" },
+      ]}
       activeDriveId={1}
       onSelectDrive={onSelectDrive}
       onChange={onChange}
@@ -125,4 +129,16 @@ it("leaves the inputs enabled when disabled is false (the default)", () => {
   renderEditor();
   expect(screen.getByLabelText("Root")).not.toBeDisabled();
   expect(screen.getByRole("switch")).not.toBeDisabled();
+});
+
+it("labels each drive option with the drive's name, not its id", () => {
+  renderEditor({ driveIds: [1, 2] });
+  expect(screen.getByRole("option", { name: "Kodachrome" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Ektachrome" })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: "Drive 1" })).not.toBeInTheDocument();
+});
+
+it("falls back to Drive {id} for a drive it has no name for", () => {
+  renderEditor({ driveIds: [1, 9], drives: [{ id: 1, name: "Kodachrome" }] });
+  expect(screen.getByRole("option", { name: "Drive 9" })).toBeInTheDocument();
 });

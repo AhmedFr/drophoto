@@ -27,7 +27,14 @@ export type OrganizePlan = {
 
 export type UnorganizedSummary = {
   drive_id: number;
+  /** Media still waiting to be organized under the rule's root. */
   count: number;
+  /**
+   * Every media row known for this drive, organized or not. `0` is the
+   * only reliable "never scanned" signal — a `count` of `0` on its own
+   * just as easily means "everything here is already organized".
+   */
+  total: number;
   bytes: number;
   photos: number;
   videos: number;

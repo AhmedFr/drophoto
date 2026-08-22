@@ -54,6 +54,7 @@ const onlineDrive = {
 const summary = {
   drive_id: 1,
   count: 10,
+  total: 12,
   bytes: 1_000_000,
   photos: 8,
   videos: 2,
@@ -225,8 +226,49 @@ it("CANCEL during a multi-drive run stops the whole queue — the second drive's
   fireEvent.click(cancelButtons[cancelButtons.length - 1]);
   emit("job", { kind: "cancelled", job_id: "job-1" });
 
-  expect(await screen.findByText("ORGANIZED")).toBeInTheDocument();
+  expect(await screen.findByText("CANCELLED")).toBeInTheDocument();
   expect(startOrganizeSpy).toHaveBeenCalledTimes(1);
+});
+
+it("a cancelled run shows the CANCELLED screen, not the success one", async () => {
+  mockDetectApi((cmd) => {
+    if (cmd === "start_organize") return "job-1";
+    if (cmd === "cancel_job") return null;
+    return defaultExtra(cmd);
+  });
+  const { emit } = await mockListen();
+  await goToStep2();
+
+  fireEvent.click(await screen.findByRole("button", { name: "ORGANIZE 1 →" }));
+  const cancelButtons = await screen.findAllByRole("button", { name: "CANCEL" });
+  fireEvent.click(cancelButtons[cancelButtons.length - 1]);
+  emit("job", { kind: "cancelled", job_id: "job-1" });
+
+  expect(await screen.findByText("CANCELLED")).toBeInTheDocument();
+  expect(screen.queryByText("ORGANIZED")).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "0 photos filed before cancelling" })).toBeInTheDocument();
+  expect(screen.getByText("Remaining photos were left in place.")).toBeInTheDocument();
+});
+
+it("counts skipped duplicates once — the job's own total, not the plan's added on top", async () => {
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_unorganized_summaries") return [summary];
+    if (cmd === "count_media") return 20;
+    if (cmd === "get_rule") return { ...rule, drive_id: (args as { driveId: number }).driveId };
+    // The plan reports 2 duplicates; the job then reports those same 2
+    // as `skipped` in its Finished event. The overlay must show 2, not 4.
+    if (cmd === "plan_organize") return { items: [planItem], planned: 1, skipped_dup: 2, bytes: 1000 };
+    if (cmd === "start_organize") return "job-1";
+    return defaultExtra(cmd);
+  });
+  const { emit } = await mockListen();
+  await goToStep2();
+
+  fireEvent.click(await screen.findByRole("button", { name: "ORGANIZE 1 →" }));
+  emit("job", { kind: "finished", job_id: "job-1", ok: 1, failed: 0, skipped: 2 });
+
+  expect(await screen.findByText("2 skipped · 0 failed")).toBeInTheDocument();
 });
 
 it("editing the rule without saving blocks ORGANIZE with a hint; saving re-enables it", async () => {
