@@ -97,6 +97,7 @@ pub struct MediaRow {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub missing_at: Option<DateTime<Utc>>,
+    pub organized_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -119,6 +120,87 @@ pub struct NewMedia {
     pub focal_mm: Option<f64>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
+    pub organized_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OrganizeRule {
+    pub drive_id: i64,
+    pub root: String,
+    pub folder_tpl: String,
+    pub file_tpl: String,
+    pub keep_pairs: bool,
+}
+
+impl OrganizeRule {
+    /// The default organize rule for a freshly registered drive: archive
+    /// everything under `archive/`, grouped into year/quarter folders, with
+    /// filenames stamped `yyyy-mm-dd_stem` and RAW+JPEG pairs kept together.
+    pub fn default_for(drive_id: i64) -> Self {
+        Self {
+            drive_id,
+            root: "archive".into(),
+            folder_tpl: "{{yyyy}}/Q{{q}}".into(),
+            file_tpl: "{{yyyy}}-{{mm}}-{{dd}}_{{stem}}".into(),
+            keep_pairs: true,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Planned,
+    Moved,
+    SkippedDup,
+    SkippedCollision,
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OrganizeJobRow {
+    pub id: i64,
+    pub drive_id: i64,
+    pub drive_name: String,
+    /// `running` | `done` | `cancelled` | `failed`
+    pub status: String,
+    pub planned: u64,
+    pub moved: u64,
+    pub skipped: u64,
+    pub failed: u64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OrganizeItemRow {
+    pub id: i64,
+    pub job_id: i64,
+    pub media_id: i64,
+    pub old_rel_path: String,
+    pub new_rel_path: String,
+    pub status: PlanStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OrganizePlanItem {
+    pub media_id: i64,
+    pub old_rel_path: String,
+    pub new_rel_path: String,
+    pub status: PlanStatus,
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct UnorganizedSummary {
+    pub drive_id: i64,
+    pub count: u64,
+    pub bytes: u64,
+    pub photos: u64,
+    pub videos: u64,
+    pub earliest: Option<DateTime<Utc>>,
+    pub latest: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]

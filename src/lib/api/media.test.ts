@@ -24,6 +24,8 @@ const item: MediaItem = {
     lat: null,
     lon: null,
     missing_at: null,
+
+    organized_at: null,
   },
   thumb_path: "/tmp/thumbs/hash1/400.webp",
   preview_path: "/tmp/thumbs/hash1/2000.webp",

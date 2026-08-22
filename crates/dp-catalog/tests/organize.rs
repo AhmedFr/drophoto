@@ -1,0 +1,202 @@
+use chrono::{DateTime, Utc};
+use dp_catalog::{Catalog, SqliteCatalog};
+use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, OrganizeItemRow, OrganizeRule, PlanStatus};
+
+fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
+    NewMedia {
+        drive_id,
+        rel_path: rel_path.into(),
+        hash: hash.into(),
+        size: 1000,
+        kind: MediaKind::Photo,
+        ext: "jpg".into(),
+        width: Some(100),
+        height: Some(200),
+        duration_ms: None,
+        taken_at: None,
+        camera: None,
+        lens: None,
+        aperture: None,
+        shutter: None,
+        iso: None,
+        focal_mm: None,
+        lat: None,
+        lon: None,
+        organized_at: None,
+    }
+}
+
+async fn drive(c: &SqliteCatalog) -> i64 {
+    c.register_drive(NewDrive {
+        name: "A".into(),
+        mount_path: "/Volumes/A".into(),
+        role: DriveRole::Archive,
+        capacity: 100,
+        free: 40,
+    })
+    .await
+    .unwrap()
+    .id
+}
+
+#[tokio::test]
+async fn get_rule_returns_default_then_saved() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    let default = c.get_rule(drive_id).await.unwrap();
+    assert_eq!(default, OrganizeRule::default_for(drive_id));
+
+    let custom = OrganizeRule {
+        drive_id,
+        root: "sorted".into(),
+        folder_tpl: "{{yyyy}}".into(),
+        file_tpl: "{{stem}}".into(),
+        keep_pairs: false,
+    };
+    c.save_rule(&custom).await.unwrap();
+    let saved = c.get_rule(drive_id).await.unwrap();
+    assert_eq!(saved, custom);
+}
+
+#[tokio::test]
+async fn list_unorganized_excludes_organized_and_root_prefixed() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    c.upsert_media(nm(drive_id, "plain.jpg", "h-plain"))
+        .await
+        .unwrap();
+    let organized_id = c
+        .upsert_media(nm(drive_id, "organized.jpg", "h-org"))
+        .await
+        .unwrap();
+    c.mark_media_organized(organized_id, "archive/organized.jpg")
+        .await
+        .unwrap();
+    c.upsert_media(nm(drive_id, "archive/x.jpg", "h-archive"))
+        .await
+        .unwrap();
+
+    let rows = c.list_unorganized(drive_id, "archive").await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].rel_path, "plain.jpg");
+}
+
+#[tokio::test]
+async fn unorganized_summary_counts_bytes_kinds_and_range() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let earlier: DateTime<Utc> = "2024-01-01T00:00:00Z".parse().unwrap();
+    let later: DateTime<Utc> = "2024-06-01T00:00:00Z".parse().unwrap();
+
+    let mut photo = nm(drive_id, "a.jpg", "h-a");
+    photo.size = 100;
+    photo.taken_at = Some(earlier);
+    c.upsert_media(photo).await.unwrap();
+
+    let mut video = nm(drive_id, "b.mp4", "h-b");
+    video.size = 200;
+    video.kind = MediaKind::Video;
+    video.ext = "mp4".into();
+    video.taken_at = Some(later);
+    c.upsert_media(video).await.unwrap();
+
+    // Already organized — excluded from the summary.
+    let organized_id = c.upsert_media(nm(drive_id, "c.jpg", "h-c")).await.unwrap();
+    c.mark_media_organized(organized_id, "archive/c.jpg")
+        .await
+        .unwrap();
+
+    let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
+    assert_eq!(summary.drive_id, drive_id);
+    assert_eq!(summary.count, 2);
+    assert_eq!(summary.bytes, 300);
+    assert_eq!(summary.photos, 1);
+    assert_eq!(summary.videos, 1);
+    assert_eq!(summary.earliest, Some(earlier));
+    assert_eq!(summary.latest, Some(later));
+}
+
+#[tokio::test]
+async fn organized_hashes_only_returns_organized() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let organized_id = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    c.mark_media_organized(organized_id, "archive/b.jpg")
+        .await
+        .unwrap();
+
+    let found = c
+        .organized_hashes(&["h-a".to_string(), "h-b".to_string(), "h-missing".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert!(found.contains("h-b"));
+}
+
+#[tokio::test]
+async fn job_lifecycle() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let media_id1 = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let media_id2 = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+
+    let job_id = c.create_organize_job(drive_id, 2).await.unwrap();
+    c.insert_organize_item(&OrganizeItemRow {
+        id: 0,
+        job_id,
+        media_id: media_id1,
+        old_rel_path: "a.jpg".into(),
+        new_rel_path: "archive/a.jpg".into(),
+        status: PlanStatus::Moved,
+        error: None,
+    })
+    .await
+    .unwrap();
+    c.insert_organize_item(&OrganizeItemRow {
+        id: 0,
+        job_id,
+        media_id: media_id2,
+        old_rel_path: "b.jpg".into(),
+        new_rel_path: "archive/b.jpg".into(),
+        status: PlanStatus::Failed,
+        error: Some("boom".into()),
+    })
+    .await
+    .unwrap();
+    c.finish_organize_job(job_id, "done", 1, 0, 1).await.unwrap();
+
+    let jobs = c.list_organize_jobs(10).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
+    assert_eq!(job.id, job_id);
+    assert_eq!(job.drive_name, "A");
+    assert_eq!(job.status, "done");
+    assert_eq!(job.planned, 2);
+    assert_eq!(job.moved, 1);
+    assert_eq!(job.skipped, 0);
+    assert_eq!(job.failed, 1);
+    assert!(job.finished_at.is_some());
+
+    let items = c.list_organize_items(job_id, 10).await.unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].status, PlanStatus::Moved);
+    assert_eq!(items[1].status, PlanStatus::Failed);
+    assert_eq!(items[1].error.as_deref(), Some("boom"));
+}
+
+#[tokio::test]
+async fn mark_media_organized_sets_path_and_timestamp() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let media_id = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+
+    c.mark_media_organized(media_id, "archive/a.jpg").await.unwrap();
+
+    let (row, _) = c.get_media_with_drive(media_id).await.unwrap();
+    assert_eq!(row.rel_path, "archive/a.jpg");
+    assert!(row.organized_at.is_some());
+}

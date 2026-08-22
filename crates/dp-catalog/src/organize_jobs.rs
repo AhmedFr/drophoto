@@ -1,0 +1,145 @@
+use crate::media::from_rfc3339;
+use crate::sqlite::db;
+use chrono::{DateTime, Utc};
+use dp_core::{DpError, DpResult, OrganizeItemRow, OrganizeJobRow, PlanStatus};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+
+fn status_to_str(s: PlanStatus) -> &'static str {
+    match s {
+        PlanStatus::Planned => "planned",
+        PlanStatus::Moved => "moved",
+        PlanStatus::SkippedDup => "skipped_dup",
+        PlanStatus::SkippedCollision => "skipped_collision",
+        PlanStatus::Failed => "failed",
+    }
+}
+
+fn status_from_str(s: &str) -> DpResult<PlanStatus> {
+    match s {
+        "planned" => Ok(PlanStatus::Planned),
+        "moved" => Ok(PlanStatus::Moved),
+        "skipped_dup" => Ok(PlanStatus::SkippedDup),
+        "skipped_collision" => Ok(PlanStatus::SkippedCollision),
+        "failed" => Ok(PlanStatus::Failed),
+        other => Err(DpError::Db {
+            message: format!("invalid plan status: {other}"),
+        }),
+    }
+}
+
+fn row_to_job(row: &SqliteRow) -> DpResult<OrganizeJobRow> {
+    let planned: i64 = row.try_get("planned").map_err(db)?;
+    let moved: i64 = row.try_get("moved").map_err(db)?;
+    let skipped: i64 = row.try_get("skipped").map_err(db)?;
+    let failed: i64 = row.try_get("failed").map_err(db)?;
+    let started_at: String = row.try_get("started_at").map_err(db)?;
+    let finished_at: Option<String> = row.try_get("finished_at").map_err(db)?;
+    Ok(OrganizeJobRow {
+        id: row.try_get("id").map_err(db)?,
+        drive_id: row.try_get("drive_id").map_err(db)?,
+        drive_name: row.try_get("drive_name").map_err(db)?,
+        status: row.try_get("status").map_err(db)?,
+        planned: planned as u64,
+        moved: moved as u64,
+        skipped: skipped as u64,
+        failed: failed as u64,
+        started_at: DateTime::parse_from_rfc3339(&started_at)
+            .map_err(db)?
+            .with_timezone(&Utc),
+        finished_at: from_rfc3339(finished_at)?,
+    })
+}
+
+fn row_to_item(row: &SqliteRow) -> DpResult<OrganizeItemRow> {
+    let status: String = row.try_get("status").map_err(db)?;
+    Ok(OrganizeItemRow {
+        id: row.try_get("id").map_err(db)?,
+        job_id: row.try_get("job_id").map_err(db)?,
+        media_id: row.try_get("media_id").map_err(db)?,
+        old_rel_path: row.try_get("old_rel_path").map_err(db)?,
+        new_rel_path: row.try_get("new_rel_path").map_err(db)?,
+        status: status_from_str(&status)?,
+        error: row.try_get("error").map_err(db)?,
+    })
+}
+
+pub(crate) async fn create_organize_job(pool: &SqlitePool, drive_id: i64, planned: u64) -> DpResult<i64> {
+    let now = Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "INSERT INTO organize_jobs (drive_id, status, planned, started_at) VALUES (?, 'running', ?, ?)",
+    )
+    .bind(drive_id)
+    .bind(planned as i64)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    Ok(result.last_insert_rowid())
+}
+
+pub(crate) async fn finish_organize_job(
+    pool: &SqlitePool,
+    id: i64,
+    status: &str,
+    moved: u64,
+    skipped: u64,
+    failed: u64,
+) -> DpResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE organize_jobs SET status = ?, moved = ?, skipped = ?, failed = ?, finished_at = ? WHERE id = ?",
+    )
+    .bind(status)
+    .bind(moved as i64)
+    .bind(skipped as i64)
+    .bind(failed as i64)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    Ok(())
+}
+
+pub(crate) async fn insert_organize_item(pool: &SqlitePool, item: &OrganizeItemRow) -> DpResult<i64> {
+    let result = sqlx::query(
+        "INSERT INTO organize_items (job_id, media_id, old_rel_path, new_rel_path, status, error) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(item.job_id)
+    .bind(item.media_id)
+    .bind(&item.old_rel_path)
+    .bind(&item.new_rel_path)
+    .bind(status_to_str(item.status))
+    .bind(&item.error)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    Ok(result.last_insert_rowid())
+}
+
+pub(crate) async fn list_organize_jobs(pool: &SqlitePool, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {
+    let rows = sqlx::query(
+        "SELECT j.*, d.name AS drive_name FROM organize_jobs j JOIN drives d ON d.id = j.drive_id \
+         ORDER BY j.id DESC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter().map(row_to_job).collect()
+}
+
+pub(crate) async fn list_organize_items(
+    pool: &SqlitePool,
+    job_id: i64,
+    limit: u32,
+) -> DpResult<Vec<OrganizeItemRow>> {
+    let rows = sqlx::query("SELECT * FROM organize_items WHERE job_id = ? ORDER BY id LIMIT ?")
+        .bind(job_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+    rows.iter().map(row_to_item).collect()
+}

@@ -48,6 +48,7 @@ mod tests {
             lat: None,
             lon: None,
             missing_at: None,
+            organized_at: None,
         }
     }
 

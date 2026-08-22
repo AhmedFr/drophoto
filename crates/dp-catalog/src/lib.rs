@@ -1,11 +1,17 @@
 mod drives;
 mod media;
+mod organize;
+mod organize_jobs;
 mod query;
 mod sqlite;
 
 use async_trait::async_trait;
-use dp_core::{DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia};
+use dp_core::{
+    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, OrganizeItemRow, OrganizeJobRow, OrganizeRule,
+    UnorganizedSummary,
+};
 pub use sqlite::SqliteCatalog;
+use std::collections::HashSet;
 
 #[async_trait]
 pub trait Catalog: Send + Sync {
@@ -20,6 +26,24 @@ pub trait Catalog: Send + Sync {
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64>;
     async fn media_hash_exists(&self, hash: &str) -> DpResult<bool>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
+    async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule>;
+    async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()>;
+    async fn list_unorganized(&self, drive_id: i64, root: &str) -> DpResult<Vec<MediaRow>>;
+    async fn unorganized_summary(&self, drive_id: i64, root: &str) -> DpResult<UnorganizedSummary>;
+    async fn organized_hashes(&self, hashes: &[String]) -> DpResult<HashSet<String>>;
+    async fn create_organize_job(&self, drive_id: i64, planned: u64) -> DpResult<i64>;
+    async fn finish_organize_job(
+        &self,
+        id: i64,
+        status: &str,
+        moved: u64,
+        skipped: u64,
+        failed: u64,
+    ) -> DpResult<()>;
+    async fn insert_organize_item(&self, item: &OrganizeItemRow) -> DpResult<i64>;
+    async fn mark_media_organized(&self, media_id: i64, new_rel_path: &str) -> DpResult<()>;
+    async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>>;
+    async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>>;
 }
 
 #[async_trait]
@@ -66,5 +90,56 @@ impl Catalog for SqliteCatalog {
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         media::record_scan_error(&self.pool, drive_id, path, code, message).await
+    }
+
+    async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {
+        organize::get_rule(&self.pool, drive_id).await
+    }
+
+    async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()> {
+        organize::save_rule(&self.pool, r).await
+    }
+
+    async fn list_unorganized(&self, drive_id: i64, root: &str) -> DpResult<Vec<MediaRow>> {
+        organize::list_unorganized(&self.pool, drive_id, root).await
+    }
+
+    async fn unorganized_summary(&self, drive_id: i64, root: &str) -> DpResult<UnorganizedSummary> {
+        organize::unorganized_summary(&self.pool, drive_id, root).await
+    }
+
+    async fn organized_hashes(&self, hashes: &[String]) -> DpResult<HashSet<String>> {
+        organize::organized_hashes(&self.pool, hashes).await
+    }
+
+    async fn create_organize_job(&self, drive_id: i64, planned: u64) -> DpResult<i64> {
+        organize_jobs::create_organize_job(&self.pool, drive_id, planned).await
+    }
+
+    async fn finish_organize_job(
+        &self,
+        id: i64,
+        status: &str,
+        moved: u64,
+        skipped: u64,
+        failed: u64,
+    ) -> DpResult<()> {
+        organize_jobs::finish_organize_job(&self.pool, id, status, moved, skipped, failed).await
+    }
+
+    async fn insert_organize_item(&self, item: &OrganizeItemRow) -> DpResult<i64> {
+        organize_jobs::insert_organize_item(&self.pool, item).await
+    }
+
+    async fn mark_media_organized(&self, media_id: i64, new_rel_path: &str) -> DpResult<()> {
+        organize::mark_media_organized(&self.pool, media_id, new_rel_path).await
+    }
+
+    async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {
+        organize_jobs::list_organize_jobs(&self.pool, limit).await
+    }
+
+    async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>> {
+        organize_jobs::list_organize_items(&self.pool, job_id, limit).await
     }
 }
