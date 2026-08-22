@@ -11,4 +11,6 @@ export type RuleEditorProps = {
   onSave: () => void;
   saving: boolean;
   error: string | null;
+  /** Disables every input, the drive selector, presets, the switch, and SAVE — e.g. while an organize run is in progress. */
+  disabled?: boolean;
 };

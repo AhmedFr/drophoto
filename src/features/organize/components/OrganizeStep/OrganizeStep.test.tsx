@@ -19,6 +19,7 @@ function ruleResult(overrides: Partial<UseRuleResult> = {}): UseRuleResult {
     onChange: vi.fn(),
     onSave: vi.fn(),
     saving: false,
+    isDirty: false,
     error: null,
     ...overrides,
   };
@@ -29,7 +30,7 @@ function plan(items: OrganizePlan["items"]): OrganizePlan {
 }
 
 it("shows a planning message while the plan is loading", () => {
-  render(<OrganizeStep plan={undefined} isPlanning={true} rule={ruleResult()} />);
+  render(<OrganizeStep plan={undefined} isPlanning={true} rule={ruleResult()} running={false} />);
   expect(screen.getByText("Planning…")).toBeInTheDocument();
 });
 
@@ -43,13 +44,18 @@ it("renders grouped plan items in PlanPreview and the RuleEditor side by side", 
       reason: null,
     },
   ]);
-  render(<OrganizeStep plan={p} isPlanning={false} rule={ruleResult()} />);
+  render(<OrganizeStep plan={p} isPlanning={false} rule={ruleResult()} running={false} />);
 
   expect(screen.getByText("archive/2025/Q4")).toBeInTheDocument();
   expect(screen.getByLabelText("Root")).toHaveValue("archive");
 });
 
 it("shows the PlanPreview empty state when there's nothing planned", () => {
-  render(<OrganizeStep plan={plan([])} isPlanning={false} rule={ruleResult()} />);
+  render(<OrganizeStep plan={plan([])} isPlanning={false} rule={ruleResult()} running={false} />);
   expect(screen.getByText(/Nothing to organize/)).toBeInTheDocument();
+});
+
+it("disables the RuleEditor's inputs while running", () => {
+  render(<OrganizeStep plan={plan([])} isPlanning={false} rule={ruleResult()} running={true} />);
+  expect(screen.getByLabelText("Root")).toBeDisabled();
 });

@@ -3,7 +3,7 @@ import { PlanPreview } from "../PlanPreview";
 import { RuleEditor } from "../RuleEditor";
 import type { OrganizeStepProps } from "./OrganizeStep.types";
 
-export function OrganizeStep({ plan, isPlanning, rule }: OrganizeStepProps) {
+export function OrganizeStep({ plan, isPlanning, rule, running }: OrganizeStepProps) {
   if (isPlanning) {
     return <div className="flex-1 p-6 font-mono text-[11px] text-faint">Planning…</div>;
   }
@@ -24,6 +24,7 @@ export function OrganizeStep({ plan, isPlanning, rule }: OrganizeStepProps) {
           onSave={rule.onSave}
           saving={rule.saving}
           error={rule.error}
+          disabled={running}
         />
       </div>
     </div>

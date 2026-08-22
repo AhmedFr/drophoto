@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { Check } from "lucide-react";
 import type { router } from "@/app/router";
 import { Button } from "@/components/ui/button";
+import { useWizardStore } from "../../store/wizardStore";
 import type { DoneOverlayProps } from "./DoneOverlay.types";
 
 function foldersLine(folders: string[]): string {
@@ -11,9 +12,19 @@ function foldersLine(folders: string[]): string {
   return extra > 0 ? `${shown.join(", ")} +${extra} more` : shown.join(", ");
 }
 
-export function DoneOverlay({ moved, skipped, failed, fileTpl, folders }: DoneOverlayProps) {
+/** Resets the wizard back to step 0 with nothing selected before a DoneOverlay CTA navigates away. */
+function resetWizard() {
+  useWizardStore.getState().reset();
+}
+
+export function DoneOverlay({ moved, skipped, failed, fileTpl, folders, foldersHint }: DoneOverlayProps) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5 bg-background">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Organized"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5 bg-background"
+    >
       <div className="flex size-14 items-center justify-center border border-border-3">
         <Check className="size-6" aria-hidden />
       </div>
@@ -21,17 +32,24 @@ export function DoneOverlay({ moved, skipped, failed, fileTpl, folders }: DoneOv
       <h1 className="text-[38px] font-semibold">{moved} photos filed</h1>
       <div className="flex flex-col items-center gap-1 font-mono text-[12px] text-muted-foreground">
         <span>Renamed to {fileTpl}</span>
-        <span>Filed into {foldersLine(folders)}</span>
+        <span>
+          Filed into {foldersLine(folders)}
+          {foldersHint && <span className="ml-1 text-faint">({foldersHint})</span>}
+        </span>
         <span>
           {skipped} skipped · {failed} failed
         </span>
       </div>
       <div className="mt-4 flex items-center gap-3">
         <Button asChild size="sm" className="font-mono text-[10.5px] tracking-[1.5px]">
-          <Link<typeof router, string, string> to="/gallery">OPEN GALLERY →</Link>
+          <Link<typeof router, string, string> to="/gallery" onClick={resetWizard}>
+            OPEN GALLERY →
+          </Link>
         </Button>
         <Button asChild variant="outline" size="sm" className="font-mono text-[10.5px] tracking-[1.5px]">
-          <Link<typeof router, string, string> to="/">DASHBOARD</Link>
+          <Link<typeof router, string, string> to="/" onClick={resetWizard}>
+            DASHBOARD
+          </Link>
         </Button>
       </div>
     </div>

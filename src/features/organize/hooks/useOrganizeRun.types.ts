@@ -13,6 +13,8 @@ export type UseOrganizeRunResult = {
   progress: { done: number; total: number } | null;
   /** True once every selected drive's job has finished/cancelled. */
   done: boolean;
+  /** True when the run stopped because of `cancel()`, rather than running to completion. */
+  cancelled: boolean;
   totals: OrganizeRunTotals;
   /** The message from a failed `start_organize` call, if any. */
   error: string | null;

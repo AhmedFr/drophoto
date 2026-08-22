@@ -84,6 +84,56 @@ it("onSave calls save_rule with the draft and invalidates the rule and plan quer
   });
 });
 
+it("isDirty is false on load, true after an edit, and false again once saved", async () => {
+  const saveRuleSpy = vi.fn();
+  mockIPC((cmd, args) => {
+    if (cmd === "get_rule") return rule((args as { driveId: number }).driveId);
+    if (cmd === "save_rule") return saveRuleSpy(args);
+    return undefined;
+  });
+
+  const queryClient = new QueryClient();
+  const { result } = renderHook(() => useRule([7]), { wrapper: wrapperFor(queryClient) });
+  await waitFor(() => expect(result.current.rule).toEqual(rule(7)));
+  expect(result.current.isDirty).toBe(false);
+
+  act(() => result.current.onChange({ ...rule(7), root: "edited" }));
+  expect(result.current.isDirty).toBe(true);
+
+  act(() => result.current.onSave());
+  await waitFor(() => expect(saveRuleSpy).toHaveBeenCalled());
+  expect(result.current.isDirty).toBe(false);
+});
+
+it("isDirty is false again after editing back to the same value as the saved rule", async () => {
+  mockIPC((cmd, args) => (cmd === "get_rule" ? rule((args as { driveId: number }).driveId) : undefined));
+
+  const queryClient = new QueryClient();
+  const { result } = renderHook(() => useRule([7]), { wrapper: wrapperFor(queryClient) });
+  await waitFor(() => expect(result.current.rule).toEqual(rule(7)));
+
+  act(() => result.current.onChange({ ...rule(7), root: "edited" }));
+  expect(result.current.isDirty).toBe(true);
+
+  act(() => result.current.onChange(rule(7)));
+  expect(result.current.isDirty).toBe(false);
+});
+
+it("switching drives resets isDirty even with unsaved edits on the previous drive", async () => {
+  mockIPC((cmd, args) => (cmd === "get_rule" ? rule((args as { driveId: number }).driveId) : undefined));
+
+  const queryClient = new QueryClient();
+  const { result } = renderHook(() => useRule([7, 8]), { wrapper: wrapperFor(queryClient) });
+  await waitFor(() => expect(result.current.rule).toEqual(rule(7)));
+
+  act(() => result.current.onChange({ ...rule(7), root: "edited" }));
+  expect(result.current.isDirty).toBe(true);
+
+  act(() => result.current.setActiveDriveId(8));
+  await waitFor(() => expect(result.current.rule).toEqual(rule(8)));
+  expect(result.current.isDirty).toBe(false);
+});
+
 it("surfaces a save_rule validation error inline", async () => {
   mockIPC((cmd, args) => {
     if (cmd === "get_rule") return rule((args as { driveId: number }).driveId);

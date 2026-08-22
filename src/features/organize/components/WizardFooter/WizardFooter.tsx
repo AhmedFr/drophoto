@@ -14,6 +14,7 @@ export function WizardFooter({
   primaryDisabled,
   running,
   error,
+  hint,
 }: WizardFooterProps) {
   return (
     <footer className="flex h-[66px] flex-none items-center gap-4 border-t border-border px-[22px]">
@@ -31,6 +32,7 @@ export function WizardFooter({
       </Link>
       <div className="flex-1" />
       {error && <span className="font-mono text-[10.5px] text-red-400">{error}</span>}
+      {!error && hint && <span className="font-mono text-[10.5px] text-dim">{hint}</span>}
       {running && (
         <>
           <span className="font-mono text-[10.5px] tracking-[1.5px] text-muted-foreground">

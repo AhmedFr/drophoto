@@ -10,7 +10,8 @@ export type PlanGroup = {
 /** How many rows of a group `PlanPreview` renders before collapsing the rest into `more`. */
 const ROWS_PER_GROUP = 2;
 
-function dirname(relPath: string): string {
+/** The directory portion of a `/`-separated relative path, or `""` for a top-level path. */
+export function dirname(relPath: string): string {
   const idx = relPath.lastIndexOf("/");
   return idx === -1 ? "" : relPath.slice(0, idx);
 }

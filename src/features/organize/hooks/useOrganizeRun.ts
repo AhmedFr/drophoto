@@ -15,6 +15,12 @@ const EMPTY_TOTALS: OrganizeRunTotals = { moved: 0, skipped: 0, failed: 0 };
  * keeps the latest event per `job_id`), accumulating `finished` totals
  * across every drive. Exposes the currently running job's progress (if
  * it has reported one) for the wizard footer.
+ *
+ * `cancel()` stops the *whole* run, not just the current drive's job: a
+ * `cancelRequested` ref (set the moment `cancel()` is called, not only
+ * once the `cancelled` event arrives — the event can lag) short-circuits
+ * `advanceQueue` so no further drive is started once the in-flight job
+ * settles, however it settles.
  */
 export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
   const queryClient = useQueryClient();
@@ -25,6 +31,7 @@ export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
   const [totals, setTotals] = useState<OrganizeRunTotals>(EMPTY_TOTALS);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,6 +40,13 @@ export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
   // (any job, not just this one), and `finished`/`cancelled` remain the
   // latest event for a job id once it arrives.
   const handledJobIds = useRef<Set<string>>(new Set());
+
+  // Set the instant `cancel()` is called, independent of whether/when
+  // the `cancelled` job event actually arrives — `advanceQueue` checks
+  // this (not just `event.kind === "cancelled"`) so a run stops even if
+  // the current job happens to report `finished` right after a cancel
+  // was requested.
+  const cancelRequested = useRef(false);
 
   const startDrive = useCallback(
     async (driveId: number) => {
@@ -50,28 +64,34 @@ export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
   const start = useCallback(() => {
     if (running || driveIds.length === 0) return;
     handledJobIds.current = new Set();
+    cancelRequested.current = false;
     setQueue(driveIds);
     setIndex(0);
     setTotals(EMPTY_TOTALS);
     setDone(false);
+    setCancelled(false);
     setError(null);
     setRunning(true);
     void startDrive(driveIds[0]);
   }, [driveIds, running, startDrive]);
 
   const cancel = useCallback(() => {
+    cancelRequested.current = true;
     if (currentJobId) void cancelJob(currentJobId);
   }, [currentJobId]);
 
   const currentEvent = currentJobId ? events[currentJobId] : undefined;
 
   // Advances past the just-finished/cancelled job: accumulates its
-  // totals and either starts the next drive's job or wraps up the run.
-  // Kept as its own callback (rather than inlined in the effect below)
-  // so its `setState` calls aren't flagged as happening directly inside
-  // an effect body — the effect itself only decides *whether* to call
-  // this, deferring the actual state updates to this nested scope, the
-  // same shape `startDrive`'s already-async state updates take.
+  // totals and either starts the next drive's job or wraps up the run —
+  // stopping for good, without starting any further drive, once either
+  // this job itself was cancelled or `cancel()` was called at any point
+  // during the run. Kept as its own callback (rather than inlined in the
+  // effect below) so its `setState` calls aren't flagged as happening
+  // directly inside an effect body — the effect itself only decides
+  // *whether* to call this, deferring the actual state updates to this
+  // nested scope, the same shape `startDrive`'s already-async state
+  // updates take.
   const advanceQueue = useCallback(
     (event: JobEvent, currentIndex: number, currentQueue: number[]) => {
       if (event.kind === "finished") {
@@ -82,13 +102,15 @@ export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
         }));
       }
 
+      const stopped = event.kind === "cancelled" || cancelRequested.current;
       const nextIndex = currentIndex + 1;
-      if (nextIndex < currentQueue.length) {
+      if (!stopped && nextIndex < currentQueue.length) {
         setIndex(nextIndex);
         void startDrive(currentQueue[nextIndex]);
       } else {
         setRunning(false);
         setDone(true);
+        setCancelled(stopped);
         setCurrentJobId(null);
         queryClient.invalidateQueries({ queryKey: ["plan", driveIds] });
       }
@@ -110,5 +132,5 @@ export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
       ? { done: currentEvent.done, total: currentEvent.total }
       : null;
 
-  return { start, cancel, running, currentJobId, progress, done, totals, error };
+  return { start, cancel, running, currentJobId, progress, done, cancelled, totals, error };
 }

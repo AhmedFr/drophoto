@@ -1,6 +1,11 @@
-import { screen } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 import { renderWithRouter } from "@/test/renderWithRouter";
+import { useWizardStore } from "../../store/wizardStore";
 import { DoneOverlay } from "./DoneOverlay";
+
+beforeEach(() => {
+  useWizardStore.setState({ step: 1, selectedDriveIds: [1, 2] });
+});
 
 it("shows the moved count headline and ORGANIZED label", async () => {
   renderWithRouter(<DoneOverlay moved={42} skipped={2} failed={0} fileTpl="{{yyyy}}-{{mm}}-{{dd}}_{{stem}}" folders={[]} />);
@@ -45,4 +50,34 @@ it("links OPEN GALLERY to /gallery and DASHBOARD to /", async () => {
   renderWithRouter(<DoneOverlay moved={1} skipped={0} failed={0} fileTpl="t" folders={[]} />);
   expect(await screen.findByRole("link", { name: "OPEN GALLERY →" })).toHaveAttribute("href", "/gallery");
   expect(screen.getByRole("link", { name: "DASHBOARD" })).toHaveAttribute("href", "/");
+});
+
+it("shows a foldersHint next to Filed into when given", async () => {
+  renderWithRouter(
+    <DoneOverlay moved={1} skipped={0} failed={0} fileTpl="t" folders={["a/2024"]} foldersHint="from the plan" />,
+  );
+  expect(await screen.findByText("(from the plan)")).toBeInTheDocument();
+});
+
+it("omits the hint when not given", async () => {
+  renderWithRouter(<DoneOverlay moved={1} skipped={0} failed={0} fileTpl="t" folders={["a/2024"]} />);
+  expect(screen.queryByText(/from the plan/)).not.toBeInTheDocument();
+});
+
+it("is an accessible modal dialog", async () => {
+  renderWithRouter(<DoneOverlay moved={1} skipped={0} failed={0} fileTpl="t" folders={[]} />);
+  const dialog = await screen.findByRole("dialog", { name: "Organized" });
+  expect(dialog).toHaveAttribute("aria-modal", "true");
+});
+
+it("resets the wizard to step 0 with no selection when OPEN GALLERY is clicked", async () => {
+  renderWithRouter(<DoneOverlay moved={1} skipped={0} failed={0} fileTpl="t" folders={[]} />);
+  fireEvent.click(await screen.findByRole("link", { name: "OPEN GALLERY →" }));
+  expect(useWizardStore.getState()).toMatchObject({ step: 0, selectedDriveIds: [] });
+});
+
+it("resets the wizard to step 0 with no selection when DASHBOARD is clicked", async () => {
+  renderWithRouter(<DoneOverlay moved={1} skipped={0} failed={0} fileTpl="t" folders={[]} />);
+  fireEvent.click(await screen.findByRole("link", { name: "DASHBOARD" }));
+  expect(useWizardStore.getState()).toMatchObject({ step: 0, selectedDriveIds: [] });
 });

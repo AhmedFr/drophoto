@@ -5,4 +5,6 @@ export type OrganizeStepProps = {
   plan: OrganizePlan | undefined;
   isPlanning: boolean;
   rule: UseRuleResult;
+  /** True while an organize run is in progress — disables the RuleEditor's inputs and SAVE. */
+  running: boolean;
 };

@@ -109,3 +109,20 @@ it("renders the FORMAT/FOLDERS example rendered from the sample date", () => {
   expect(screen.getByText("FOLDERS")).toBeInTheDocument();
   expect(screen.getByText("archive/2024/Q2")).toBeInTheDocument();
 });
+
+it("disables the inputs and SAVE while disabled is true", () => {
+  renderEditor({ disabled: true, driveIds: [1, 2], activeDriveId: 1 });
+  expect(screen.getByLabelText("Root")).toBeDisabled();
+  expect(screen.getByLabelText("Folder template")).toBeDisabled();
+  expect(screen.getByLabelText("File template")).toBeDisabled();
+  expect(screen.getByLabelText("Drive")).toBeDisabled();
+  expect(screen.getByRole("switch")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "SAVE" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "PRESETS" })).toBeDisabled();
+});
+
+it("leaves the inputs enabled when disabled is false (the default)", () => {
+  renderEditor();
+  expect(screen.getByLabelText("Root")).not.toBeDisabled();
+  expect(screen.getByRole("switch")).not.toBeDisabled();
+});

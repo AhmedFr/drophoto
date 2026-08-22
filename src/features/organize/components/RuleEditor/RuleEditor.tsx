@@ -20,6 +20,7 @@ export function RuleEditor({
   onSave,
   saving,
   error,
+  disabled = false,
 }: RuleEditorProps) {
   return (
     <div className="flex flex-col gap-5">
@@ -32,7 +33,8 @@ export function RuleEditor({
           {driveIds.length > 1 && (
             <select
               aria-label="Drive"
-              className="border border-border bg-transparent px-2 py-1.5 font-mono text-[11px]"
+              disabled={disabled}
+              className="border border-border bg-transparent px-2 py-1.5 font-mono text-[11px] disabled:opacity-50"
               value={activeDriveId}
               onChange={(e) => onSelectDrive(Number(e.target.value))}
             >
@@ -48,6 +50,7 @@ export function RuleEditor({
             <span className="font-mono text-[10px] text-dim">Root</span>
             <Input
               aria-label="Root"
+              disabled={disabled}
               className="font-mono text-[11px]"
               value={rule.root}
               onChange={(e) => onChange({ ...rule, root: e.target.value })}
@@ -58,6 +61,7 @@ export function RuleEditor({
             <span className="font-mono text-[10px] text-dim">Folder template</span>
             <Input
               aria-label="Folder template"
+              disabled={disabled}
               className="font-mono text-[11px]"
               value={rule.folder_tpl}
               onChange={(e) => onChange({ ...rule, folder_tpl: e.target.value })}
@@ -68,6 +72,7 @@ export function RuleEditor({
             <span className="font-mono text-[10px] text-dim">File template</span>
             <Input
               aria-label="File template"
+              disabled={disabled}
               className="font-mono text-[11px]"
               value={rule.file_tpl}
               onChange={(e) => onChange({ ...rule, file_tpl: e.target.value })}
@@ -79,6 +84,7 @@ export function RuleEditor({
               <Button
                 variant="outline"
                 size="xs"
+                disabled={disabled}
                 className="self-start font-mono text-[10px] tracking-[1px]"
               >
                 PRESETS
@@ -102,6 +108,7 @@ export function RuleEditor({
               <span className="text-[11px] text-dim">Shared name, same folder</span>
             </div>
             <Switch
+              disabled={disabled}
               checked={rule.keep_pairs}
               onCheckedChange={(checked) => onChange({ ...rule, keep_pairs: checked })}
             />
@@ -112,7 +119,7 @@ export function RuleEditor({
           <Button
             size="sm"
             onClick={onSave}
-            disabled={saving}
+            disabled={disabled || saving}
             className="self-start font-mono text-[10.5px] tracking-[1.5px]"
           >
             SAVE

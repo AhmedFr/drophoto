@@ -6,4 +6,6 @@ export type DoneOverlayProps = {
   fileTpl: string;
   /** Destination folders the run filed photos into; only the first three are shown. */
   folders: string[];
+  /** Shown next to "Filed into…" while `folders` is still the pre-run plan, not the confirmed result. */
+  foldersHint?: string | null;
 };

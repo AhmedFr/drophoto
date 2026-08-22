@@ -76,7 +76,7 @@ it("starts the next drive's job only after the current one finishes", async () =
   expect(result.current.totals).toEqual({ moved: 7, skipped: 1, failed: 1 });
 });
 
-it("marks done without incrementing totals when the job is cancelled", async () => {
+it("marks done and cancelled without incrementing totals when the job is cancelled", async () => {
   mockIPC((cmd) => (cmd === "start_organize" ? "job-1" : undefined));
   const { emit } = await mockListen();
 
@@ -86,7 +86,66 @@ it("marks done without incrementing totals when the job is cancelled", async () 
 
   emit({ kind: "cancelled", job_id: "job-1" });
   await waitFor(() => expect(result.current.done).toBe(true));
+  expect(result.current.cancelled).toBe(true);
   expect(result.current.totals).toEqual({ moved: 0, skipped: 0, failed: 0 });
+});
+
+it("does not mark a normally-completed run as cancelled", async () => {
+  mockIPC((cmd) => (cmd === "start_organize" ? "job-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  emit({ kind: "finished", job_id: "job-1", ok: 1, failed: 0, skipped: 0 });
+  await waitFor(() => expect(result.current.done).toBe(true));
+  expect(result.current.cancelled).toBe(false);
+});
+
+it("CANCEL during a multi-drive run stops the whole queue: the next drive is never started", async () => {
+  const startOrganizeSpy = vi.fn().mockReturnValue("job-1");
+  const cancelJobSpy = vi.fn();
+  mockIPC((cmd) => {
+    if (cmd === "start_organize") return startOrganizeSpy();
+    if (cmd === "cancel_job") return cancelJobSpy();
+    return undefined;
+  });
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1, 2]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  act(() => result.current.cancel());
+  await waitFor(() => expect(cancelJobSpy).toHaveBeenCalled());
+
+  // The runner reports `cancelled` for job-1 only after `cancel()` was called.
+  emit({ kind: "cancelled", job_id: "job-1" });
+
+  await waitFor(() => expect(result.current.done).toBe(true));
+  expect(result.current.cancelled).toBe(true);
+  expect(result.current.running).toBe(false);
+  expect(startOrganizeSpy).toHaveBeenCalledTimes(1);
+});
+
+it("CANCEL stops the queue even if the in-flight job reports finished right after", async () => {
+  const startOrganizeSpy = vi.fn().mockReturnValue("job-1");
+  mockIPC((cmd) => (cmd === "start_organize" ? startOrganizeSpy() : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1, 2]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  act(() => result.current.cancel());
+  // Race: the in-flight job happens to finish (not cancel) right after `cancel()`.
+  emit({ kind: "finished", job_id: "job-1", ok: 3, failed: 0, skipped: 0 });
+
+  await waitFor(() => expect(result.current.done).toBe(true));
+  expect(result.current.cancelled).toBe(true);
+  expect(startOrganizeSpy).toHaveBeenCalledTimes(1);
+  expect(result.current.totals).toEqual({ moved: 3, skipped: 0, failed: 0 });
 });
 
 it("invalidates the plan query once every drive is done", async () => {

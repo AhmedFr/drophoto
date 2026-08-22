@@ -11,6 +11,8 @@ export type UseRuleResult = {
   onChange: (rule: OrganizeRule) => void;
   onSave: () => void;
   saving: boolean;
+  /** True when `rule` has unsaved edits relative to the last loaded/saved rule. */
+  isDirty: boolean;
   /** The message from a failed `save_rule` (an `ApiError`), if any. */
   error: string | null;
 };

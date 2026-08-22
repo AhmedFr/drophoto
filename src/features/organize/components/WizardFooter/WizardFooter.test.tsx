@@ -86,3 +86,18 @@ it("shows an inline error message when present", async () => {
   renderFooter({ step: 1, error: "a scan job is already running" });
   expect(await screen.findByText("a scan job is already running")).toBeInTheDocument();
 });
+
+it("shows a hint when present and there's no error", async () => {
+  renderFooter({ step: 1, hint: "Save the rule to apply your changes" });
+  expect(await screen.findByText("Save the rule to apply your changes")).toBeInTheDocument();
+});
+
+it("prefers the error over the hint when both are present", async () => {
+  renderFooter({
+    step: 1,
+    error: "a scan job is already running",
+    hint: "Save the rule to apply your changes",
+  });
+  expect(await screen.findByText("a scan job is already running")).toBeInTheDocument();
+  expect(screen.queryByText("Save the rule to apply your changes")).not.toBeInTheDocument();
+});
