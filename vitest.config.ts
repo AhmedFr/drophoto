@@ -1,13 +1,6 @@
 import { defineConfig, mergeConfig } from "vitest/config";
 import viteConfig from "./vite.config";
 
-// Node 22+'s built-in global `localStorage` (stable behind
-// --experimental-webstorage in earlier releases) shadows jsdom's
-// window.localStorage in test workers, leaving a non-functional stub.
-// Disabling it before workers spawn lets jsdom's own implementation back
-// a real localStorage for persisted stores.
-process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --no-experimental-webstorage`.trim();
-
 export default mergeConfig(
   viteConfig,
   defineConfig({

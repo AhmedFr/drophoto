@@ -34,6 +34,17 @@ describe("useGalleryStore", () => {
     useGalleryStore.getState().setDensity("Dense");
     expect(useGalleryStore.getState().density).toBe("Dense");
   });
+
+  it("persists state changes to localStorage under the drophoto.gallery key", () => {
+    useGalleryStore.getState().setTypeFilter("HEIF");
+    useGalleryStore.getState().setSort("ADDED");
+    useGalleryStore.getState().setDensity("Compact");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    const persisted = JSON.parse(raw as string);
+    expect(persisted.state).toEqual({ typeFilter: "HEIF", sort: "ADDED", density: "Compact" });
+  });
 });
 
 describe("buildQuery", () => {
