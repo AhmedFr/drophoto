@@ -55,3 +55,21 @@ it("does not render ScanProgress when there is no scanEvent", () => {
   render(<DriveCard drive={baseDrive} />);
   expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
 });
+
+it("disables the Scan button while a scan is in progress", () => {
+  const scanEvent: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  render(<DriveCard drive={baseDrive} onScan={vi.fn()} scanEvent={scanEvent} onCancelScan={vi.fn()} />);
+  expect(screen.getByRole("button", { name: /scan/i })).toBeDisabled();
+});
+
+it("re-enables the Scan button once the scan has finished", () => {
+  const scanEvent: JobEvent = { kind: "finished", job_id: "scan-0", ok: 10, failed: 0, skipped: 0 };
+  render(<DriveCard drive={baseDrive} onScan={vi.fn()} scanEvent={scanEvent} onCancelScan={vi.fn()} />);
+  expect(screen.getByRole("button", { name: /scan/i })).not.toBeDisabled();
+});
+
+it("re-enables the Scan button once the scan has been cancelled", () => {
+  const scanEvent: JobEvent = { kind: "cancelled", job_id: "scan-0" };
+  render(<DriveCard drive={baseDrive} onScan={vi.fn()} scanEvent={scanEvent} onCancelScan={vi.fn()} />);
+  expect(screen.getByRole("button", { name: /scan/i })).not.toBeDisabled();
+});

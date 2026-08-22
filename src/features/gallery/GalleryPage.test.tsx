@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
+import { renderWithRouter } from "@/test/renderWithRouter";
 import { GalleryPage } from "./GalleryPage";
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => {
@@ -11,8 +12,8 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => {
 });
 
 function renderPage() {
-  const queryClient = new QueryClient();
-  render(
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderWithRouter(
     <QueryClientProvider client={queryClient}>
       <GalleryPage />
     </QueryClientProvider>,
@@ -56,7 +57,7 @@ it("renders the Gallery header", async () => {
     return undefined;
   });
   renderPage();
-  expect(screen.getByRole("heading")).toHaveTextContent("GALLERY");
+  expect(await screen.findByRole("heading")).toHaveTextContent("GALLERY");
   await screen.findByText("0 items");
 });
 
@@ -87,4 +88,12 @@ it("renders the grid when items exist", async () => {
   renderPage();
   expect(await screen.findAllByRole("img")).toHaveLength(3);
   expect(screen.queryByText(/No media yet/i)).not.toBeInTheDocument();
+});
+
+it("shows an error message when the media query fails", async () => {
+  mockIPC(() => {
+    throw { code: "db", message: "boom" };
+  });
+  renderPage();
+  expect(await screen.findByText("boom")).toBeInTheDocument();
 });
