@@ -51,6 +51,9 @@ export function useDashboard(): UseDashboardResult {
   const summaries = summariesQuery.data ?? [];
   const unorganizedCount = summaries.reduce((sum, s) => sum + s.count, 0);
 
+  const firstError =
+    drivesQuery.error ?? jobsQuery.error ?? summariesQuery.error ?? photosQuery.error ?? videosQuery.error ?? null;
+
   return {
     drives: drivesQuery.data ?? [],
     jobs: jobsQuery.data ?? [],
@@ -63,5 +66,6 @@ export function useDashboard(): UseDashboardResult {
     isError:
       drivesQuery.isError || jobsQuery.isError || summariesQuery.isError ||
       photosQuery.isError || videosQuery.isError,
+    error: firstError as Error | null,
   };
 }

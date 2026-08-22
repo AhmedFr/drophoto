@@ -160,3 +160,18 @@ it("invalidates drives when a drives:changed event arrives", async () => {
 
   await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["drives"] }));
 });
+
+it("surfaces the first query error via isError/error", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_jobs") throw new Error("boom");
+    if (cmd === "list_unorganized_summaries") return [summary];
+    if (cmd === "count_media") return 0;
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useDashboard(), { wrapper });
+
+  await waitFor(() => expect(result.current.isError).toBe(true));
+  expect(result.current.error?.message).toBe("boom");
+});

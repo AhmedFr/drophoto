@@ -4,7 +4,10 @@ const DAY = HOUR * 24;
 
 /** Formats `iso` as a short relative time (e.g. "2 min ago") relative to `now`. */
 export function formatRelative(iso: string, now: number = Date.now()): string {
-  const diffSeconds = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 1000));
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+
+  const diffSeconds = Math.max(0, Math.floor((now - then) / 1000));
 
   if (diffSeconds < MINUTE) return "just now";
 

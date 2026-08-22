@@ -5,7 +5,7 @@ import { DriveCapacity } from "./components/DriveCapacity";
 import { useDashboard } from "./hooks/useDashboard";
 
 export function DashboardPage() {
-  const { drives, jobs, photoCount, videoCount, unorganizedCount } = useDashboard();
+  const { drives, jobs, photoCount, videoCount, unorganizedCount, isError, error } = useDashboard();
   const drivesOnline = drives.filter((d) => d.online).length;
 
   return (
@@ -16,6 +16,9 @@ export function DashboardPage() {
         </span>
       </PageHeader>
       <div className="flex-1 overflow-y-auto">
+        {isError && (
+          <p className="px-5 pt-5 font-mono text-[11px] text-red-400">{error?.message}</p>
+        )}
         <StatTiles
           photos={photoCount}
           videos={videoCount}

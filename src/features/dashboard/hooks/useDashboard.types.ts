@@ -9,4 +9,6 @@ export type UseDashboardResult = {
   unorganizedCount: number;
   isLoading: boolean;
   isError: boolean;
+  /** The first query error encountered, if any (for surfacing a message). */
+  error: Error | null;
 };

@@ -101,3 +101,17 @@ it("shows the empty organize jobs state when there are no jobs", async () => {
   expect(await screen.findByText(/No organize jobs yet\./)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Organize now" })).toHaveAttribute("href", "/organize");
 });
+
+it("shows an error banner when a query fails", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_jobs") throw new Error("Failed to load jobs");
+    if (cmd === "list_unorganized_summaries") return [summary];
+    if (cmd === "count_media") return 0;
+    return undefined;
+  });
+
+  renderPage();
+
+  expect(await screen.findByText("Failed to load jobs")).toBeInTheDocument();
+});

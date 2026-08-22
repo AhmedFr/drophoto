@@ -13,7 +13,7 @@ export function DriveCapacity({ drives }: DriveCapacityProps) {
       ) : (
         <ul className="flex flex-col">
           {drives.map((drive) => {
-            const used = drive.capacity - drive.free;
+            const used = Math.min(Math.max(drive.capacity - drive.free, 0), drive.capacity);
             const pct = drive.capacity > 0 ? (used / drive.capacity) * 100 : 0;
             return (
               <li key={drive.id} className="flex flex-col gap-2 border-b border-border px-6 py-3.5">

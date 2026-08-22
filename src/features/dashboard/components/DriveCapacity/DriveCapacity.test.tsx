@@ -37,3 +37,22 @@ it("shows an empty state when there are no drives", () => {
   render(<DriveCapacity drives={[]} />);
   expect(screen.getByText("No drives registered.")).toBeInTheDocument();
 });
+
+it("clamps used to capacity when free is negative", () => {
+  const negativeFreeDrive: Drive = { ...onlineDrive, free: -100 };
+  render(<DriveCapacity drives={[negativeFreeDrive]} />);
+  expect(screen.getByText("1.9 GB of 1.9 GB")).toBeInTheDocument();
+});
+
+it("clamps used to 0 when free exceeds capacity", () => {
+  const overFreeDrive: Drive = { ...onlineDrive, free: 3_000_000_000 };
+  render(<DriveCapacity drives={[overFreeDrive]} />);
+  expect(screen.getByText("0 B of 1.9 GB")).toBeInTheDocument();
+});
+
+it("shows 0 B used of 0 B when capacity is 0", () => {
+  const zeroCapacityDrive: Drive = { ...onlineDrive, capacity: 0, free: 0 };
+  render(<DriveCapacity drives={[zeroCapacityDrive]} />);
+  expect(screen.getByText("0 B of 0 B")).toBeInTheDocument();
+  expect(screen.getByRole("progressbar", { name: "Kodachrome capacity" })).toBeInTheDocument();
+});

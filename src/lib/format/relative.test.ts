@@ -27,4 +27,9 @@ describe("formatRelative", () => {
   it("defaults now to Date.now() when not given", () => {
     expect(formatRelative(new Date().toISOString())).toBe("just now");
   });
+
+  it("returns an em dash for an invalid date", () => {
+    expect(formatRelative("not-a-date", now)).toBe("—");
+    expect(formatRelative("", now)).toBe("—");
+  });
 });
