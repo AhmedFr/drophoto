@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { Volume } from "@/lib/api/volumes";
 import { RegisterDriveDialog } from "./RegisterDriveDialog";
 
@@ -69,4 +69,21 @@ it("calls onClose when the dialog is dismissed", () => {
   render(<RegisterDriveDialog volume={volume} onClose={onClose} onSubmit={vi.fn()} />);
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
   expect(onClose).toHaveBeenCalled();
+});
+
+it("renders the error message inside the dialog when given one", () => {
+  render(
+    <RegisterDriveDialog
+      volume={volume}
+      error="name already taken"
+      onClose={vi.fn()}
+      onSubmit={vi.fn()}
+    />,
+  );
+  expect(within(screen.getByRole("dialog")).getByText("name already taken")).toBeInTheDocument();
+});
+
+it("renders no error text when error is not given", () => {
+  render(<RegisterDriveDialog volume={volume} onClose={vi.fn()} onSubmit={vi.fn()} />);
+  expect(within(screen.getByRole("dialog")).queryByText(/taken/)).not.toBeInTheDocument();
 });

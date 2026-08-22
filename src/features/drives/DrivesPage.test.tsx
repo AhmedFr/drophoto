@@ -65,8 +65,11 @@ it("renders registered drives and hides their volume from the mounted list", asy
   renderPage();
 
   expect(await screen.findByText("ONLINE")).toBeInTheDocument();
-  expect(await screen.findByText("Extra")).toBeInTheDocument();
   expect(screen.queryByText("No drives registered")).not.toBeInTheDocument();
+
+  const mountedList = (await screen.findByText("MOUNTED VOLUMES")).nextElementSibling as HTMLElement;
+  expect(await within(mountedList).findByText("Extra")).toBeInTheDocument();
+  expect(within(mountedList).queryByText("/Volumes/Kodachrome")).not.toBeInTheDocument();
 });
 
 it("shows the mutation error message when registration fails", async () => {
@@ -92,7 +95,40 @@ it("shows the mutation error message when registration fails", async () => {
   const dialog = await screen.findByRole("dialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Register" }));
 
-  expect(await screen.findByText("name already taken")).toBeInTheDocument();
+  expect(await within(dialog).findByText("name already taken")).toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+it("clears the mutation error when the dialog is closed and reopened", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_volumes") {
+      return [
+        {
+          name: "Kodachrome",
+          mount_path: "/Volumes/Kodachrome",
+          total_bytes: 2_000_000_000,
+          free_bytes: 1_500_000_000,
+          is_removable: true,
+        },
+      ];
+    }
+    if (cmd === "list_drives") return [];
+    if (cmd === "register_drive") throw { code: "db", message: "name already taken" };
+    return undefined;
+  });
+  renderPage();
+
+  fireEvent.click(await screen.findByRole("button", { name: /register/i }));
+  let dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Register" }));
+  expect(await within(dialog).findByText("name already taken")).toBeInTheDocument();
+
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+  fireEvent.click(await screen.findByRole("button", { name: /register/i }));
+  dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByText("name already taken")).not.toBeInTheDocument();
 });
 
 it("registers a volume from the dialog with the expected input", async () => {

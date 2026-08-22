@@ -22,6 +22,11 @@ export function DrivesPage() {
     },
   });
 
+  const handleDialogClose = () => {
+    setPending(null);
+    mutation.reset();
+  };
+
   const registeredMountPaths = new Set(
     (drives.data ?? []).map((d) => d.mount_path).filter((p): p is string => p != null),
   );
@@ -56,16 +61,11 @@ export function DrivesPage() {
           <p className="px-5 font-mono text-[11px] text-red-400">{(volumes.error as Error).message}</p>
         )}
         <VolumeList volumes={unregisteredVolumes} onRegister={setPending} />
-
-        {mutation.isError && (
-          <p className="px-5 py-3 font-mono text-[11px] text-red-400">
-            {(mutation.error as Error).message}
-          </p>
-        )}
       </div>
       <RegisterDriveDialog
         volume={pending}
-        onClose={() => setPending(null)}
+        error={mutation.isError ? (mutation.error as Error).message : null}
+        onClose={handleDialogClose}
         onSubmit={(input) => mutation.mutate(input)}
       />
     </div>

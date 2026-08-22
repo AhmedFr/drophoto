@@ -19,10 +19,11 @@ function basename(path: string): string {
 
 type FormProps = {
   volume: Volume;
+  error?: string | null;
   onSubmit: (input: RegisterDriveInput) => void;
 };
 
-function RegisterDriveForm({ volume, onSubmit }: FormProps) {
+function RegisterDriveForm({ volume, error, onSubmit }: FormProps) {
   const [name, setName] = useState(() => volume.name || basename(volume.mount_path));
   const [role, setRole] = useState<DriveRole>("archive");
 
@@ -56,6 +57,7 @@ function RegisterDriveForm({ volume, onSubmit }: FormProps) {
           SOURCE
         </Button>
       </div>
+      {error && <p className="font-mono text-[11px] text-red-400">{error}</p>}
       <DialogFooter>
         <Button type="submit">Register</Button>
       </DialogFooter>
@@ -63,7 +65,7 @@ function RegisterDriveForm({ volume, onSubmit }: FormProps) {
   );
 }
 
-export function RegisterDriveDialog({ volume, onClose, onSubmit }: RegisterDriveDialogProps) {
+export function RegisterDriveDialog({ volume, error, onClose, onSubmit }: RegisterDriveDialogProps) {
   return (
     <Dialog open={volume != null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent>
@@ -71,7 +73,7 @@ export function RegisterDriveDialog({ volume, onClose, onSubmit }: RegisterDrive
           <DialogTitle>Register Drive</DialogTitle>
         </DialogHeader>
         {volume && (
-          <RegisterDriveForm key={volume.mount_path} volume={volume} onSubmit={onSubmit} />
+          <RegisterDriveForm key={volume.mount_path} volume={volume} error={error} onSubmit={onSubmit} />
         )}
       </DialogContent>
     </Dialog>

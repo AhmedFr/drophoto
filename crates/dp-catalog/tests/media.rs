@@ -1,7 +1,12 @@
+use chrono::{DateTime, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia};
 
 fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
+    nm_taken(drive_id, rel_path, hash, None)
+}
+
+fn nm_taken(drive_id: i64, rel_path: &str, hash: &str, taken_at: Option<DateTime<Utc>>) -> NewMedia {
     NewMedia {
         drive_id,
         rel_path: rel_path.into(),
@@ -12,7 +17,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         width: Some(100),
         height: Some(200),
         duration_ms: None,
-        taken_at: None,
+        taken_at,
         camera: None,
         lens: None,
         aperture: None,
@@ -67,6 +72,31 @@ async fn count_media_scoped_to_drive() {
     assert_eq!(c.count_media(Some(drive_id)).await.unwrap(), 2);
     assert_eq!(c.count_media(Some(999)).await.unwrap(), 0);
     assert_eq!(c.count_media(None).await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn list_media_orders_by_taken_at_desc_with_nulls_last() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let older: DateTime<Utc> = "2020-01-01T00:00:00Z".parse().unwrap();
+    let newer: DateTime<Utc> = "2024-06-15T12:00:00Z".parse().unwrap();
+
+    c.upsert_media(nm_taken(drive_id, "no-date.jpg", "h-none", None))
+        .await
+        .unwrap();
+    c.upsert_media(nm_taken(drive_id, "old.jpg", "h-old", Some(older)))
+        .await
+        .unwrap();
+    c.upsert_media(nm_taken(drive_id, "new.jpg", "h-new", Some(newer)))
+        .await
+        .unwrap();
+
+    let rows = c.list_media(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].rel_path, "new.jpg");
+    assert_eq!(rows[1].rel_path, "old.jpg");
+    assert_eq!(rows[2].rel_path, "no-date.jpg");
+    assert!(rows[2].taken_at.is_none());
 }
 
 #[tokio::test]
