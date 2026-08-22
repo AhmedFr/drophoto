@@ -1001,7 +1001,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
- "tracing",
  "walkdir",
  "which",
 ]

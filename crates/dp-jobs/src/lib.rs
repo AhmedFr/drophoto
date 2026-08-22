@@ -44,11 +44,19 @@ pub enum JobEvent {
 }
 
 /// Per-file (or per-item) outcome counters returned by [`Job::run`].
+///
+/// `cancelled` should be set `true` by a `Job` implementation that stopped
+/// early because [`JobCtx::cancel`] was triggered, so the runner can
+/// distinguish "finished, cancellation arrived too late to matter" from
+/// "actually stopped early due to cancellation" without relying on the
+/// token's state *after* `run` has already returned (which races against a
+/// cancel request arriving right as the job finishes on its own).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JobOutcome {
     pub ok: u64,
     pub failed: u64,
     pub skipped: u64,
+    pub cancelled: bool,
 }
 
 /// Shared context handed to a [`Job`] when it runs: where to send events,

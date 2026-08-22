@@ -13,10 +13,6 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
 
-/// Directory names skipped during a scan even though they don't start
-/// with a dot (macOS/APFS housekeeping directories).
-const SKIP_DIR_NAMES: &[&str] = &[".Trashes", ".Spotlight-V100", ".fseventsd"];
-
 /// Number of files hashed/thumbnailed/read concurrently during a scan.
 const SCAN_CONCURRENCY: usize = 4;
 
@@ -80,6 +76,7 @@ impl Job for ScanJob {
             ok: ok.load(Ordering::SeqCst),
             failed: failed.load(Ordering::SeqCst),
             skipped: 0,
+            cancelled: ctx.cancel.is_cancelled(),
         })
     }
 }
@@ -92,9 +89,11 @@ struct ScannedFile {
     kind: MediaKind,
 }
 
-fn is_hidden_or_skipped(entry: &DirEntry) -> bool {
-    let name = entry.file_name().to_string_lossy();
-    name.starts_with('.') || SKIP_DIR_NAMES.contains(&name.as_ref())
+/// Whether `entry`'s name starts with `.`. This covers ordinary dotfiles
+/// as well as macOS/APFS housekeeping directories such as `.Trashes`,
+/// `.Spotlight-V100`, and `.fseventsd`, all of which are dot-prefixed.
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry.file_name().to_string_lossy().starts_with('.')
 }
 
 /// Walks `root`, skipping hidden entries and known housekeeping
@@ -103,7 +102,7 @@ fn is_hidden_or_skipped(entry: &DirEntry) -> bool {
 fn collect_media_files(root: &Path) -> Vec<ScannedFile> {
     WalkDir::new(root)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden_or_skipped(e))
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(e))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter_map(|e| {

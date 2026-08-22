@@ -1,11 +1,21 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{error_code, Job, JobCtx, JobEvent};
+
+/// Locks `tokens`, recovering from mutex poisoning instead of unwrapping.
+/// The critical sections guarded by this lock are trivial `HashMap`
+/// insert/remove/get calls, so a panic mid-section can't leave the map in
+/// a state worth propagating a poisoned-lock panic for.
+fn lock_tokens(
+    tokens: &Mutex<HashMap<String, CancellationToken>>,
+) -> MutexGuard<'_, HashMap<String, CancellationToken>> {
+    tokens.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Spawns [`Job`]s as tokio tasks, tracking a [`CancellationToken`] per
 /// running job so callers can request cancellation by id.
@@ -33,11 +43,18 @@ impl JobRunner {
     }
 
     /// Spawns `job` under `id`, emitting `Started` immediately and then
-    /// `Finished` (or `Cancelled`, if [`JobRunner::cancel`] was called for
-    /// this id) once it completes.
+    /// `Finished` or `Cancelled` once it completes.
+    ///
+    /// The terminal event is decided from the job's own [`JobOutcome`]
+    /// where possible (`outcome.cancelled`), rather than re-checking the
+    /// cancellation token after the fact: checking the token post-hoc would
+    /// race against a cancel request arriving just after the job finished
+    /// normally, discarding real counts in favor of a spurious `Cancelled`.
+    /// The token is only consulted directly in the `Err` path, where there
+    /// is no `JobOutcome` to carry the flag.
     pub fn spawn(&self, id: String, job: Arc<dyn Job>) {
         let token = CancellationToken::new();
-        self.tokens.lock().unwrap().insert(id.clone(), token.clone());
+        lock_tokens(&self.tokens).insert(id.clone(), token.clone());
 
         let events = self.events.clone();
         let tokens = self.tokens.clone();
@@ -51,25 +68,17 @@ impl JobRunner {
             };
             let result = job.run(ctx).await;
 
-            let cancelled = token.is_cancelled();
-            tokens.lock().unwrap().remove(&id);
+            lock_tokens(&tokens).remove(&id);
 
-            if cancelled {
-                let _ = events.send(JobEvent::Cancelled { job_id: id.clone() }).await;
-                return;
-            }
-
-            match result {
-                Ok(outcome) => {
-                    let _ = events
-                        .send(JobEvent::Finished {
-                            job_id: id.clone(),
-                            ok: outcome.ok,
-                            failed: outcome.failed,
-                            skipped: outcome.skipped,
-                        })
-                        .await;
-                }
+            let final_event = match result {
+                Ok(outcome) if outcome.cancelled => JobEvent::Cancelled { job_id: id.clone() },
+                Ok(outcome) => JobEvent::Finished {
+                    job_id: id.clone(),
+                    ok: outcome.ok,
+                    failed: outcome.failed,
+                    skipped: outcome.skipped,
+                },
+                Err(_) if token.is_cancelled() => JobEvent::Cancelled { job_id: id.clone() },
                 Err(e) => {
                     let _ = events
                         .send(JobEvent::ItemError {
@@ -79,23 +88,23 @@ impl JobRunner {
                             message: e.to_string(),
                         })
                         .await;
-                    let _ = events
-                        .send(JobEvent::Finished {
-                            job_id: id.clone(),
-                            ok: 0,
-                            failed: 1,
-                            skipped: 0,
-                        })
-                        .await;
+                    JobEvent::Finished {
+                        job_id: id.clone(),
+                        ok: 0,
+                        failed: 1,
+                        skipped: 0,
+                    }
                 }
-            }
+            };
+
+            let _ = events.send(final_event).await;
         });
     }
 
     /// Requests cancellation of the job running under `job_id`. A no-op if
     /// no such job is currently running.
     pub fn cancel(&self, job_id: &str) {
-        if let Some(token) = self.tokens.lock().unwrap().get(job_id) {
+        if let Some(token) = lock_tokens(&self.tokens).get(job_id) {
             token.cancel();
         }
     }
