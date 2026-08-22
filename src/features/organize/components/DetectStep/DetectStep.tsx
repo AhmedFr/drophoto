@@ -1,0 +1,54 @@
+import { SourceRow } from "../SourceRow";
+import type { DetectStepProps } from "./DetectStep.types";
+
+export function DetectStep({
+  summaries,
+  selected,
+  onToggle,
+  onScan,
+  organizedCount,
+  scanningDriveId,
+}: DetectStepProps) {
+  const selectedSummaries = summaries.filter((s) => selected.includes(s.drive_id));
+  const newPhotosFound = selectedSummaries.reduce((sum, s) => sum + s.count, 0);
+
+  return (
+    <div className="flex flex-col">
+      <div className="grid grid-cols-3 border-b border-border">
+        <div className="flex flex-col gap-1.5 border-r border-border px-6 py-5">
+          <span className="font-mono text-[32px] leading-none">{newPhotosFound}</span>
+          <span className="font-mono text-[9px] tracking-[1.5px] text-faint">NEW PHOTOS FOUND</span>
+        </div>
+        <div className="flex flex-col gap-1.5 border-r border-border px-6 py-5">
+          <span className="font-mono text-[32px] leading-none">{selectedSummaries.length}</span>
+          <span className="font-mono text-[9px] tracking-[1.5px] text-faint">DRIVES</span>
+        </div>
+        <div className="flex items-center px-6 py-5 text-[13px] text-muted-foreground">
+          Not yet organized. <em className="not-italic text-foreground">{organizedCount} already organized</em>{" "}
+          photos are skipped.
+        </div>
+      </div>
+
+      <div className="px-6 pt-5 pb-2 font-mono text-[9px] tracking-[2px] text-faint">
+        DRIVES — SELECT WHAT TO ORGANIZE
+      </div>
+
+      {summaries.length ? (
+        <ul className="flex flex-col gap-2 px-6 pb-6">
+          {summaries.map((s) => (
+            <SourceRow
+              key={s.drive_id}
+              summary={s}
+              selected={selected.includes(s.drive_id)}
+              onToggle={() => onToggle(s.drive_id)}
+              onScan={() => onScan(s.drive_id)}
+              scanning={scanningDriveId === s.drive_id}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="px-6 pb-6 font-mono text-[11px] text-faint">No drives online.</p>
+      )}
+    </div>
+  );
+}

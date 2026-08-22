@@ -45,23 +45,10 @@ it("submits with the typed name and default archive role", () => {
   });
 });
 
-it("submits with source role when toggled", () => {
-  const onSubmit = vi.fn();
-  render(<RegisterDriveDialog volume={volume} onClose={vi.fn()} onSubmit={onSubmit} />);
-  fireEvent.click(screen.getByRole("button", { name: "SOURCE" }));
-  fireEvent.click(screen.getByRole("button", { name: /register/i }));
-  expect(onSubmit).toHaveBeenCalledWith(
-    expect.objectContaining({ role: "source" }),
-  );
-});
-
-it("toggling back to archive after source keeps archive role on submit", () => {
-  const onSubmit = vi.fn();
-  render(<RegisterDriveDialog volume={volume} onClose={vi.fn()} onSubmit={onSubmit} />);
-  fireEvent.click(screen.getByRole("button", { name: "SOURCE" }));
-  fireEvent.click(screen.getByRole("button", { name: "ARCHIVE" }));
-  fireEvent.click(screen.getByRole("button", { name: /register/i }));
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ role: "archive" }));
+it("renders no role toggle", () => {
+  render(<RegisterDriveDialog volume={volume} onClose={vi.fn()} onSubmit={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "SOURCE" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "ARCHIVE" })).not.toBeInTheDocument();
 });
 
 it("calls onClose when the dialog is dismissed", () => {
