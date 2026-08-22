@@ -1,0 +1,20 @@
+[package]
+name = "dp-organize"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+dp-core = { path = "../dp-core" }
+dp-hash = { path = "../dp-hash" }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+handlebars = "6"
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
+dp-organize = { path = ".", features = ["test-util"] }
+
+[features]
+test-util = []
