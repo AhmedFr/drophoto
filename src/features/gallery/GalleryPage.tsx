@@ -1,21 +1,21 @@
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
-import { queryMedia } from "@/lib/api/media";
+import { Button } from "@/components/ui/button";
 import { ThumbGrid } from "./components/ThumbGrid";
+import { useMediaCount } from "./hooks/useMediaCount";
+import { useMediaInfinite } from "./hooks/useMediaInfinite";
 
 export function GalleryPage() {
-  const media = useQuery({
-    queryKey: ["media", 0],
-    queryFn: () => queryMedia({ kinds: [], exts: [], sort: "taken_desc", limit: 500, offset: 0 }),
-  });
-  const items = media.data ?? [];
+  const media = useMediaInfinite();
+  const count = useMediaCount();
+  const items = media.items;
+  const headerCount = count ?? items.length;
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Gallery">
-        <span className="font-mono text-[10px] text-faint">{items.length} items</span>
+        <span className="font-mono text-[10px] text-faint">{headerCount} items</span>
       </PageHeader>
       <div className="flex-1 overflow-y-auto">
         {media.isError && (
@@ -40,7 +40,23 @@ export function GalleryPage() {
             .
           </div>
         ) : (
-          <ThumbGrid items={items} />
+          <>
+            <ThumbGrid items={items} />
+            {media.hasNextPage && (
+              // Temporary "Load more" control until Task 2.4 wires up
+              // scroll-triggered pagination.
+              <div className="flex justify-center p-5">
+                <Button
+                  variant="outline"
+                  className="font-mono text-[10px]"
+                  onClick={() => media.fetchNextPage()}
+                  disabled={media.isFetchingNextPage}
+                >
+                  {media.isFetchingNextPage ? "Loading…" : "Load more"}
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

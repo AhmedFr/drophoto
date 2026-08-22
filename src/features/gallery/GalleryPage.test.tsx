@@ -1,14 +1,20 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
 import { renderWithRouter } from "@/test/renderWithRouter";
+import { useGalleryStore } from "./store/galleryStore";
 import { GalleryPage } from "./GalleryPage";
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tauri-apps/api/core")>();
   return { ...actual, convertFileSrc: (path: string) => `asset://mock/${path}` };
+});
+
+beforeEach(() => {
+  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable" });
+  useGalleryStore.persist.clearStorage();
 });
 
 function renderPage() {
@@ -55,6 +61,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
 it("renders the Gallery header", async () => {
   mockIPC((cmd) => {
     if (cmd === "query_media") return [];
+    if (cmd === "count_media") return 0;
     return undefined;
   });
   renderPage();
@@ -65,6 +72,7 @@ it("renders the Gallery header", async () => {
 it("shows the item count once media loads", async () => {
   mockIPC((cmd) => {
     if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
     return undefined;
   });
   renderPage();
@@ -74,6 +82,7 @@ it("shows the item count once media loads", async () => {
 it("shows an empty state with a link to /drives when there is no media", async () => {
   mockIPC((cmd) => {
     if (cmd === "query_media") return [];
+    if (cmd === "count_media") return 0;
     return undefined;
   });
   renderPage();
@@ -84,6 +93,7 @@ it("shows an empty state with a link to /drives when there is no media", async (
 it("renders the grid when items exist", async () => {
   mockIPC((cmd) => {
     if (cmd === "query_media") return [item(1), item(2), item(3)];
+    if (cmd === "count_media") return 3;
     return undefined;
   });
   renderPage();
@@ -97,4 +107,26 @@ it("shows an error message when the media query fails", async () => {
   });
   renderPage();
   expect(await screen.findByText("boom")).toBeInTheDocument();
+});
+
+it("loads the next page when Load more is clicked", async () => {
+  const firstPage = Array.from({ length: 500 }, (_, i) => item(i));
+  const secondPage = [item(500), item(501)];
+  const calls: unknown[] = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "query_media") {
+      calls.push(args);
+      return calls.length === 1 ? firstPage : secondPage;
+    }
+    if (cmd === "count_media") return 502;
+    return undefined;
+  });
+  renderPage();
+
+  const loadMore = await screen.findByRole("button", { name: /load more/i });
+  fireEvent.click(loadMore);
+
+  await screen.findByText("502 items");
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).toMatchObject({ query: { offset: 500 } });
 });
