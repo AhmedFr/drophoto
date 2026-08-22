@@ -8,7 +8,7 @@ Date: 2026-08-22 · Status: approved for planning
 
 Three pillars, in priority order:
 1. **Unified offline catalog** — every file on every registered drive is indexed once (hash, metadata, thumbnails). The whole library is browsable with zero drives attached; the app tells you which drive holds the original and prompts to plug it in for full-res/export.
-2. **Proper storage** — ingest from cards/drives into named archive drives with copy+verify, date-based organisation, optional mirror, duplicate detection across all drives.
+2. **Proper storage** — files are never copied or centralised: each drive is organised *in place* (renamed and filed into a date-based folder structure), duplicates detected across all drives. Later: move photos between drives while keeping the same structure and tags.
 3. **Navigation** — gallery by time, filters, tags, places (map), camera, full-text search; later faces.
 
 Design source: Claude Design project `e091e781-9f05-4811-8087-8d7c22805b23` (screens: Sidebar, dashboard, drive, gallery, organize, search, tags, settings). Visual language: flat dark UI, `#0a0a0a` bg / `#f4f4f2` fg, Outfit (UI) + JetBrains Mono (data), square corners, 1px borders.
@@ -19,7 +19,7 @@ Audience: single user, macOS only for v1. No signing/updater.
 
 1. **Use existing libraries for anything "sweaty"** (decoding, metadata, hashing, geocoding). Never write a decoder.
 2. **Plugin-style architecture**: every capability sits behind a trait/interface with a registry; implementations are hot-swappable without touching consumers.
-3. Ingest **never deletes or modifies the source**. Copy, verify, then record.
+3. Organising **never loses data**: same-volume moves are atomic renames; any copy is blake3-verified before the original is removed; every move is logged old→new. No copies are kept, no trash folder.
 4. Per-item failures never abort a job.
 5. Single-responsibility files; component folder convention (see §9).
 6. **Always shippable.** Every phase — and every plan task within it — ends with a runnable app that does something real end-to-end (vertical slices), never a pile of scaffolding waiting on a later phase. Phase 0 already ends with the app launching, showing the shell, and listing mounted volumes.
@@ -53,18 +53,18 @@ Each lives in its own crate under `crates/`, with implementations in separate cr
 | `Geocoder` | `reverse(lat, lon) -> Place` | `OfflineGeocoder` (`reverse_geocoder` crate) | online providers |
 | `VolumeProvider` | `list() -> Vec<Volume>`, `watch()` | `SysinfoVolumes` | |
 | `Catalog` | repository API over the DB | `SqliteCatalog` | |
-| `IngestStrategy` | plan + execute one copy item | `CopyVerifyStrategy` | `CloneStrategy` (APFS clonefile), `MoveStrategy` |
+| `MoveStrategy` | plan + execute one move item | `RenameStrategy` (same volume, atomic) with `CopyVerifyDeleteStrategy` fallback | `CloneStrategy` (APFS clonefile) |
 | `NamingTemplate` | render folder/file names from metadata | `HandlebarsTemplate` | |
 
 A `ThumbnailProvider` chain picks the first impl whose `supports(ext)` is true; ordering is config.
 
-Jobs (`scan`, `ingest`, `rehash`) implement a `Job` trait (`run(ctx, progress_tx)`, cancellable, resumable) and run on a `JobRunner`; progress is emitted as Tauri events `job:{id}:progress`.
+Jobs (`scan`, `organize`, `rehash`) implement a `Job` trait (`run(ctx, progress_tx)`, cancellable, resumable) and run on a `JobRunner`; progress is emitted as Tauri events `job:{id}:progress`.
 
 ### 4.2 Frontend — feature modules
 
 `src/features/<name>/` is a self-contained module exposing a `FeatureModule` object: `{ id, routes, sidebarEntry?, commands?, settingsPanel? }`. `src/app/registry.ts` assembles enabled modules into the router and sidebar. Features talk to Rust only through `src/lib/api/<capability>.ts` clients (typed wrappers over `invoke`), never raw `invoke` in components.
 
-v1 modules: `dashboard`, `drives`, `gallery`, `ingest` (the "organize" screen), `tags`, `search`, `places` (map via mapcn), `settings`.
+v1 modules: `dashboard`, `drives`, `gallery`, `organize`, `tags`, `search`, `places` (map via mapcn), `settings`.
 
 Shared: `src/components/ui/*` (shadcn, generated), `src/components/<Domain>/*` (app components), `src/lib/*` (api clients, formatters, hooks).
 
@@ -90,25 +90,27 @@ Thumbnails: WebP at `~/Library/Application Support/drophoto/thumbs/<hash>/{400,2
 ## 6. Data model (SQLite)
 
 ```
-drives        id, name, volume_uuid, mount_path, role(source|archive), capacity, free, last_seen_at
+drives        id, name, volume_uuid, mount_path, role (legacy, unused), capacity, free, last_seen_at
 media         id, drive_id, rel_path, hash, size, kind(photo|video), ext, width, height, duration_ms,
               taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, place_id, created_at, missing_at
 places        id, lat, lon, name, admin, country, source(geocoder|manual)
 tags          id, name            media_tags  media_id, tag_id
-ingest_jobs   id, source_path, dest_drive_id, mirror_drive_id, folder_tpl, file_tpl, status, started_at, finished_at
-ingest_items  id, job_id, src_path, dest_path, hash, status(planned|copied|verified|skipped_dup|failed), error
+organize_rules drive_id (PK), root, folder_tpl, file_tpl, keep_pairs
+organize_jobs  id, drive_id, status(running|done|cancelled|failed), planned, moved, skipped, failed, started_at, finished_at
+organize_items id, job_id, media_id, old_rel_path, new_rel_path, status(planned|moved|skipped_dup|skipped_collision|failed), error
+media          + organized_at
 scan_errors   id, drive_id, path, code, message, at
 settings      key, value(json)
 media_fts     FTS5(filename, tags, place, camera)   -- kept in sync by triggers
 ```
 
-## 7. Ingest workflow
+## 7. Organize workflow (in place)
 
-1. Choose source (volume or folder) + primary archive drive, optional mirror.
-2. Templates: folder `{{yyyy}}/{{yyyy}}-{{mm}}-{{dd}}`, file `{{yyyy}}{{mm}}{{dd}}_{{HH}}{{MM}}{{SS}}_{{orig}}`; date from `DateTimeOriginal` → `CreateDate` → file mtime.
-3. **Dry run** → plan of items; hash-duplicates already in catalog marked `skipped_dup` (toggle to re-copy). Name collisions get `_1`, `_2` suffix.
-4. Execute: copy → hash source and destination → compare → `verified` → insert `media` → thumbnail → mirror copy (same verify).
-5. Source untouched. Drive disappears → job pauses (`DriveMissing`), resumable.
+1. Pick one or more registered, online drives (Detect step). Counts come from the catalog: media rows with `organized_at IS NULL`. Drives never scanned offer "Scan now".
+2. Each drive has an organize rule (defaults): root `archive`, folder template `{{yyyy}}/Q{{q}}` (preset `{{yyyy}}/{{yyyy}}-{{mm}}-{{dd}}`), file template `{{yyyy}}-{{mm}}-{{dd}}_{{stem}}` (tags segment added in Phase 4), keep RAW+JPEG pairs (same stem → same new stem). Date from `taken_at` → file mtime.
+3. **Plan** (nothing moves): for every unorganized row compute `new_rel_path`; duplicates (hash already organized anywhere) → `skipped_dup`; name collisions → `_1`, `_2` suffix; preview grouped by destination folder.
+4. **Execute** (`OrganizeJob`): `create_dir_all` + `fs::rename` on the same volume; if the OS reports cross-device, copy → blake3 verify → delete. Update `media.rel_path`, set `organized_at`, log the item. Cancel leaves completed moves in place.
+5. Files the catalog doesn't know are never touched. Later phases: move between drives keeping structure + tags.
 
 ## 8. Screens → phases
 
@@ -117,7 +119,7 @@ media_fts     FTS5(filename, tags, place, camera)   -- kept in sync by triggers
 | 0 Scaffold | Tauri+React+Tailwind+shadcn, tokens, Sidebar, app shell, empty routes, registry, Storybook, CI |
 | 1 Drives & scan | Volume list, register/name drive, scan job, metadata + 400/2000px thumbs, progress, drive presence tracking. **Starts with a thumbnail spike on the user's real formats.** |
 | 2 Gallery & lightbox | Virtualized masonry by month, type chips, sort, density, lightbox + EXIF panel, ←/→/Esc, video badge. Works fully offline from thumbs; online/offline drive indicator; "insert drive" prompt for originals |
-| 3 Ingest | Organize screen: source/dest/template editor, dry-run table, execute, job log; Dashboard: recent jobs, drive capacity |
+| 3 Organize | Organize wizard: Detect (drives + unorganized counts) → Organize (rule editor, full plan preview, execute, done screen); job log; Dashboard: recent jobs, drive capacity, totals; SQLite pool 4 + busy_timeout |
 | 4 Tags, places, search | Bulk tag from selection, offline geocode + manual override, Places map (mapcn), FTS search screen |
 | 5 Settings & polish | Sidecar health check, cache location, templates defaults, rescan/rehash, missing-file detection |
 
