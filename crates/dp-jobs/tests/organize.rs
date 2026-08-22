@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -464,6 +465,198 @@ async fn a_new_rel_path_escaping_the_mount_is_failed_and_never_touched() {
 
     let item_rows = catalog.list_organize_items(job_row_id, 10).await.unwrap();
     assert_eq!(item_rows[0].status, PlanStatus::Failed);
+}
+
+/// CRITICAL regression test: `escapes_mount` is purely lexical, so a
+/// plain relative `new_rel_path` like `archive/2025/…` sails straight
+/// past it — even when `<mount>/archive` is a *directory symlink*
+/// pointing somewhere else entirely. Without a physical resolution
+/// check the job would happily move the user's photos off the drive and
+/// into whatever that symlink targets.
+#[tokio::test]
+async fn a_destination_behind_a_directory_symlink_is_failed_and_never_written() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+
+    // `<mount>/archive` → a directory completely outside the drive.
+    std::os::unix::fs::symlink(outside.path(), drive_dir.path().join("archive")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg")];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("organize");
+    let job = Arc::new(OrganizeJob::new(
+        job_id.clone(),
+        drive,
+        job_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 1, "events: {events:?}");
+
+    let saw_path_error = events.iter().any(
+        |e| matches!(e, JobEvent::ItemError { code, message, .. } if code == "path" && message == "destination resolves outside the drive"),
+    );
+    assert!(saw_path_error, "expected a \"path\" ItemError, got {events:?}");
+
+    // The source is untouched, and nothing at all was created outside.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
+        b"content-a"
+    );
+    let outside_entries: Vec<_> = std::fs::read_dir(outside.path()).unwrap().collect();
+    assert!(
+        outside_entries.is_empty(),
+        "nothing may be written outside the drive"
+    );
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert_eq!(a_row.rel_path, "a.jpg");
+    assert!(a_row.organized_at.is_none());
+
+    let item_rows = catalog.list_organize_items(job_row_id, 10).await.unwrap();
+    assert_eq!(item_rows[0].status, PlanStatus::Failed);
+}
+
+/// `old_rel_path` gets the same lexical treatment as `new_rel_path`: a
+/// plan whose *source* climbs out of the mount must never have the job
+/// read (let alone move) a file from outside the drive.
+#[tokio::test]
+async fn an_old_rel_path_escaping_the_mount_is_failed_and_never_touched() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let outside_file = drive_dir.path().parent().unwrap().join("dp-outside-source.jpg");
+    std::fs::write(&outside_file, b"not yours").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+
+    let outside_rel = format!("../{}", outside_file.file_name().unwrap().to_string_lossy());
+    let items = vec![planned(a_id, &outside_rel, "archive/2025/Q3/2025-09-12_a.jpg")];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("organize");
+    let job = Arc::new(OrganizeJob::new(
+        job_id.clone(),
+        drive,
+        job_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let failed = match terminal {
+        JobEvent::Finished { failed, .. } => failed,
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(failed, 1, "events: {events:?}");
+    assert_eq!(
+        std::fs::read(&outside_file).unwrap(),
+        b"not yours",
+        "a file outside the drive must never be read or moved"
+    );
+    std::fs::remove_file(&outside_file).unwrap();
+}
+
+/// A [`MoveStrategy`] that applies the first move for real and panics on
+/// every one after it — so the job's panic path can be observed with a
+/// non-zero tally already on the books.
+struct PanicAfterFirstStrategy {
+    inner: Arc<dyn dp_organize::MoveStrategy>,
+    seen: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl dp_organize::MoveStrategy for PanicAfterFirstStrategy {
+    async fn move_file(&self, from: &Path, to: &Path) -> DpResult<()> {
+        if self.seen.fetch_add(1, Ordering::SeqCst) == 0 {
+            return self.inner.move_file(from, to).await;
+        }
+        panic!("boom");
+    }
+}
+
+/// A panic partway through used to close the `organize_jobs` row out as
+/// `0/0/0`, silently disowning every photo that had already been moved.
+/// The row must report what actually happened.
+#[tokio::test]
+async fn a_panic_partway_through_still_reports_the_items_already_applied() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+    std::fs::write(drive_dir.path().join("b.jpg"), b"content-b").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    let b_id = catalog.upsert_media(nm(drive.id, "b.jpg", "h-b")).await.unwrap();
+
+    let items = vec![
+        planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg"),
+        planned(b_id, "b.jpg", "archive/2025/Q3/2025-09-12_b.jpg"),
+    ];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let job_deps = OrganizeDeps {
+        catalog: catalog.clone(),
+        strategy: Arc::new(PanicAfterFirstStrategy {
+            inner: default_strategy(Arc::new(Blake3Hasher)),
+            seen: AtomicU64::new(0),
+        }),
+    };
+    let job = OrganizeJob::new("organize-panic".into(), drive, job_row_id, items, job_deps);
+
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = JobCtx {
+        events: tx,
+        cancel: CancellationToken::new(),
+    };
+
+    let err = job.run(ctx).await.unwrap_err();
+    assert!(matches!(err, DpError::Io { .. }), "expected Io, got {err:?}");
+
+    let job_row = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == job_row_id)
+        .unwrap();
+    assert_eq!(job_row.status, "failed");
+    assert_eq!(job_row.moved, 1, "the first item really was moved");
+    assert!(job_row.finished_at.is_some());
+
+    // And that first move genuinely landed on disk.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg")).unwrap(),
+        b"content-a"
+    );
 }
 
 /// A [`Catalog`] wrapper that delegates every call to `inner` except

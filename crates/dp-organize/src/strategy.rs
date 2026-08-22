@@ -256,13 +256,65 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     checked_rename(from, to)
 }
 
+/// The prefix every staged copy's temp file name starts with, after the
+/// final file's own name: `<name>.drophoto-partial-<pid>-<nanos>`.
+const PARTIAL_SUFFIX: &str = ".drophoto-partial";
+
 /// The sibling temp path a copy is staged at before being verified and
-/// atomically renamed into place: `to` with `.drophoto-partial`
-/// appended to its file name.
+/// atomically renamed into place: `to`'s file name plus
+/// `.drophoto-partial-{pid}-{nanos}`.
+///
+/// The pid/nanos tail matters: a plain `.drophoto-partial` name meant a
+/// single interrupted copy (a crash, a yanked drive) left a file that
+/// `copy_to_temp`'s `create_new` would then refuse to overwrite —
+/// blocking every future retry of that exact photo, forever. A unique
+/// name per attempt can't collide with a corpse, and
+/// [`remove_stale_partials`] sweeps the corpses away besides.
 fn temp_path_for(to: &Path) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let mut name: OsString = to.file_name().map(OsString::from).unwrap_or_default();
-    name.push(".drophoto-partial");
+    name.push(format!("{PARTIAL_SUFFIX}-{}-{nanos}", std::process::id()));
     to.with_file_name(name)
+}
+
+/// Deletes any `<to's name>.drophoto-partial*` sibling left behind by a
+/// previous, interrupted attempt at this same destination. Purely
+/// best-effort and deliberately loud: a partial copy is dead weight
+/// (never verified, never renamed into place) but its removal is still
+/// worth a log line, since it means an earlier run died mid-copy.
+///
+/// Only ever matches names built by [`temp_path_for`] for *this exact*
+/// destination — a real photo named `x.jpg` is never a candidate, only
+/// `x.jpg.drophoto-partial…` is.
+fn remove_stale_partials(to: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (Some(parent), Some(name)) = (to.parent(), to.file_name()) else {
+        return;
+    };
+    let mut prefix = OsString::from(name);
+    prefix.push(PARTIAL_SUFFIX);
+
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_name().as_bytes().starts_with(prefix.as_bytes()) {
+            continue;
+        }
+        let path = entry.path();
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                tracing::warn!(path = %path.display(), "removed a stale partial copy from an interrupted attempt")
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "failed to remove a stale partial copy")
+            }
+        }
+    }
 }
 
 /// Removes `path`, logging (rather than swallowing) any failure to do
@@ -293,8 +345,9 @@ impl MoveStrategy for CopyVerifyDeleteStrategy {
 
         {
             let from = from.clone();
+            let to = to.clone();
             let temp = temp.clone();
-            blocking(move || copy_to_temp(&from, &temp)).await?;
+            blocking(move || copy_to_temp(&from, &to, &temp)).await?;
         }
 
         let from_hash = match self.hasher.hash_file(&from).await {
@@ -345,16 +398,22 @@ impl MoveStrategy for CopyVerifyDeleteStrategy {
     }
 }
 
-/// Copies `from` into the not-yet-existing `temp` path, refusing to
-/// clobber a stale temp file left over from a previous attempt,
+/// Copies `from` into the not-yet-existing `temp` path (sweeping away
+/// any partial copy an earlier attempt at `to` left behind first),
 /// preserves `from`'s mtime on the copy, and `fsync`s the copy before
 /// it's considered done (so a verified-then-renamed file was actually
 /// durable, not just buffered). Cleans up `temp` if any step fails
 /// partway through.
-fn copy_to_temp(from: &Path, temp: &Path) -> DpResult<()> {
+///
+/// `create_new` still guards `temp` itself: with a pid/nanos-unique
+/// name, an existing one would mean a genuinely concurrent writer, and
+/// clobbering that is never right.
+fn copy_to_temp(from: &Path, to: &Path, temp: &Path) -> DpResult<()> {
     if let Some(parent) = temp.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DpError::io(&e, Some(parent.display().to_string())))?;
     }
+
+    remove_stale_partials(to);
 
     let mut src = std::fs::File::open(from).map_err(|e| DpError::io(&e, Some(from.display().to_string())))?;
     let mut dest = std::fs::OpenOptions::new()
