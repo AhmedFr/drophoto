@@ -30,6 +30,11 @@ const MONTHS_SHORT = [
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
+// Grouping (`monthKey`/`monthLabel`) and the "Taken" display (`formatTakenAt`)
+// deliberately use UTC getters, not local time — `taken_at` is stored as UTC
+// and rendering it in the viewer's local time zone would shift which month
+// (or day) a photo appears grouped under depending on where it's viewed.
+
 export function monthLabel(takenAt: string | null): string {
   if (!takenAt) return "Undated";
   const d = new Date(takenAt);

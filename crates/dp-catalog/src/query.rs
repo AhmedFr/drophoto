@@ -25,6 +25,11 @@ fn order_by(sort: MediaSort) -> &'static str {
 }
 
 /// Returns (where_sql, args). `args` are bound in order.
+///
+/// Both callers (`query_media` and `count_media_query`) build their `FROM`
+/// clause by interpolating [`SELECT_JOINED`] or a bare `media m`, so the
+/// `m.*` column references produced here always alias the `media` table as
+/// `m` — keep that alias in sync if either call site changes it.
 fn where_clause(q: &MediaQuery) -> (String, SqliteArguments<'static>) {
     let mut clauses = Vec::new();
     let mut args = SqliteArguments::default();
