@@ -32,6 +32,7 @@ function item(overrides: Partial<MediaItem> = {}): MediaItem {
       missing_at: null,
     },
     thumb_path: "/tmp/thumbs/hash1/400.webp",
+    preview_path: "/tmp/thumbs/hash1/2000.webp",
     drive_name: "Kodachrome",
     online: true,
     ...overrides,

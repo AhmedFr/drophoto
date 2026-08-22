@@ -1,7 +1,6 @@
-use crate::drives::row_to_drive_prefixed;
 use crate::sqlite::db;
 use chrono::{DateTime, Utc};
-use dp_core::{DpError, DpResult, Drive, MediaKind, MediaRow, NewMedia};
+use dp_core::{DpError, DpResult, MediaKind, MediaRow, NewMedia};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn kind_to_str(kind: MediaKind) -> &'static str {
@@ -31,7 +30,7 @@ fn from_rfc3339(s: Option<String>) -> DpResult<Option<DateTime<Utc>>> {
         .map_err(db)
 }
 
-fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
+pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
     let kind: String = row.try_get("kind").map_err(db)?;
     let taken_at: Option<String> = row.try_get("taken_at").map_err(db)?;
     let missing_at: Option<String> = row.try_get("missing_at").map_err(db)?;
@@ -115,32 +114,6 @@ pub(crate) async fn list_media(pool: &SqlitePool, limit: u32, offset: u32) -> Dp
         .await
         .map_err(db)?;
     rows.into_iter().map(|r| row_to_media(&r)).collect()
-}
-
-pub(crate) async fn list_media_with_drive(
-    pool: &SqlitePool,
-    limit: u32,
-    offset: u32,
-) -> DpResult<Vec<(MediaRow, Drive)>> {
-    let rows = sqlx::query(
-        "SELECT m.*, \
-         d.id AS d_id, d.name AS d_name, d.volume_uuid AS d_volume_uuid, d.mount_path AS d_mount_path, \
-         d.role AS d_role, d.capacity AS d_capacity, d.free AS d_free, d.last_seen_at AS d_last_seen_at \
-         FROM media m JOIN drives d ON d.id = m.drive_id \
-         ORDER BY m.taken_at DESC NULLS LAST, m.id DESC LIMIT ? OFFSET ?",
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await
-    .map_err(db)?;
-    rows.into_iter()
-        .map(|row| {
-            let media = row_to_media(&row)?;
-            let drive = row_to_drive_prefixed(&row, "d_")?;
-            Ok((media, drive))
-        })
-        .collect()
 }
 
 pub(crate) async fn count_media(pool: &SqlitePool, drive_id: Option<i64>) -> DpResult<u64> {

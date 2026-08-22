@@ -45,6 +45,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
       missing_at: null,
     },
     thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
+    preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
     drive_name: "Kodachrome",
     online: true,
     ...overrides,
@@ -53,7 +54,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
 
 it("renders the Gallery header", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [];
+    if (cmd === "query_media") return [];
     return undefined;
   });
   renderPage();
@@ -63,7 +64,7 @@ it("renders the Gallery header", async () => {
 
 it("shows the item count once media loads", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [item(1), item(2)];
+    if (cmd === "query_media") return [item(1), item(2)];
     return undefined;
   });
   renderPage();
@@ -72,7 +73,7 @@ it("shows the item count once media loads", async () => {
 
 it("shows an empty state with a link to /drives when there is no media", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [];
+    if (cmd === "query_media") return [];
     return undefined;
   });
   renderPage();
@@ -82,7 +83,7 @@ it("shows an empty state with a link to /drives when there is no media", async (
 
 it("renders the grid when items exist", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [item(1), item(2), item(3)];
+    if (cmd === "query_media") return [item(1), item(2), item(3)];
     return undefined;
   });
   renderPage();

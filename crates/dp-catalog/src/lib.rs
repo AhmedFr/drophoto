@@ -1,9 +1,10 @@
 mod drives;
 mod media;
+mod query;
 mod sqlite;
 
 use async_trait::async_trait;
-use dp_core::{DpResult, Drive, MediaRow, NewDrive, NewMedia};
+use dp_core::{DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia};
 pub use sqlite::SqliteCatalog;
 
 #[async_trait]
@@ -13,7 +14,9 @@ pub trait Catalog: Send + Sync {
     async fn set_drive_presence(&self, id: i64, mount_path: Option<&str>, free: Option<u64>) -> DpResult<()>;
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64>;
     async fn list_media(&self, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>>;
-    async fn list_media_with_drive(&self, limit: u32, offset: u32) -> DpResult<Vec<(MediaRow, Drive)>>;
+    async fn query_media(&self, q: &MediaQuery) -> DpResult<Vec<(MediaRow, Drive)>>;
+    async fn count_media_query(&self, q: &MediaQuery) -> DpResult<u64>;
+    async fn get_media_with_drive(&self, id: i64) -> DpResult<(MediaRow, Drive)>;
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64>;
     async fn media_hash_exists(&self, hash: &str) -> DpResult<bool>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
@@ -41,8 +44,16 @@ impl Catalog for SqliteCatalog {
         media::list_media(&self.pool, limit, offset).await
     }
 
-    async fn list_media_with_drive(&self, limit: u32, offset: u32) -> DpResult<Vec<(MediaRow, Drive)>> {
-        media::list_media_with_drive(&self.pool, limit, offset).await
+    async fn query_media(&self, q: &MediaQuery) -> DpResult<Vec<(MediaRow, Drive)>> {
+        query::query_media(&self.pool, q).await
+    }
+
+    async fn count_media_query(&self, q: &MediaQuery) -> DpResult<u64> {
+        query::count_media_query(&self.pool, q).await
+    }
+
+    async fn get_media_with_drive(&self, id: i64) -> DpResult<(MediaRow, Drive)> {
+        query::get_media_with_drive(&self.pool, id).await
     }
 
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64> {

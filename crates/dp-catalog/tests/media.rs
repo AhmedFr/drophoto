@@ -100,48 +100,6 @@ async fn list_media_orders_by_taken_at_desc_with_nulls_last() {
 }
 
 #[tokio::test]
-async fn list_media_with_drive_joins_drive_and_keeps_ordering() {
-    let c = SqliteCatalog::open_in_memory().await.unwrap();
-    let drive_id = c
-        .register_drive(NewDrive {
-            name: "Kodachrome".into(),
-            mount_path: "/Volumes/Kodachrome".into(),
-            role: DriveRole::Archive,
-            capacity: 100,
-            free: 40,
-        })
-        .await
-        .unwrap()
-        .id;
-
-    let older: DateTime<Utc> = "2020-01-01T00:00:00Z".parse().unwrap();
-    let newer: DateTime<Utc> = "2024-06-15T12:00:00Z".parse().unwrap();
-
-    c.upsert_media(nm_taken(drive_id, "no-date.jpg", "h-none", None))
-        .await
-        .unwrap();
-    c.upsert_media(nm_taken(drive_id, "old.jpg", "h-old", Some(older)))
-        .await
-        .unwrap();
-    c.upsert_media(nm_taken(drive_id, "new.jpg", "h-new", Some(newer)))
-        .await
-        .unwrap();
-
-    let rows = c.list_media_with_drive(10, 0).await.unwrap();
-    assert_eq!(rows.len(), 3);
-
-    let (row0, drive0) = &rows[0];
-    assert_eq!(row0.rel_path, "new.jpg");
-    assert_eq!(drive0.id, drive_id);
-    assert_eq!(drive0.name, "Kodachrome");
-    assert!(drive0.online);
-
-    assert_eq!(rows[1].0.rel_path, "old.jpg");
-    assert_eq!(rows[2].0.rel_path, "no-date.jpg");
-    assert!(rows[2].0.taken_at.is_none());
-}
-
-#[tokio::test]
 async fn record_scan_error_does_not_error() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;

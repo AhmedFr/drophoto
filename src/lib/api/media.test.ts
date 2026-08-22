@@ -1,6 +1,6 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { listMedia } from "./media";
-import type { MediaItem } from "./media";
+import { countMedia, getMedia, queryMedia } from "./media";
+import type { MediaItem, MediaQuery } from "./media";
 
 const item: MediaItem = {
   row: {
@@ -26,22 +26,63 @@ const item: MediaItem = {
     missing_at: null,
   },
   thumb_path: "/tmp/thumbs/hash1/400.webp",
+  preview_path: "/tmp/thumbs/hash1/2000.webp",
   drive_name: "Kodachrome",
   online: true,
 };
 
-it("invokes list_media with limit and offset and returns the items", async () => {
+const query: MediaQuery = {
+  kinds: [],
+  exts: [],
+  sort: "taken_desc",
+  limit: 500,
+  offset: 0,
+};
+
+it("invokes query_media with the query and returns the items", async () => {
   let args: unknown;
   mockIPC((cmd, a) => {
-    if (cmd === "list_media") {
+    if (cmd === "query_media") {
       args = a;
       return [item];
     }
     return undefined;
   });
 
-  const result = await listMedia(500, 0);
+  const result = await queryMedia(query);
 
-  expect(args).toEqual({ limit: 500, offset: 0 });
+  expect(args).toEqual({ query });
   expect(result).toEqual([item]);
+});
+
+it("invokes count_media with the query and returns the count", async () => {
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "count_media") {
+      args = a;
+      return 42;
+    }
+    return undefined;
+  });
+
+  const result = await countMedia(query);
+
+  expect(args).toEqual({ query });
+  expect(result).toBe(42);
+});
+
+it("invokes get_media with the id and returns the item", async () => {
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "get_media") {
+      args = a;
+      return item;
+    }
+    return undefined;
+  });
+
+  const result = await getMedia(1);
+
+  expect(args).toEqual({ id: 1 });
+  expect(result).toEqual(item);
 });

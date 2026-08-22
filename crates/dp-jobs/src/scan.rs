@@ -190,14 +190,16 @@ fn collect_media_files(root: &Path, cancel: &CancellationToken) -> WalkResult {
     }
 }
 
-/// Path of `path` relative to `mount_path`, using forward slashes.
-fn rel_path(path: &Path, mount_path: &str) -> String {
-    path.strip_prefix(Path::new(mount_path))
-        .unwrap_or(path)
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+/// Path of `path` relative to `mount_path`, using forward slashes. `None`
+/// if `path` isn't actually inside `mount_path`.
+fn rel_path(path: &Path, mount_path: &str) -> Option<String> {
+    let rel = path.strip_prefix(Path::new(mount_path)).ok()?;
+    Some(
+        rel.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -220,7 +222,22 @@ async fn process_file(
     let deps = &job.deps;
     let drive_id = job.drive.id;
     let job_id = job.id();
-    let rel = rel_path(&file.path, mount_path);
+    let path_display = file.path.display().to_string();
+    let Some(rel) = rel_path(&file.path, mount_path) else {
+        report_item_error_raw(
+            ctx,
+            deps,
+            job_id,
+            drive_id,
+            &path_display,
+            "path",
+            "file is outside the drive root",
+        )
+        .await;
+        failed.fetch_add(1, Ordering::SeqCst);
+        advance_progress(ctx, job_id, done, total, &path_display).await;
+        return;
+    };
     let mut had_error = false;
 
     let size = tokio::fs::metadata(&file.path)
@@ -350,4 +367,23 @@ async fn report_item_error_raw(
         .catalog
         .record_scan_error(drive_id, path, code, message)
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rel_path;
+    use std::path::Path;
+
+    #[test]
+    fn rel_path_strips_mount_prefix() {
+        assert_eq!(
+            rel_path(Path::new("/Volumes/A/x/y.jpg"), "/Volumes/A"),
+            Some("x/y.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn rel_path_none_when_outside_mount() {
+        assert_eq!(rel_path(Path::new("/elsewhere/y.jpg"), "/Volumes/A"), None);
+    }
 }

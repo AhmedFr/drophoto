@@ -28,9 +28,23 @@ export type MediaRow = {
 export type MediaItem = {
   row: MediaRow;
   thumb_path: string;
+  preview_path: string;
   drive_name: string;
   online: boolean;
 };
 
-export const listMedia = (limit: number, offset: number) =>
-  invokeApi<MediaItem[]>("list_media", { limit, offset });
+export type MediaSort = "taken_desc" | "taken_asc" | "added_desc";
+
+export type MediaQuery = {
+  kinds: MediaKind[];
+  exts: string[];
+  sort: MediaSort;
+  limit: number;
+  offset: number;
+};
+
+export const queryMedia = (query: MediaQuery) => invokeApi<MediaItem[]>("query_media", { query });
+
+export const countMedia = (query: MediaQuery) => invokeApi<number>("count_media", { query });
+
+export const getMedia = (id: number) => invokeApi<MediaItem>("get_media", { id });

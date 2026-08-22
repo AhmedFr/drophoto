@@ -2,11 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
-import { listMedia } from "@/lib/api/media";
+import { queryMedia } from "@/lib/api/media";
 import { ThumbGrid } from "./components/ThumbGrid";
 
 export function GalleryPage() {
-  const media = useQuery({ queryKey: ["media", 0], queryFn: () => listMedia(500, 0) });
+  const media = useQuery({
+    queryKey: ["media", 0],
+    queryFn: () => queryMedia({ kinds: [], exts: [], sort: "taken_desc", limit: 500, offset: 0 }),
+  });
   const items = media.data ?? [];
 
   return (
