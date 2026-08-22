@@ -1,23 +1,30 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
-import { Button } from "@/components/ui/button";
-import { ThumbGrid } from "./components/ThumbGrid";
+import { VirtualGrid } from "./components/VirtualGrid";
 import { useMediaCount } from "./hooks/useMediaCount";
 import { useMediaInfinite } from "./hooks/useMediaInfinite";
+import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
 
 export function GalleryPage() {
   const media = useMediaInfinite();
   const count = useMediaCount();
+  const density = useGalleryStore((s) => s.density);
   const items = media.items;
   const headerCount = count ?? items.length;
+
+  // Opened by `VirtualGrid`'s `onOpen`; the lightbox that reads it is added
+  // in Task 2.6.
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  void openIndex;
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Gallery">
         <span className="font-mono text-[10px] text-faint">{headerCount} items</span>
       </PageHeader>
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-hidden">
         {media.isError && (
           <p className="px-5 pt-5 font-mono text-[11px] text-red-400">{(media.error as Error).message}</p>
         )}
@@ -40,23 +47,14 @@ export function GalleryPage() {
             .
           </div>
         ) : (
-          <>
-            <ThumbGrid items={items} />
-            {media.hasNextPage && (
-              // Temporary "Load more" control until Task 2.4 wires up
-              // scroll-triggered pagination.
-              <div className="flex justify-center p-5">
-                <Button
-                  variant="outline"
-                  className="font-mono text-[10px]"
-                  onClick={() => media.fetchNextPage()}
-                  disabled={media.isFetchingNextPage}
-                >
-                  {media.isFetchingNextPage ? "Loading…" : "Load more"}
-                </Button>
-              </div>
-            )}
-          </>
+          <VirtualGrid
+            items={items}
+            targetRowHeight={DENSITY_ROW_HEIGHT[density]}
+            onOpen={setOpenIndex}
+            onNearEnd={() => {
+              if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
+            }}
+          />
         )}
       </div>
     </div>
