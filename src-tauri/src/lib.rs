@@ -27,6 +27,13 @@ pub fn run() {
             commands::media::get_media,
             commands::scan::start_scan,
             commands::scan::cancel_job,
+            commands::organize::get_rule,
+            commands::organize::save_rule,
+            commands::organize::list_unorganized_summaries,
+            commands::organize::plan_organize,
+            commands::organize::start_organize,
+            commands::organize::list_jobs,
+            commands::organize::list_job_items,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

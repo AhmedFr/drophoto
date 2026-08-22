@@ -22,6 +22,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -32,6 +33,7 @@ dp-hash = { path = "../crates/dp-hash" }
 dp-metadata = { path = "../crates/dp-metadata" }
 dp-thumbs = { path = "../crates/dp-thumbs" }
 dp-jobs = { path = "../crates/dp-jobs" }
+dp-organize = { path = "../crates/dp-organize" }
 
 [dev-dependencies]
 tempfile = "3"

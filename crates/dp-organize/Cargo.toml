@@ -1,0 +1,18 @@
+[package]
+name = "dp-organize"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+dp-core = { path = "../dp-core" }
+dp-hash = { path = "../dp-hash" }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+handlebars = "6"
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

@@ -75,6 +75,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
       lat: null,
       lon: null,
       missing_at: null,
+      organized_at: null,
     },
     thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
     preview_path: `/tmp/thumbs/hash${id}/2000.webp`,

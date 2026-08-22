@@ -9,7 +9,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import type { Volume } from "@/lib/api/volumes";
-import type { DriveRole, RegisterDriveInput } from "@/lib/api/drives";
+import type { RegisterDriveInput } from "@/lib/api/drives";
 import type { RegisterDriveDialogProps } from "./RegisterDriveDialog.types";
 
 function basename(path: string): string {
@@ -25,14 +25,13 @@ type FormProps = {
 
 function RegisterDriveForm({ volume, error, onSubmit }: FormProps) {
   const [name, setName] = useState(() => volume.name || basename(volume.mount_path));
-  const [role, setRole] = useState<DriveRole>("archive");
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     onSubmit({
       name,
       mount_path: volume.mount_path,
-      role,
+      role: "archive",
       capacity: volume.total_bytes,
       free: volume.free_bytes,
     });
@@ -41,22 +40,6 @@ function RegisterDriveForm({ volume, error, onSubmit }: FormProps) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <Input aria-label="Drive name" value={name} onChange={(e) => setName(e.target.value)} />
-      <div className="flex gap-2">
-        <Button
-          type="button"
-          variant={role === "archive" ? "default" : "outline"}
-          onClick={() => setRole("archive")}
-        >
-          ARCHIVE
-        </Button>
-        <Button
-          type="button"
-          variant={role === "source" ? "default" : "outline"}
-          onClick={() => setRole("source")}
-        >
-          SOURCE
-        </Button>
-      </div>
       {error && <p className="font-mono text-[11px] text-red-400">{error}</p>}
       <DialogFooter>
         <Button type="submit">Register</Button>

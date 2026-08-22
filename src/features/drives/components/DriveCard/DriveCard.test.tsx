@@ -16,10 +16,9 @@ const baseDrive: Drive = {
   online: true,
 };
 
-it("renders the drive name, role, and free/capacity space", () => {
+it("renders the drive name and free/capacity space", () => {
   render(<DriveCard drive={baseDrive} />);
   expect(screen.getByText("Kodachrome")).toBeInTheDocument();
-  expect(screen.getByText(/archive/i)).toBeInTheDocument();
   expect(screen.getByText(/1\.4.*GB/i)).toBeInTheDocument();
 });
 

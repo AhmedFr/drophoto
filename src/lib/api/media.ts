@@ -23,6 +23,7 @@ export type MediaRow = {
   lat: number | null;
   lon: number | null;
   missing_at: string | null;
+  organized_at: string | null;
 };
 
 export type MediaItem = {

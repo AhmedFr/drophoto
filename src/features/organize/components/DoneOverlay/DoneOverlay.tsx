@@ -1,0 +1,70 @@
+import { Link } from "@tanstack/react-router";
+import { Ban, Check } from "lucide-react";
+import type { router } from "@/app/router";
+import { Button } from "@/components/ui/button";
+import { useWizardStore } from "../../store/wizardStore";
+import type { DoneOverlayProps } from "./DoneOverlay.types";
+
+function foldersLine(folders: string[]): string {
+  if (folders.length === 0) return "—";
+  const shown = folders.slice(0, 3);
+  const extra = folders.length - shown.length;
+  return extra > 0 ? `${shown.join(", ")} +${extra} more` : shown.join(", ");
+}
+
+/** Resets the wizard back to step 0 with nothing selected before a DoneOverlay CTA navigates away. */
+function resetWizard() {
+  useWizardStore.getState().reset();
+}
+
+export function DoneOverlay({
+  moved,
+  skipped,
+  failed,
+  fileTpl,
+  folders,
+  foldersHint,
+  cancelled = false,
+}: DoneOverlayProps) {
+  const title = cancelled ? "Cancelled" : "Organized";
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5 bg-background"
+    >
+      <div className="flex size-14 items-center justify-center border border-border-3">
+        {cancelled ? <Ban className="size-6" aria-hidden /> : <Check className="size-6" aria-hidden />}
+      </div>
+      <span className="font-mono text-[10px] tracking-[3px] text-dim">{title.toUpperCase()}</span>
+      <h1 className="text-[38px] font-semibold">
+        {moved} photos filed{cancelled ? " before cancelling" : ""}
+      </h1>
+      <div className="flex flex-col items-center gap-1 font-mono text-[12px] text-muted-foreground">
+        <span>Renamed to {fileTpl}</span>
+        <span>
+          Filed into {foldersLine(folders)}
+          {foldersHint && <span className="ml-1 text-faint">({foldersHint})</span>}
+        </span>
+        <span>
+          {skipped} skipped · {failed} failed
+        </span>
+        {cancelled && <span>Remaining photos were left in place.</span>}
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Button asChild size="sm" className="font-mono text-[10.5px] tracking-[1.5px]">
+          <Link<typeof router, string, string> to="/gallery" onClick={resetWizard}>
+            OPEN GALLERY →
+          </Link>
+        </Button>
+        <Button asChild variant="outline" size="sm" className="font-mono text-[10.5px] tracking-[1.5px]">
+          <Link<typeof router, string, string> to="/" onClick={resetWizard}>
+            DASHBOARD
+          </Link>
+        </Button>
+      </div>
+    </div>
+  );
+}

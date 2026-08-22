@@ -20,11 +20,11 @@ fn kind_from_str(s: &str) -> DpResult<MediaKind> {
     }
 }
 
-fn to_rfc3339(dt: Option<DateTime<Utc>>) -> Option<String> {
+pub(crate) fn to_rfc3339(dt: Option<DateTime<Utc>>) -> Option<String> {
     dt.map(|d| d.to_rfc3339())
 }
 
-fn from_rfc3339(s: Option<String>) -> DpResult<Option<DateTime<Utc>>> {
+pub(crate) fn from_rfc3339(s: Option<String>) -> DpResult<Option<DateTime<Utc>>> {
     s.map(|s| DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)))
         .transpose()
         .map_err(db)
@@ -34,6 +34,7 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
     let kind: String = row.try_get("kind").map_err(db)?;
     let taken_at: Option<String> = row.try_get("taken_at").map_err(db)?;
     let missing_at: Option<String> = row.try_get("missing_at").map_err(db)?;
+    let organized_at: Option<String> = row.try_get("organized_at").map_err(db)?;
     let size: i64 = row.try_get("size").map_err(db)?;
     let width: Option<i64> = row.try_get("width").map_err(db)?;
     let height: Option<i64> = row.try_get("height").map_err(db)?;
@@ -60,20 +61,22 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
         lat: row.try_get("lat").map_err(db)?,
         lon: row.try_get("lon").map_err(db)?,
         missing_at: from_rfc3339(missing_at)?,
+        organized_at: from_rfc3339(organized_at)?,
     })
 }
 
 pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64> {
     sqlx::query(
         "INSERT INTO media (drive_id, rel_path, hash, size, kind, ext, width, height, duration_ms, \
-         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, organized_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(drive_id, rel_path) DO UPDATE SET \
          hash=excluded.hash, size=excluded.size, kind=excluded.kind, ext=excluded.ext, \
          width=excluded.width, height=excluded.height, duration_ms=excluded.duration_ms, \
          taken_at=excluded.taken_at, camera=excluded.camera, lens=excluded.lens, \
          aperture=excluded.aperture, shutter=excluded.shutter, iso=excluded.iso, \
-         focal_mm=excluded.focal_mm, lat=excluded.lat, lon=excluded.lon, missing_at=NULL",
+         focal_mm=excluded.focal_mm, lat=excluded.lat, lon=excluded.lon, missing_at=NULL, \
+         organized_at=COALESCE(media.organized_at, excluded.organized_at)",
     )
     .bind(m.drive_id)
     .bind(&m.rel_path)
@@ -93,6 +96,7 @@ pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64
     .bind(m.focal_mm)
     .bind(m.lat)
     .bind(m.lon)
+    .bind(to_rfc3339(m.organized_at))
     .execute(pool)
     .await
     .map_err(db)?;

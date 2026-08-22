@@ -302,6 +302,7 @@ async fn process_file(
         focal_mm: metadata.focal_mm,
         lat: metadata.lat,
         lon: metadata.lon,
+        organized_at: None,
     };
 
     if let Err(e) = deps.catalog.upsert_media(new_media).await {
