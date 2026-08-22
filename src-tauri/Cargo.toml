@@ -27,4 +27,5 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dp-core = { path = "../crates/dp-core" }
 dp-volumes = { path = "../crates/dp-volumes" }
+dp-catalog = { path = "../crates/dp-catalog" }
 
