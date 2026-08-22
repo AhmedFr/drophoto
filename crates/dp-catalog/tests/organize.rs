@@ -290,3 +290,96 @@ async fn mark_media_organized_sets_path_and_timestamp() {
     assert_eq!(row.rel_path, "archive/a.jpg");
     assert!(row.organized_at.is_some());
 }
+
+#[tokio::test]
+async fn unorganized_summary_reports_the_drive_total_alongside_the_unorganized_count() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let organized_id = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    c.mark_media_organized(organized_id, "archive/b.jpg")
+        .await
+        .unwrap();
+
+    let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
+    assert_eq!(summary.count, 1, "only the unorganized row counts here");
+    assert_eq!(summary.total, 2, "total counts every row on the drive");
+}
+
+#[tokio::test]
+async fn unorganized_summary_total_is_zero_for_a_never_scanned_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
+    assert_eq!(summary.count, 0);
+    assert_eq!(summary.total, 0);
+}
+
+/// A process killed mid-organize leaves its `organize_jobs` row stuck
+/// `"running"` forever — nothing is left alive to finish it. Opening
+/// the (file-backed) catalog again reconciles those rows to `"failed"`.
+#[tokio::test]
+async fn reopening_a_file_catalog_fails_jobs_left_running_by_a_dead_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("catalog.db");
+
+    let job_id = {
+        let c = SqliteCatalog::open(&db_path).await.unwrap();
+        let drive_id = drive(&c).await;
+        let job_id = c.create_organize_job(drive_id, 3).await.unwrap();
+
+        let row = c
+            .list_organize_jobs(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|j| j.id == job_id)
+            .unwrap();
+        assert_eq!(row.status, "running");
+        assert!(row.finished_at.is_none());
+        job_id
+    };
+
+    let reopened = SqliteCatalog::open(&db_path).await.unwrap();
+    let row = reopened
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == job_id)
+        .unwrap();
+    assert_eq!(row.status, "failed");
+    assert!(
+        row.finished_at.is_some(),
+        "a reconciled row must be stamped finished"
+    );
+}
+
+/// Reconciliation must not touch rows that already reached a terminal
+/// state — a `"done"` run stays done across a restart.
+#[tokio::test]
+async fn reopening_a_file_catalog_leaves_finished_jobs_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("catalog.db");
+
+    let job_id = {
+        let c = SqliteCatalog::open(&db_path).await.unwrap();
+        let drive_id = drive(&c).await;
+        let job_id = c.create_organize_job(drive_id, 3).await.unwrap();
+        c.finish_organize_job(job_id, "done", 3, 0, 0).await.unwrap();
+        job_id
+    };
+
+    let reopened = SqliteCatalog::open(&db_path).await.unwrap();
+    let row = reopened
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == job_id)
+        .unwrap();
+    assert_eq!(row.status, "done");
+    assert_eq!(row.moved, 3);
+}

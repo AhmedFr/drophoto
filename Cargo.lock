@@ -1027,6 +1027,7 @@ dependencies = [
  "chrono",
  "dp-core",
  "sqlx",
+ "tempfile",
  "tokio",
  "tracing",
 ]

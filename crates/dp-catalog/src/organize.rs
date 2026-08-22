@@ -93,9 +93,22 @@ pub(crate) async fn unorganized_summary(
     let videos: i64 = row.try_get("videos").map_err(db)?;
     let earliest: Option<String> = row.try_get("earliest").map_err(db)?;
     let latest: Option<String> = row.try_get("latest").map_err(db)?;
+
+    // Deliberately a second query rather than a correlated subquery in
+    // the one above: `total` counts *every* media row on the drive,
+    // which the aggregate's own WHERE clause (unorganized, outside the
+    // root) can't express at the same time.
+    let total_row = sqlx::query("SELECT COUNT(*) AS total FROM media WHERE drive_id = ?")
+        .bind(drive_id)
+        .fetch_one(pool)
+        .await
+        .map_err(db)?;
+    let total: i64 = total_row.try_get("total").map_err(db)?;
+
     Ok(UnorganizedSummary {
         drive_id,
         count: count as u64,
+        total: total as u64,
         bytes: bytes as u64,
         photos: photos as u64,
         videos: videos as u64,

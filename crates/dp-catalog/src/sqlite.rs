@@ -19,7 +19,22 @@ impl SqliteCatalog {
             .busy_timeout(Duration::from_secs(5));
         // A file-backed DB can serve multiple concurrent readers/writers;
         // WAL + a small pool avoids `database is locked` under load.
-        Self::from_opts(opts, 4).await
+        let catalog = Self::from_opts(opts, 4).await?;
+
+        // Startup reconciliation, for the file-backed DB only (an
+        // in-memory one never outlives its process, so it can't have
+        // inherited anything): an `organize_jobs` row left `"running"`
+        // belongs to a previous process that died mid-run, and no job
+        // will ever come back to finish it.
+        let reconciled = crate::organize_jobs::fail_running_organize_jobs(&catalog.pool).await?;
+        if reconciled > 0 {
+            tracing::warn!(
+                count = reconciled,
+                "marked organize jobs left running by a previous process as failed"
+            );
+        }
+
+        Ok(catalog)
     }
 
     pub async fn open_in_memory() -> DpResult<Self> {

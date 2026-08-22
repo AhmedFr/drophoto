@@ -101,6 +101,23 @@ pub(crate) async fn finish_organize_job(
     Ok(())
 }
 
+/// Closes out every `organize_jobs` row still marked `"running"`,
+/// marking it `"failed"` and stamping `finished_at`. Called once when a
+/// file-backed catalog is opened: a row can only be `"running"` at that
+/// point if the process that owned it died (crash, force-quit, power
+/// cut) without ever finishing it, and nothing will ever finish it now.
+/// Returns how many rows were reconciled.
+pub(crate) async fn fail_running_organize_jobs(pool: &SqlitePool) -> DpResult<u64> {
+    let now = Utc::now().to_rfc3339();
+    let result =
+        sqlx::query("UPDATE organize_jobs SET status = 'failed', finished_at = ? WHERE status = 'running'")
+            .bind(&now)
+            .execute(pool)
+            .await
+            .map_err(db)?;
+    Ok(result.rows_affected())
+}
+
 pub(crate) async fn insert_organize_item(pool: &SqlitePool, item: &OrganizeItemRow) -> DpResult<i64> {
     let result = sqlx::query(
         "INSERT INTO organize_items (job_id, media_id, old_rel_path, new_rel_path, status, error) \

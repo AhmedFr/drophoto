@@ -203,7 +203,12 @@ pub struct OrganizePlan {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct UnorganizedSummary {
     pub drive_id: i64,
+    /// Media rows still waiting to be organized under the rule's root.
     pub count: u64,
+    /// Every media row known for this drive, organized or not. `0` is
+    /// the only reliable "this drive was never scanned" signal — a
+    /// `count` of `0` on its own just as easily means "fully organized".
+    pub total: u64,
     pub bytes: u64,
     pub photos: u64,
     pub videos: u64,

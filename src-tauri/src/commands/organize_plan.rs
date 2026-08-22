@@ -8,11 +8,14 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use dp_catalog::Catalog;
 use dp_core::{DpResult, Drive, MediaRow, OrganizePlanItem, PlanStatus};
-use dp_organize::{plan, HandlebarsTemplate, PlanInput};
+use dp_organize::{plan, validate_template, HandlebarsTemplate, PlanInput};
+
+use crate::commands::organize::validate_root;
 
 /// The plan computed for a single drive: the items themselves, plus the
 /// total size (in bytes) of every `Planned` item, so callers don't need
 /// to re-join against `MediaRow` sizes.
+#[derive(Debug)]
 pub(crate) struct DrivePlan {
     pub items: Vec<OrganizePlanItem>,
     pub bytes: u64,
@@ -24,6 +27,16 @@ pub(crate) struct DrivePlan {
 /// under the rule's root, then runs the pure planner from `dp-organize`.
 pub(crate) async fn plan_for_drive(catalog: &Arc<dyn Catalog>, drive: &Drive) -> DpResult<DrivePlan> {
     let rule = catalog.get_rule(drive.id).await?;
+
+    // `save_rule` validates before writing, but a rule read back from
+    // the catalog could still predate a validation rule (or have been
+    // written by something else entirely). Re-validate here and fail
+    // loudly rather than plan moves from a rule nobody vetted — this
+    // runs before a single path is rendered.
+    validate_root(&rule.root)?;
+    validate_template(&rule.folder_tpl)?;
+    validate_template(&rule.file_tpl)?;
+
     let rows = catalog.list_unorganized(drive.id, &rule.root).await?;
 
     let hashes: Vec<String> = rows.iter().map(|r| r.hash.clone()).collect();
@@ -97,4 +110,67 @@ async fn compute_mtimes(
         tracing::warn!(error = %e, "mtime lookup task panicked or was cancelled; falling back to taken_at/now for all rows");
         fallback_ids.into_iter().map(|id| (id, None)).collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_for_drive;
+    use dp_catalog::{Catalog, SqliteCatalog};
+    use dp_core::{DpError, DriveRole, NewDrive, OrganizeRule};
+    use std::sync::Arc;
+
+    async fn catalog_with_drive() -> (Arc<dyn Catalog>, dp_core::Drive) {
+        let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+        let drive = catalog
+            .register_drive(NewDrive {
+                name: "A".into(),
+                mount_path: "/Volumes/A".into(),
+                role: DriveRole::Source,
+                capacity: 100,
+                free: 40,
+            })
+            .await
+            .unwrap();
+        (catalog, drive)
+    }
+
+    #[tokio::test]
+    async fn refuses_to_plan_from_a_rule_with_a_traversing_root() {
+        let (catalog, drive) = catalog_with_drive().await;
+        // Written straight to the catalog, bypassing `save_rule`'s own
+        // validation — exactly the case this guard exists for.
+        catalog
+            .save_rule(&OrganizeRule {
+                root: "../escape".into(),
+                ..OrganizeRule::default_for(drive.id)
+            })
+            .await
+            .unwrap();
+
+        let err = plan_for_drive(&catalog, &drive).await.unwrap_err();
+        assert!(matches!(err, DpError::Unsupported { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn refuses_to_plan_from_a_rule_with_an_invalid_template() {
+        let (catalog, drive) = catalog_with_drive().await;
+        catalog
+            .save_rule(&OrganizeRule {
+                folder_tpl: "{{yyyy}}/../{{mm}}".into(),
+                ..OrganizeRule::default_for(drive.id)
+            })
+            .await
+            .unwrap();
+
+        let err = plan_for_drive(&catalog, &drive).await.unwrap_err();
+        assert!(matches!(err, DpError::Unsupported { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn plans_from_a_valid_default_rule() {
+        let (catalog, drive) = catalog_with_drive().await;
+        let plan = plan_for_drive(&catalog, &drive).await.unwrap();
+        assert!(plan.items.is_empty());
+        assert_eq!(plan.bytes, 0);
+    }
 }

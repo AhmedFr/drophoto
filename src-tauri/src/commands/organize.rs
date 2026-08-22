@@ -28,8 +28,14 @@ pub async fn save_rule(state: State<'_, AppState>, rule: OrganizeRule) -> Result
 /// once joined with a rendered template (see `OrganizeJob::apply_move`'s
 /// own, final `escapes_mount` check in `dp-jobs`, which this is the
 /// first line of defense for).
-fn validate_root(root: &str) -> Result<(), DpError> {
+///
+/// Every check runs against the *trimmed* root: `"   "` is as empty as
+/// `""` (it would otherwise be accepted and file photos into a folder
+/// literally named with spaces), and `" /abs"` is as absolute as
+/// `"/abs"`.
+pub(crate) fn validate_root(root: &str) -> Result<(), DpError> {
     let unsupported = |message: String| DpError::Unsupported { message, path: None };
+    let root = root.trim();
 
     if root.is_empty() {
         return Err(unsupported("root must not be empty".into()));
@@ -96,6 +102,19 @@ pub async fn start_organize(state: State<'_, AppState>, drive_id: i64) -> Result
     // that will just be thrown away.
     if let Some(job_id) = state.active_job("organize", drive_id) {
         return Ok(job_id);
+    }
+
+    // A scan running on this same drive blocks an organize job (see
+    // `job_admission`) — but only once `state.start_organize` is
+    // reached, by which point a plan has been computed and an
+    // `organize_jobs` row created, which then has to be closed out as a
+    // phantom `"cancelled"` run the user never asked for. Refuse up
+    // front instead.
+    if state.active_job("scan", drive_id).is_some() {
+        return Err(DpError::Unsupported {
+            message: "a scan job is already running on this drive".into(),
+            path: None,
+        });
     }
 
     let drive = state
@@ -199,6 +218,19 @@ mod tests {
     #[test]
     fn rejects_empty_root() {
         assert!(matches!(validate_root(""), Err(DpError::Unsupported { .. })));
+    }
+
+    #[test]
+    fn rejects_a_whitespace_only_root() {
+        assert!(matches!(validate_root("   "), Err(DpError::Unsupported { .. })));
+    }
+
+    #[test]
+    fn rejects_an_absolute_root_hidden_behind_whitespace() {
+        assert!(matches!(
+            validate_root("  /abs"),
+            Err(DpError::Unsupported { .. })
+        ));
     }
 
     #[test]
