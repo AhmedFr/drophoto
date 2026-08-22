@@ -25,11 +25,12 @@ pub struct AppState {
     pub strategy: Arc<dyn MoveStrategy>,
     pub runner: JobRunner,
     /// Job id of the in-flight job for each `(kind, drive_id)` pair,
-    /// where `kind` is `"scan"` or `"organize"` — each drive can have at
-    /// most one running job of each kind at a time. Stale entries (a job
-    /// that finished or was cancelled) are pruned lazily the next time
-    /// [`AppState::start_scan`]/[`AppState::start_organize`] checks them
-    /// against [`JobRunner::is_running`].
+    /// where `kind` is `"scan"` or `"organize"`. A drive may have at most
+    /// one running job *of any kind* at a time — see [`job_admission`].
+    /// Stale entries (a job that finished or was cancelled) are pruned
+    /// lazily the next time [`AppState::start_scan`]/
+    /// [`AppState::start_organize`] checks them against
+    /// [`JobRunner::is_running`].
     active_jobs: Mutex<HashMap<(String, i64), String>>,
 }
 
@@ -74,19 +75,29 @@ impl AppState {
         })
     }
 
-    /// Starts a scan for `drive_id`, unless one is already running for it —
-    /// in which case the existing job id is returned instead of starting a
-    /// duplicate. `make_job` builds the [`Job`] given the id it will run
-    /// under.
-    pub fn start_scan(&self, drive_id: i64, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> String {
+    /// Starts a scan for `drive_id`, unless a job is already running for
+    /// it — in which case the existing scan's id is returned instead of
+    /// starting a duplicate, or an error if the running job is of a
+    /// *different* kind (see [`job_admission`]). `make_job` builds the
+    /// [`Job`] given the id it will run under.
+    pub fn start_scan(
+        &self,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
         self.start_job("scan", drive_id, make_job)
     }
 
-    /// Starts an organize job for `drive_id`, unless one is already
-    /// running for it — in which case the existing job id is returned
-    /// instead of starting a duplicate. `make_job` builds the [`Job`]
-    /// given the id it will run under.
-    pub fn start_organize(&self, drive_id: i64, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> String {
+    /// Starts an organize job for `drive_id`, unless a job is already
+    /// running for it — in which case the existing organize job's id is
+    /// returned instead of starting a duplicate, or an error if the
+    /// running job is of a *different* kind (see [`job_admission`]).
+    /// `make_job` builds the [`Job`] given the id it will run under.
+    pub fn start_organize(
+        &self,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
         self.start_job("organize", drive_id, make_job)
     }
 
@@ -100,28 +111,80 @@ impl AppState {
         self.runner.is_running(job_id).then(|| job_id.clone())
     }
 
-    /// Starts a `kind` job ("scan" or "organize") for `drive_id`, unless
-    /// one is already running for that `(kind, drive_id)` pair — in which
-    /// case the existing job id is returned instead of starting a
-    /// duplicate.
+    /// Starts a `kind` job ("scan" or "organize") for `drive_id`: reuses
+    /// the running job's id if one of the same kind is already active,
+    /// refuses with [`DpError::Unsupported`] if a job of a *different*
+    /// kind is active for this drive, or spawns a new one otherwise. See
+    /// [`job_admission`] for the underlying decision.
     ///
     /// The check-and-insert happens under a single lock acquisition so two
-    /// concurrent calls for the same `(kind, drive_id)` can't both observe
-    /// "not running" and each spawn their own job.
-    fn start_job(&self, kind: &str, drive_id: i64, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> String {
-        let key = (kind.to_string(), drive_id);
+    /// concurrent calls for the same drive can't both observe "nothing
+    /// running" and each spawn their own job.
+    fn start_job(
+        &self,
+        kind: &str,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
         let mut jobs = lock_active_jobs(&self.active_jobs);
-        if let Some(job_id) = jobs.get(&key) {
-            if self.runner.is_running(job_id) {
-                return job_id.clone();
+
+        match job_admission(&jobs, kind, drive_id, |id| self.runner.is_running(id)) {
+            Admission::Existing(job_id) => Ok(job_id),
+            Admission::Blocked { other_kind } => Err(DpError::Unsupported {
+                message: format!("a {other_kind} job is already running on this drive"),
+                path: None,
+            }),
+            Admission::Start => {
+                let job_id = self.runner.next_id(kind);
+                self.runner.spawn(job_id.clone(), make_job(job_id.clone()));
+                jobs.insert((kind.to_string(), drive_id), job_id.clone());
+                Ok(job_id)
             }
         }
-
-        let job_id = self.runner.next_id(kind);
-        self.runner.spawn(job_id.clone(), make_job(job_id.clone()));
-        jobs.insert(key, job_id.clone());
-        job_id
     }
+}
+
+/// The outcome of deciding whether a new `kind` job may start for
+/// `drive_id`, given the currently-tracked `active` jobs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Admission {
+    /// No job (of any kind) is currently running for this drive — go
+    /// ahead and spawn.
+    Start,
+    /// A job of the *same* kind is already running — reuse its id rather
+    /// than starting a duplicate.
+    Existing(String),
+    /// A job of a *different* kind is already running — refuse; a drive
+    /// may only have one job (of any kind) running at a time.
+    Blocked { other_kind: String },
+}
+
+/// Pure decision function behind [`AppState::start_job`]: given the
+/// currently-tracked `active` jobs and an `is_running` check (so the
+/// caller can distinguish a merely-stale tracked id from one still
+/// actually running), decides whether a `kind` job may start for
+/// `drive_id`.
+fn job_admission(
+    active: &HashMap<(String, i64), String>,
+    kind: &str,
+    drive_id: i64,
+    is_running: impl Fn(&str) -> bool,
+) -> Admission {
+    if let Some(job_id) = active.get(&(kind.to_string(), drive_id)) {
+        if is_running(job_id) {
+            return Admission::Existing(job_id.clone());
+        }
+    }
+
+    for ((other_kind, other_drive_id), job_id) in active {
+        if *other_drive_id == drive_id && other_kind != kind && is_running(job_id) {
+            return Admission::Blocked {
+                other_kind: other_kind.clone(),
+            };
+        }
+    }
+
+    Admission::Start
 }
 
 /// Locks `active_jobs`, recovering from mutex poisoning instead of
@@ -134,4 +197,60 @@ fn lock_active_jobs(
     active_jobs
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(entries: &[(&str, i64, &str)]) -> HashMap<(String, i64), String> {
+        entries
+            .iter()
+            .map(|(kind, drive_id, job_id)| ((kind.to_string(), *drive_id), job_id.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn admits_start_when_nothing_is_tracked_for_the_drive() {
+        let active = map(&[]);
+        assert_eq!(job_admission(&active, "scan", 1, |_| true), Admission::Start);
+    }
+
+    #[test]
+    fn admits_start_when_a_tracked_entry_is_stale() {
+        let active = map(&[("scan", 1, "scan-0")]);
+        assert_eq!(job_admission(&active, "scan", 1, |_| false), Admission::Start);
+    }
+
+    #[test]
+    fn reuses_the_existing_id_for_a_running_job_of_the_same_kind() {
+        let active = map(&[("scan", 1, "scan-0")]);
+        assert_eq!(
+            job_admission(&active, "scan", 1, |_| true),
+            Admission::Existing("scan-0".into())
+        );
+    }
+
+    #[test]
+    fn blocks_a_different_kind_when_one_is_already_running() {
+        let active = map(&[("scan", 1, "scan-0")]);
+        assert_eq!(
+            job_admission(&active, "organize", 1, |_| true),
+            Admission::Blocked {
+                other_kind: "scan".into()
+            }
+        );
+    }
+
+    #[test]
+    fn does_not_block_on_a_different_drive() {
+        let active = map(&[("scan", 2, "scan-0")]);
+        assert_eq!(job_admission(&active, "organize", 1, |_| true), Admission::Start);
+    }
+
+    #[test]
+    fn a_stale_other_kind_entry_does_not_block() {
+        let active = map(&[("scan", 1, "scan-0")]);
+        assert_eq!(job_admission(&active, "organize", 1, |_| false), Admission::Start);
+    }
 }

@@ -197,7 +197,6 @@ pub struct OrganizePlan {
     pub items: Vec<OrganizePlanItem>,
     pub planned: u64,
     pub skipped_dup: u64,
-    pub in_place: u64,
     pub bytes: u64,
 }
 

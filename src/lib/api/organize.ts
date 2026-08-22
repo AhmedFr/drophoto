@@ -22,7 +22,6 @@ export type OrganizePlan = {
   items: OrganizePlanItem[];
   planned: number;
   skipped_dup: number;
-  in_place: number;
   bytes: number;
 };
 

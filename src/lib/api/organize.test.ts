@@ -31,7 +31,6 @@ const plan: OrganizePlan = {
   ],
   planned: 1,
   skipped_dup: 0,
-  in_place: 0,
   bytes: 1234,
 };
 

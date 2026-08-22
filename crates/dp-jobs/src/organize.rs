@@ -2,13 +2,14 @@
 //! `Planned` item into place, recording the outcome of every item in the
 //! catalog, and reporting progress along the way.
 
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use dp_catalog::Catalog;
 use dp_core::{DpError, DpResult, Drive, OrganizeItemRow, OrganizePlanItem, PlanStatus};
 use dp_organize::MoveStrategy;
+use futures::FutureExt;
 
 use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
 
@@ -63,15 +64,51 @@ impl Job for OrganizeJob {
     /// half-applied move is left exactly as `move_file` left it, for a
     /// human (or a re-plan-and-retry) to deal with, never for this job
     /// to guess at.
+    ///
+    /// The whole body runs behind `catch_unwind`: a panic partway through
+    /// would otherwise leave the `organize_jobs` row stuck `"running"`
+    /// forever (the runner's own panic handling wraps `Job::run` itself,
+    /// which by then is too late to still call `finish_organize_job`).
+    /// On a panic we close the row out as `"failed"` and turn it into an
+    /// ordinary `Err` so the runner's normal Finished/ItemError reporting
+    /// still applies.
     async fn run(&self, ctx: JobCtx) -> DpResult<JobOutcome> {
-        let mount_path = match &self.drive.mount_path {
-            Some(m) => m.clone(),
-            None => {
-                let _ = self
+        match std::panic::AssertUnwindSafe(self.run_inner(&ctx))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(_panic) => {
+                if let Err(e) = self
                     .deps
                     .catalog
                     .finish_organize_job(self.job_row_id, "failed", 0, 0, 0)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, job_row_id = self.job_row_id, "failed to finish organize job after a panic");
+                }
+                Err(DpError::Io {
+                    message: "job panicked".into(),
+                    path: None,
+                })
+            }
+        }
+    }
+}
+
+impl OrganizeJob {
+    async fn run_inner(&self, ctx: &JobCtx) -> DpResult<JobOutcome> {
+        let mount_path = match &self.drive.mount_path {
+            Some(m) => m.clone(),
+            None => {
+                if let Err(e) = self
+                    .deps
+                    .catalog
+                    .finish_organize_job(self.job_row_id, "failed", 0, 0, 0)
+                    .await
+                {
+                    tracing::warn!(error = %e, job_row_id = self.job_row_id, "failed to finish organize job for an offline drive");
+                }
                 return Err(DpError::NotFound {
                     message: "drive is offline".into(),
                 });
@@ -91,7 +128,7 @@ impl Job for OrganizeJob {
             }
 
             if item.status == PlanStatus::Planned {
-                if self.apply_move(&ctx, &mount_path, item).await {
+                if self.apply_move(ctx, &mount_path, item).await {
                     ok += 1;
                 } else {
                     failed += 1;
@@ -120,7 +157,7 @@ impl Job for OrganizeJob {
             cancelled,
         };
         let status = if cancelled { "cancelled" } else { "done" };
-        let _ = self
+        if let Err(e) = self
             .deps
             .catalog
             .finish_organize_job(
@@ -130,46 +167,78 @@ impl Job for OrganizeJob {
                 outcome.skipped,
                 outcome.failed,
             )
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, job_row_id = self.job_row_id, "failed to finish organize job");
+        }
 
         Ok(outcome)
     }
-}
 
-impl OrganizeJob {
     /// Moves one `Planned` item under `mount_path`: on success, marks the
     /// media organized in the catalog and records the item `Moved`; on
-    /// failure, records the item `Failed` (with the error message) and
-    /// emits an `ItemError` event. Returns whether the move succeeded.
+    /// failure (either the move itself, or the catalog update that
+    /// follows a successful move), records the item `Failed` and emits an
+    /// `ItemError` event. Returns whether the item ended up fully applied
+    /// (moved *and* recorded).
+    ///
+    /// Before ever touching the filesystem, verifies `item.new_rel_path`
+    /// resolves to a path that actually stays under `mount_path` — a
+    /// `root`/template that somehow produced an absolute path or a `..`
+    /// component would otherwise have `Path::join` escape the drive
+    /// entirely. `save_rule`/`validate_template` are expected to reject
+    /// such rules long before a job ever sees them; this is the last line
+    /// of defense against a plan that got here anyway.
     async fn apply_move(&self, ctx: &JobCtx, mount_path: &str, item: &OrganizePlanItem) -> bool {
-        let from = Path::new(mount_path).join(&item.old_rel_path);
-        let to = Path::new(mount_path).join(&item.new_rel_path);
+        let mount = Path::new(mount_path);
+        let to = mount.join(&item.new_rel_path);
+
+        if escapes_mount(&item.new_rel_path, &to, mount) {
+            self.record_failed(ctx, item, "path", "path escapes the drive root".into())
+                .await;
+            return false;
+        }
+
+        let from = mount.join(&item.old_rel_path);
 
         match self.deps.strategy.move_file(&from, &to).await {
-            Ok(()) => {
-                let _ = self
-                    .deps
-                    .catalog
-                    .mark_media_organized(item.media_id, &item.new_rel_path)
-                    .await;
-                self.insert_item(item, PlanStatus::Moved, None).await;
-                true
-            }
+            Ok(()) => match self
+                .deps
+                .catalog
+                .mark_media_organized(item.media_id, &item.new_rel_path)
+                .await
+            {
+                Ok(()) => {
+                    self.insert_item(item, PlanStatus::Moved, None).await;
+                    true
+                }
+                Err(e) => {
+                    let message = format!("moved but catalog update failed: {e}");
+                    self.record_failed(ctx, item, error_code(&e), message).await;
+                    false
+                }
+            },
             Err(e) => {
-                self.insert_item(item, PlanStatus::Failed, Some(e.to_string()))
-                    .await;
-                let _ = ctx
-                    .events
-                    .send(JobEvent::ItemError {
-                        job_id: self.id.clone(),
-                        path: item.old_rel_path.clone(),
-                        code: error_code(&e).to_string(),
-                        message: e.to_string(),
-                    })
-                    .await;
+                self.record_failed(ctx, item, error_code(&e), e.to_string()).await;
                 false
             }
         }
+    }
+
+    /// Records `item` `Failed` with `message`, and emits a matching
+    /// `ItemError` event.
+    async fn record_failed(&self, ctx: &JobCtx, item: &OrganizePlanItem, code: &str, message: String) {
+        self.insert_item(item, PlanStatus::Failed, Some(message.clone()))
+            .await;
+        let _ = ctx
+            .events
+            .send(JobEvent::ItemError {
+                job_id: self.id.clone(),
+                path: item.old_rel_path.clone(),
+                code: code.to_string(),
+                message,
+            })
+            .await;
     }
 
     /// Records an already-decided skip (`SkippedDup`/`SkippedCollision`,
@@ -180,7 +249,7 @@ impl OrganizeJob {
     }
 
     async fn insert_item(&self, item: &OrganizePlanItem, status: PlanStatus, error: Option<String>) {
-        let _ = self
+        if let Err(e) = self
             .deps
             .catalog
             .insert_organize_item(&OrganizeItemRow {
@@ -192,6 +261,51 @@ impl OrganizeJob {
                 status,
                 error,
             })
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, media_id = item.media_id, "failed to record organize item");
+        }
+    }
+}
+
+/// Whether `new_rel_path` (rendered relative to `mount`, yielding `to`)
+/// would escape `mount`: either because it contains a component that
+/// isn't a plain path segment (an absolute-path root/prefix, or a `.`/
+/// `..` traversal component), or because the resulting joined path
+/// doesn't actually stay under `mount`.
+fn escapes_mount(new_rel_path: &str, to: &Path, mount: &Path) -> bool {
+    let has_unsafe_component = Path::new(new_rel_path).components().any(|c| {
+        matches!(
+            c,
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir | Component::CurDir
+        )
+    });
+    has_unsafe_component || !to.starts_with(mount)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escapes_mount;
+    use std::path::Path;
+
+    #[test]
+    fn escapes_mount_rejects_parent_dir_component() {
+        let mount = Path::new("/Volumes/A");
+        let to = mount.join("../escape.jpg");
+        assert!(escapes_mount("../escape.jpg", &to, mount));
+    }
+
+    #[test]
+    fn escapes_mount_rejects_absolute_new_path() {
+        let mount = Path::new("/Volumes/A");
+        let to = Path::new("/etc/passwd");
+        assert!(escapes_mount("/etc/passwd", to, mount));
+    }
+
+    #[test]
+    fn escapes_mount_allows_a_plain_relative_path() {
+        let mount = Path::new("/Volumes/A");
+        let to = mount.join("archive/2025/Q3/2025-09-12_a.jpg");
+        assert!(!escapes_mount("archive/2025/Q3/2025-09-12_a.jpg", &to, mount));
     }
 }

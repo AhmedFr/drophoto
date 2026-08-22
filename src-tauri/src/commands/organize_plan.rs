@@ -78,6 +78,8 @@ async fn compute_mtimes(
         .map(|r| (r.id, PathBuf::from(&mount).join(&r.rel_path)))
         .collect();
 
+    let fallback_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+
     tokio::task::spawn_blocking(move || {
         targets
             .into_iter()
@@ -91,5 +93,8 @@ async fn compute_mtimes(
             .collect()
     })
     .await
-    .unwrap_or_default()
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "mtime lookup task panicked or was cancelled; falling back to taken_at/now for all rows");
+        fallback_ids.into_iter().map(|id| (id, None)).collect()
+    })
 }
