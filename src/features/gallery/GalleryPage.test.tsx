@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
@@ -49,6 +49,7 @@ function renderPage() {
       <GalleryPage />
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
@@ -215,9 +216,40 @@ it("closes the lightbox on Escape", async () => {
 
   const tiles = await screen.findAllByRole("button", { name: /photos\// });
   await user.click(tiles[0]);
-  await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("dialog");
 
-  fireEvent.keyDown(window, { key: "Escape" });
+  // Dispatched on the dialog (not `window`) so it bubbles to `document`,
+  // exercising Radix's own `Dialog.Content` Escape handling — the Lightbox
+  // no longer double-handles Escape itself (see useKeyboardNav usage).
+  fireEvent.keyDown(dialog, { key: "Escape" });
 
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+it("clamps the open lightbox index when a refetch shrinks the item list", async () => {
+  let calls = 0;
+  mockIPC((cmd) => {
+    if (cmd === "query_media") {
+      calls += 1;
+      return calls === 1 ? [item(1), item(2)] : [item(1)];
+    }
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  const queryClient = renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await user.click(tiles[1]);
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("02 / 2")).toBeInTheDocument();
+
+  await act(async () => {
+    await queryClient.invalidateQueries({ queryKey: ["media"] });
+  });
+
+  await waitFor(() => {
+    expect(within(screen.getByRole("dialog")).getByText("01 / 1")).toBeInTheDocument();
+  });
 });

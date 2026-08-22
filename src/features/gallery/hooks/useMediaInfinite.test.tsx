@@ -82,3 +82,19 @@ it("surfaces query errors", async () => {
   await waitFor(() => expect(result.current.isError).toBe(true));
   expect(result.current.error).toBeInstanceOf(Error);
 });
+
+it("keeps a referentially stable items array across rerenders when data hasn't changed", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    return undefined;
+  });
+
+  const { result, rerender } = renderHook(() => useMediaInfinite(), { wrapper });
+
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  const firstItems = result.current.items;
+
+  rerender();
+
+  expect(result.current.items).toBe(firstItems);
+});

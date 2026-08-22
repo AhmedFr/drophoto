@@ -18,6 +18,22 @@ export function GalleryPage() {
   // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s `onClose`).
   const [openIndex, setOpenIndex] = useState<number | null>(null);
 
+  // `items` can shrink out from under an open lightbox (e.g. a refetch after
+  // a scan removes media) — clamp `openIndex` back into range, or close it
+  // entirely once there's nothing left to show. Adjusted during render
+  // (React's documented pattern for state derived from a value that just
+  // changed: https://react.dev/learn/you-might-not-need-an-effect) rather
+  // than in an effect, so there's no extra frame where a stale, out-of-range
+  // index reaches `Lightbox`. The `prevItemsLength` guard makes this run at
+  // most once per `items.length` change instead of on every render.
+  const [prevItemsLength, setPrevItemsLength] = useState(items.length);
+  if (items.length !== prevItemsLength) {
+    setPrevItemsLength(items.length);
+    if (openIndex !== null && openIndex >= items.length) {
+      setOpenIndex(items.length ? items.length - 1 : null);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Gallery">

@@ -45,6 +45,20 @@ describe("useGalleryStore", () => {
     const persisted = JSON.parse(raw as string);
     expect(persisted.state).toEqual({ typeFilter: "HEIF", sort: "ADDED", density: "Compact" });
   });
+
+  it("falls back to defaults for invalid persisted values on rehydrate", async () => {
+    localStorage.setItem(
+      "drophoto.gallery",
+      JSON.stringify({ state: { typeFilter: "BOGUS", sort: "NOPE", density: "X" }, version: 1 }),
+    );
+
+    await useGalleryStore.persist.rehydrate();
+
+    const state = useGalleryStore.getState();
+    expect(state.typeFilter).toBe("ALL");
+    expect(state.sort).toBe("NEWEST");
+    expect(state.density).toBe("Comfortable");
+  });
 });
 
 describe("buildQuery", () => {

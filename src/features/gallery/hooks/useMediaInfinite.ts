@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { queryMedia } from "@/lib/api/media";
 import { buildQuery, useGalleryStore } from "../store/galleryStore";
@@ -15,8 +16,13 @@ export function useMediaInfinite() {
     getNextPageParam: (lastPage, pages) => (lastPage.length < PAGE_SIZE ? undefined : pages.length * PAGE_SIZE),
   });
 
+  // Keeps a stable array reference across renders where `query.data` hasn't
+  // changed, so consumers that depend on `items` by identity (e.g.
+  // `VirtualGrid`'s memoized layout) don't recompute needlessly.
+  const items = useMemo(() => query.data?.pages.flat() ?? [], [query.data]);
+
   return {
-    items: query.data?.pages.flat() ?? [],
+    items,
     fetchNextPage: query.fetchNextPage,
     hasNextPage: query.hasNextPage,
     isFetchingNextPage: query.isFetchingNextPage,

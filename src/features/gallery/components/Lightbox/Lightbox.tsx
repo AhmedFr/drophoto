@@ -13,12 +13,19 @@ const navButtonClass =
 export function Lightbox({ items, index, onClose, onPrev, onNext }: LightboxProps) {
   const item = items[index];
 
-  // Escape and outside-click are already handled by Radix's `Dialog.Content`
-  // (via its focus-trapping `DismissableLayer`) — this hook only covers
-  // arrow-key navigation, which Radix doesn't know about. Keeping `onClose`
-  // wired to Escape here too is harmless: both handlers call the same
-  // idempotent `setOpenIndex(null)`.
-  useKeyboardNav({ enabled: true, onClose, onPrev, onNext });
+  // Escape is already handled by Radix's `Dialog.Content` (via its
+  // focus-trapping `DismissableLayer`, which calls `onOpenChange(false)` ->
+  // `onClose`), so `onClose` is intentionally omitted here — wiring it to
+  // both would double-handle the same keystroke. Outside-click is likewise
+  // Radix's job. This hook only covers arrow-key navigation, which Radix
+  // doesn't know about.
+  useKeyboardNav({ enabled: true, onPrev, onNext });
+
+  // `items` can shrink out from under an open lightbox (e.g. a refetch after
+  // a scan removes media); `GalleryPage` clamps `index` back in bounds on
+  // the next render, but this guards the render in between. Placed after
+  // the hook call above so hooks still run unconditionally on every render.
+  if (!item) return null;
 
   const stop = (e: MouseEvent) => e.stopPropagation();
 

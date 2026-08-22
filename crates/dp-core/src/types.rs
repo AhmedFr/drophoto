@@ -131,6 +131,7 @@ pub enum MediaSort {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
 pub struct MediaQuery {
     pub kinds: Vec<MediaKind>,
     pub exts: Vec<String>,
@@ -210,5 +211,15 @@ mod tests {
         }
         .clamped();
         assert_eq!(q.limit, MediaQuery::MAX_LIMIT);
+    }
+
+    #[test]
+    fn media_query_deserializes_from_an_empty_object() {
+        let q: MediaQuery = serde_json::from_str("{}").expect("missing fields should default");
+        assert_eq!(q.kinds, Vec::<MediaKind>::new());
+        assert_eq!(q.exts, Vec::<String>::new());
+        assert_eq!(q.limit, 0);
+        // `limit: 0` is only meaningful pre-`clamped()` — callers clamp before querying.
+        assert_eq!(q.clone().clamped().limit, 1);
     }
 }
