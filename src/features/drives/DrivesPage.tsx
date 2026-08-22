@@ -1,24 +1,44 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { listVolumes } from "@/lib/api/volumes";
 import type { Volume } from "@/lib/api/volumes";
 import { listDrives, registerDrive } from "@/lib/api/drives";
+import { startScan, cancelJob } from "@/lib/api/scan";
+import { onEvent } from "@/lib/api/events";
 import { VolumeList } from "./components/VolumeList";
 import { DriveCard } from "./components/DriveCard";
 import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
+import { useJobEvents } from "./hooks/useJobEvents";
 
 export function DrivesPage() {
   const queryClient = useQueryClient();
   const volumes = useQuery({ queryKey: ["volumes"], queryFn: listVolumes, refetchInterval: 5_000 });
   const drives = useQuery({ queryKey: ["drives"], queryFn: listDrives });
   const [pending, setPending] = useState<Volume | null>(null);
+  const [scanJobs, setScanJobs] = useState<Record<number, string>>({});
+  const jobEvents = useJobEvents();
+
+  useEffect(
+    () =>
+      void onEvent("drives:changed", () => {
+        queryClient.invalidateQueries({ queryKey: ["drives"] });
+      }).then((unlisten) => unlisten),
+    [queryClient],
+  );
 
   const mutation = useMutation({
     mutationFn: registerDrive,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["drives"] });
       setPending(null);
+    },
+  });
+
+  const scanMutation = useMutation({
+    mutationFn: async (driveId: number) => ({ driveId, jobId: await startScan(driveId) }),
+    onSuccess: ({ driveId, jobId }) => {
+      setScanJobs((prev) => ({ ...prev, [driveId]: jobId }));
     },
   });
 
@@ -46,9 +66,18 @@ export function DrivesPage() {
         )}
         {drives.data?.length ? (
           <ul className="flex flex-col">
-            {drives.data.map((d) => (
-              <DriveCard key={d.id} drive={d} />
-            ))}
+            {drives.data.map((d) => {
+              const jobId = scanJobs[d.id];
+              return (
+                <DriveCard
+                  key={d.id}
+                  drive={d}
+                  onScan={() => scanMutation.mutate(d.id)}
+                  scanEvent={jobId ? jobEvents[jobId] : undefined}
+                  onCancelScan={jobId ? () => cancelJob(jobId) : undefined}
+                />
+              );
+            })}
           </ul>
         ) : (
           <p className="px-5 py-3 font-mono text-[11px] text-faint">No drives registered</p>

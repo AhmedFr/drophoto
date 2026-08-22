@@ -28,4 +28,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dp-core = { path = "../crates/dp-core" }
 dp-volumes = { path = "../crates/dp-volumes" }
 dp-catalog = { path = "../crates/dp-catalog" }
+dp-hash = { path = "../crates/dp-hash" }
+dp-metadata = { path = "../crates/dp-metadata" }
+dp-thumbs = { path = "../crates/dp-thumbs" }
+dp-jobs = { path = "../crates/dp-jobs" }
 

@@ -1,7 +1,15 @@
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { vi } from "vitest";
 import { DrivesPage } from "./DrivesPage";
+
+vi.mock("@tauri-apps/api/event");
+
+beforeEach(async () => {
+  const { listen } = await import("@tauri-apps/api/event");
+  vi.mocked(listen).mockResolvedValue(vi.fn());
+});
 
 function renderPage() {
   const queryClient = new QueryClient();
@@ -11,6 +19,31 @@ function renderPage() {
     </QueryClientProvider>,
   );
 }
+
+/** Mocks `listen` to record handlers by event name, returning an `emit` helper. */
+async function mockListen() {
+  const { listen } = await import("@tauri-apps/api/event");
+  const handlers = new Map<string, (event: { payload: unknown }) => void>();
+  vi.mocked(listen).mockImplementation((name, cb) => {
+    handlers.set(name as string, cb as (event: { payload: unknown }) => void);
+    return Promise.resolve(vi.fn());
+  });
+  return {
+    emit: (name: string, payload: unknown) => act(() => handlers.get(name)?.({ payload })),
+  };
+}
+
+const onlineDrive = {
+  id: 1,
+  name: "Kodachrome",
+  volume_uuid: null,
+  mount_path: "/Volumes/Kodachrome",
+  role: "archive",
+  capacity: 2_000_000_000,
+  free: 1_500_000_000,
+  last_seen_at: "2026-08-22T00:00:00Z",
+  online: true,
+};
 
 it("renders the Drives header and both sections", async () => {
   mockIPC((cmd) => {
@@ -177,4 +210,65 @@ it("registers a volume from the dialog with the expected input", async () => {
       free: 1_500_000_000,
     }),
   );
+});
+
+it("starts a scan, shows live progress from job events, and cancels", async () => {
+  const { emit } = await mockListen();
+  let startScanArgs: unknown;
+  let cancelArgs: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "start_scan") {
+      startScanArgs = args;
+      return "scan-0";
+    }
+    if (cmd === "cancel_job") {
+      cancelArgs = args;
+      return null;
+    }
+    return undefined;
+  });
+  renderPage();
+
+  fireEvent.click(await screen.findByRole("button", { name: /scan/i }));
+  await waitFor(() => expect(startScanArgs).toEqual({ driveId: 1 }));
+
+  emit("job", { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" });
+  expect(await screen.findByText("3 / 10")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+  await waitFor(() => expect(cancelArgs).toEqual({ jobId: "scan-0" }));
+});
+
+it("disables the Scan button for an offline drive", async () => {
+  await mockListen();
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [{ ...onlineDrive, online: false, mount_path: null }];
+    if (cmd === "list_volumes") return [];
+    return undefined;
+  });
+  renderPage();
+
+  expect(await screen.findByRole("button", { name: /scan/i })).toBeDisabled();
+});
+
+it("refetches drives when a drives:changed event arrives", async () => {
+  const { emit } = await mockListen();
+  let listDrivesCalls = 0;
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") {
+      listDrivesCalls += 1;
+      return [];
+    }
+    if (cmd === "list_volumes") return [];
+    return undefined;
+  });
+  renderPage();
+  await screen.findByText("No drives registered");
+  const callsBefore = listDrivesCalls;
+
+  emit("drives:changed", null);
+
+  await waitFor(() => expect(listDrivesCalls).toBeGreaterThan(callsBefore));
 });

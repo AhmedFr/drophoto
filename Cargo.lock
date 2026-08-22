@@ -1055,6 +1055,10 @@ version = "0.1.0"
 dependencies = [
  "dp-catalog",
  "dp-core",
+ "dp-hash",
+ "dp-jobs",
+ "dp-metadata",
+ "dp-thumbs",
  "dp-volumes",
  "serde",
  "serde_json",

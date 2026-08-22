@@ -1,5 +1,7 @@
+mod presence;
 mod sysinfo_volumes;
 use dp_core::{DpResult, Volume};
+pub use presence::resolve_presence;
 pub use sysinfo_volumes::SysinfoVolumes;
 
 #[async_trait::async_trait]

@@ -1,5 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { vi } from "vitest";
 import type { Drive } from "@/lib/api/drives";
+import type { JobEvent } from "@/lib/api/scan";
 import { DriveCard } from "./DriveCard";
 
 const baseDrive: Drive = {
@@ -29,4 +31,27 @@ it("shows ONLINE when the drive is online", () => {
 it("shows OFFLINE when the drive is not online", () => {
   render(<DriveCard drive={{ ...baseDrive, online: false, mount_path: null }} />);
   expect(screen.getByText("OFFLINE")).toBeInTheDocument();
+});
+
+it("calls onScan when the Scan button is clicked for an online drive", () => {
+  const onScan = vi.fn();
+  render(<DriveCard drive={baseDrive} onScan={onScan} />);
+  fireEvent.click(screen.getByRole("button", { name: /scan/i }));
+  expect(onScan).toHaveBeenCalled();
+});
+
+it("disables the Scan button when the drive is offline", () => {
+  render(<DriveCard drive={{ ...baseDrive, online: false, mount_path: null }} onScan={vi.fn()} />);
+  expect(screen.getByRole("button", { name: /scan/i })).toBeDisabled();
+});
+
+it("renders ScanProgress when a scanEvent is present", () => {
+  const scanEvent: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  render(<DriveCard drive={baseDrive} scanEvent={scanEvent} onCancelScan={vi.fn()} />);
+  expect(screen.getByText("3 / 10")).toBeInTheDocument();
+});
+
+it("does not render ScanProgress when there is no scanEvent", () => {
+  render(<DriveCard drive={baseDrive} />);
+  expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
 });
