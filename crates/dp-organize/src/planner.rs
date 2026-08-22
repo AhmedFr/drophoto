@@ -25,6 +25,17 @@ pub struct PlanInput<'a> {
     /// Relative paths already present on disk/catalog under `rule.root`,
     /// used for collision detection alongside paths planned earlier in
     /// this same run.
+    ///
+    /// This must include the *current* rel_path of every file that
+    /// already occupies space under `rule.root` but isn't itself present
+    /// in `rows` — most notably, media that's already organized and
+    /// therefore isn't being (re-)planned in this call. The planner only
+    /// learns a row's own current path automatically when that row is
+    /// included in `rows` (and turns out to be skipped, as a duplicate or
+    /// as already-in-place); the current paths of rows the caller leaves
+    /// out of `rows` entirely must be supplied here, or a newly-planned
+    /// file could collide with one of them without the planner ever
+    /// noticing.
     pub existing_paths: &'a HashSet<String>,
     pub now: DateTime<Utc>,
 }
@@ -171,7 +182,7 @@ fn plan_unit(
     // A collision suffix applies to the whole unit together (so a kept
     // pair moves in lockstep): find the smallest suffix at which none of
     // the unit's members collide with anything already taken.
-    let group_suffix = find_group_suffix(rule, candidates, &movable, taken)?;
+    let group_suffix = find_group_suffix(rule, rows, candidates, &movable, taken)?;
 
     // Within that shared baseline, commit members one at a time. This
     // naturally — and, crucially, *terminatingly* — disambiguates the
@@ -217,6 +228,7 @@ fn plan_unit(
 /// member, by the caller.
 fn find_group_suffix(
     rule: &OrganizeRule,
+    rows: &[MediaRow],
     candidates: &[Candidate],
     movable: &[usize],
     taken: &HashSet<String>,
@@ -224,8 +236,9 @@ fn find_group_suffix(
     let mut n = 0usize;
     loop {
         if n > MAX_SUFFIX {
+            let media_ids: Vec<i64> = movable.iter().map(|&idx| rows[idx].id).collect();
             return Err(DpError::Unsupported {
-                message: "could not find a free name for a collision group".into(),
+                message: format!("could not find a free name for media {media_ids:?}"),
                 path: None,
             });
         }
