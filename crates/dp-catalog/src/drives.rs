@@ -20,21 +20,26 @@ pub(crate) fn role_from_str(s: &str) -> DpResult<DriveRole> {
     }
 }
 
-fn row_to_drive(row: SqliteRow) -> DpResult<Drive> {
-    let mount_path: Option<String> = row.try_get("mount_path").map_err(db)?;
+/// Builds a `Drive` from a row's columns, each looked up as `{prefix}{column}`.
+/// `prefix` is `""` for a plain `SELECT * FROM drives` and e.g. `"d_"` for a
+/// joined query that aliases the drives columns to avoid collisions with
+/// another table's columns of the same name.
+pub(crate) fn row_to_drive_prefixed(row: &SqliteRow, prefix: &str) -> DpResult<Drive> {
+    let col = |name: &str| format!("{prefix}{name}");
+    let mount_path: Option<String> = row.try_get(col("mount_path").as_str()).map_err(db)?;
     let online = mount_path.is_some();
-    let role: String = row.try_get("role").map_err(db)?;
-    let capacity: i64 = row.try_get("capacity").map_err(db)?;
-    let free: i64 = row.try_get("free").map_err(db)?;
-    let last_seen_at: Option<String> = row.try_get("last_seen_at").map_err(db)?;
+    let role: String = row.try_get(col("role").as_str()).map_err(db)?;
+    let capacity: i64 = row.try_get(col("capacity").as_str()).map_err(db)?;
+    let free: i64 = row.try_get(col("free").as_str()).map_err(db)?;
+    let last_seen_at: Option<String> = row.try_get(col("last_seen_at").as_str()).map_err(db)?;
     let last_seen_at = last_seen_at
         .map(|s| DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)))
         .transpose()
         .map_err(db)?;
     Ok(Drive {
-        id: row.try_get("id").map_err(db)?,
-        name: row.try_get("name").map_err(db)?,
-        volume_uuid: row.try_get("volume_uuid").map_err(db)?,
+        id: row.try_get(col("id").as_str()).map_err(db)?,
+        name: row.try_get(col("name").as_str()).map_err(db)?,
+        volume_uuid: row.try_get(col("volume_uuid").as_str()).map_err(db)?,
         mount_path,
         role: role_from_str(&role)?,
         capacity: capacity as u64,
@@ -44,13 +49,17 @@ fn row_to_drive(row: SqliteRow) -> DpResult<Drive> {
     })
 }
 
+fn row_to_drive(row: &SqliteRow) -> DpResult<Drive> {
+    row_to_drive_prefixed(row, "")
+}
+
 async fn get_drive(pool: &SqlitePool, id: i64) -> DpResult<Drive> {
     let row = sqlx::query("SELECT * FROM drives WHERE id = ?")
         .bind(id)
         .fetch_one(pool)
         .await
         .map_err(db)?;
-    row_to_drive(row)
+    row_to_drive(&row)
 }
 
 pub(crate) async fn register_drive(pool: &SqlitePool, d: NewDrive) -> DpResult<Drive> {
@@ -76,7 +85,7 @@ pub(crate) async fn list_drives(pool: &SqlitePool) -> DpResult<Vec<Drive>> {
         .fetch_all(pool)
         .await
         .map_err(db)?;
-    rows.into_iter().map(row_to_drive).collect()
+    rows.into_iter().map(|r| row_to_drive(&r)).collect()
 }
 
 pub(crate) async fn set_drive_presence(

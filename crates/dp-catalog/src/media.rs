@@ -1,4 +1,4 @@
-use crate::drives::role_from_str;
+use crate::drives::row_to_drive_prefixed;
 use crate::sqlite::db;
 use chrono::{DateTime, Utc};
 use dp_core::{DpError, DpResult, Drive, MediaKind, MediaRow, NewMedia};
@@ -31,7 +31,7 @@ fn from_rfc3339(s: Option<String>) -> DpResult<Option<DateTime<Utc>>> {
         .map_err(db)
 }
 
-fn row_to_media(row: SqliteRow) -> DpResult<MediaRow> {
+fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
     let kind: String = row.try_get("kind").map_err(db)?;
     let taken_at: Option<String> = row.try_get("taken_at").map_err(db)?;
     let missing_at: Option<String> = row.try_get("missing_at").map_err(db)?;
@@ -114,60 +114,7 @@ pub(crate) async fn list_media(pool: &SqlitePool, limit: u32, offset: u32) -> Dp
         .fetch_all(pool)
         .await
         .map_err(db)?;
-    rows.into_iter().map(row_to_media).collect()
-}
-
-fn row_to_media_with_drive(row: SqliteRow) -> DpResult<(MediaRow, Drive)> {
-    let kind: String = row.try_get("m_kind").map_err(db)?;
-    let taken_at: Option<String> = row.try_get("m_taken_at").map_err(db)?;
-    let missing_at: Option<String> = row.try_get("m_missing_at").map_err(db)?;
-    let size: i64 = row.try_get("m_size").map_err(db)?;
-    let width: Option<i64> = row.try_get("m_width").map_err(db)?;
-    let height: Option<i64> = row.try_get("m_height").map_err(db)?;
-    let duration_ms: Option<i64> = row.try_get("m_duration_ms").map_err(db)?;
-    let iso: Option<i64> = row.try_get("m_iso").map_err(db)?;
-    let media = MediaRow {
-        id: row.try_get("m_id").map_err(db)?,
-        drive_id: row.try_get("m_drive_id").map_err(db)?,
-        rel_path: row.try_get("m_rel_path").map_err(db)?,
-        hash: row.try_get("m_hash").map_err(db)?,
-        size: size as u64,
-        kind: kind_from_str(&kind)?,
-        ext: row.try_get("m_ext").map_err(db)?,
-        width: width.map(|w| w as u32),
-        height: height.map(|h| h as u32),
-        duration_ms: duration_ms.map(|d| d as u64),
-        taken_at: from_rfc3339(taken_at)?,
-        camera: row.try_get("m_camera").map_err(db)?,
-        lens: row.try_get("m_lens").map_err(db)?,
-        aperture: row.try_get("m_aperture").map_err(db)?,
-        shutter: row.try_get("m_shutter").map_err(db)?,
-        iso: iso.map(|i| i as u32),
-        focal_mm: row.try_get("m_focal_mm").map_err(db)?,
-        lat: row.try_get("m_lat").map_err(db)?,
-        lon: row.try_get("m_lon").map_err(db)?,
-        missing_at: from_rfc3339(missing_at)?,
-    };
-
-    let d_mount_path: Option<String> = row.try_get("d_mount_path").map_err(db)?;
-    let online = d_mount_path.is_some();
-    let d_role: String = row.try_get("d_role").map_err(db)?;
-    let d_capacity: i64 = row.try_get("d_capacity").map_err(db)?;
-    let d_free: i64 = row.try_get("d_free").map_err(db)?;
-    let d_last_seen_at: Option<String> = row.try_get("d_last_seen_at").map_err(db)?;
-    let drive = Drive {
-        id: row.try_get("d_id").map_err(db)?,
-        name: row.try_get("d_name").map_err(db)?,
-        volume_uuid: row.try_get("d_volume_uuid").map_err(db)?,
-        mount_path: d_mount_path,
-        role: role_from_str(&d_role)?,
-        capacity: d_capacity as u64,
-        free: d_free as u64,
-        last_seen_at: from_rfc3339(d_last_seen_at)?,
-        online,
-    };
-
-    Ok((media, drive))
+    rows.into_iter().map(|r| row_to_media(&r)).collect()
 }
 
 pub(crate) async fn list_media_with_drive(
@@ -176,15 +123,10 @@ pub(crate) async fn list_media_with_drive(
     offset: u32,
 ) -> DpResult<Vec<(MediaRow, Drive)>> {
     let rows = sqlx::query(
-        "SELECT \
-         m.id as m_id, m.drive_id as m_drive_id, m.rel_path as m_rel_path, m.hash as m_hash, \
-         m.size as m_size, m.kind as m_kind, m.ext as m_ext, m.width as m_width, m.height as m_height, \
-         m.duration_ms as m_duration_ms, m.taken_at as m_taken_at, m.camera as m_camera, m.lens as m_lens, \
-         m.aperture as m_aperture, m.shutter as m_shutter, m.iso as m_iso, m.focal_mm as m_focal_mm, \
-         m.lat as m_lat, m.lon as m_lon, m.missing_at as m_missing_at, \
-         d.id as d_id, d.name as d_name, d.volume_uuid as d_volume_uuid, d.mount_path as d_mount_path, \
-         d.role as d_role, d.capacity as d_capacity, d.free as d_free, d.last_seen_at as d_last_seen_at \
-         FROM media m JOIN drives d ON m.drive_id = d.id \
+        "SELECT m.*, \
+         d.id AS d_id, d.name AS d_name, d.volume_uuid AS d_volume_uuid, d.mount_path AS d_mount_path, \
+         d.role AS d_role, d.capacity AS d_capacity, d.free AS d_free, d.last_seen_at AS d_last_seen_at \
+         FROM media m JOIN drives d ON d.id = m.drive_id \
          ORDER BY m.taken_at DESC NULLS LAST, m.id DESC LIMIT ? OFFSET ?",
     )
     .bind(limit)
@@ -192,7 +134,13 @@ pub(crate) async fn list_media_with_drive(
     .fetch_all(pool)
     .await
     .map_err(db)?;
-    rows.into_iter().map(row_to_media_with_drive).collect()
+    rows.into_iter()
+        .map(|row| {
+            let media = row_to_media(&row)?;
+            let drive = row_to_drive_prefixed(&row, "d_")?;
+            Ok((media, drive))
+        })
+        .collect()
 }
 
 pub(crate) async fn count_media(pool: &SqlitePool, drive_id: Option<i64>) -> DpResult<u64> {
