@@ -1,14 +1,45 @@
-import { screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { vi } from "vitest";
+import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
+import { virtualizerMockFactory } from "@/test/mockVirtualizer";
 import { renderWithRouter } from "@/test/renderWithRouter";
+import { useGalleryStore } from "./store/galleryStore";
 import { GalleryPage } from "./GalleryPage";
+
+vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory());
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tauri-apps/api/core")>();
   return { ...actual, convertFileSrc: (path: string) => `asset://mock/${path}` };
+});
+
+vi.mock("@tauri-apps/plugin-opener");
+
+class ResizeObserverStub {
+  #callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.#callback = callback;
+  }
+
+  observe() {
+    this.#callback(
+      [{ contentRect: { width: 1000 } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+
+  unobserve() {}
+  disconnect() {}
+}
+
+beforeEach(() => {
+  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable" });
+  useGalleryStore.persist.clearStorage();
+  vi.stubGlobal("ResizeObserver", ResizeObserverStub);
 });
 
 function renderPage() {
@@ -18,6 +49,7 @@ function renderPage() {
       <GalleryPage />
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
@@ -45,15 +77,18 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
       missing_at: null,
     },
     thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
+    preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
     drive_name: "Kodachrome",
     online: true,
+    original_path: null,
     ...overrides,
   };
 }
 
 it("renders the Gallery header", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [];
+    if (cmd === "query_media") return [];
+    if (cmd === "count_media") return 0;
     return undefined;
   });
   renderPage();
@@ -63,7 +98,8 @@ it("renders the Gallery header", async () => {
 
 it("shows the item count once media loads", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [item(1), item(2)];
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
     return undefined;
   });
   renderPage();
@@ -72,7 +108,8 @@ it("shows the item count once media loads", async () => {
 
 it("shows an empty state with a link to /drives when there is no media", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [];
+    if (cmd === "query_media") return [];
+    if (cmd === "count_media") return 0;
     return undefined;
   });
   renderPage();
@@ -80,9 +117,10 @@ it("shows an empty state with a link to /drives when there is no media", async (
   expect(screen.getByRole("link", { name: /drive/i })).toHaveAttribute("href", "/drives");
 });
 
-it("renders the grid when items exist", async () => {
+it("renders a tile once media loads", async () => {
   mockIPC((cmd) => {
-    if (cmd === "list_media") return [item(1), item(2), item(3)];
+    if (cmd === "query_media") return [item(1), item(2), item(3)];
+    if (cmd === "count_media") return 3;
     return undefined;
   });
   renderPage();
@@ -96,4 +134,122 @@ it("shows an error message when the media query fails", async () => {
   });
   renderPage();
   expect(await screen.findByText("boom")).toBeInTheDocument();
+});
+
+it("changing a type chip re-queries media with the new filter", async () => {
+  const calls: { exts: string[] }[] = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "query_media") {
+      const { query } = args as { query: { exts: string[] } };
+      calls.push(query);
+      return [];
+    }
+    if (cmd === "count_media") return 0;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText("0 items");
+  await user.click(await screen.findByRole("button", { name: "RAW" }));
+
+  await waitFor(() => {
+    const last = calls[calls.length - 1];
+    expect(last?.exts).toEqual(["raf", "cr2", "cr3", "arw", "nef", "dng", "orf", "rw2"]);
+  });
+});
+
+it("opens the lightbox when a tile is clicked", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await user.click(tiles[0]);
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("01 / 2")).toBeInTheDocument();
+});
+
+it("navigates between items with the prev/next buttons, clamped to the loaded range", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await user.click(tiles[0]);
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("01 / 2")).toBeInTheDocument();
+
+  await user.click(within(dialog).getByRole("button", { name: /next/i }));
+  expect(within(dialog).getByText("02 / 2")).toBeInTheDocument();
+
+  // Already at the last loaded item — clicking Next again stays put.
+  await user.click(within(dialog).getByRole("button", { name: /next/i }));
+  expect(within(dialog).getByText("02 / 2")).toBeInTheDocument();
+
+  await user.click(within(dialog).getByRole("button", { name: /previous/i }));
+  expect(within(dialog).getByText("01 / 2")).toBeInTheDocument();
+
+  // Already at the first item — clicking Previous again stays put.
+  await user.click(within(dialog).getByRole("button", { name: /previous/i }));
+  expect(within(dialog).getByText("01 / 2")).toBeInTheDocument();
+});
+
+it("closes the lightbox on Escape", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await user.click(tiles[0]);
+  const dialog = await screen.findByRole("dialog");
+
+  // Dispatched on the dialog (not `window`) so it bubbles to `document`,
+  // exercising Radix's own `Dialog.Content` Escape handling — the Lightbox
+  // no longer double-handles Escape itself (see useKeyboardNav usage).
+  fireEvent.keyDown(dialog, { key: "Escape" });
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+it("clamps the open lightbox index when a refetch shrinks the item list", async () => {
+  let calls = 0;
+  mockIPC((cmd) => {
+    if (cmd === "query_media") {
+      calls += 1;
+      return calls === 1 ? [item(1), item(2)] : [item(1)];
+    }
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  const queryClient = renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await user.click(tiles[1]);
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("02 / 2")).toBeInTheDocument();
+
+  await act(async () => {
+    await queryClient.invalidateQueries({ queryKey: ["media"] });
+  });
+
+  await waitFor(() => {
+    expect(within(screen.getByRole("dialog")).getByText("01 / 1")).toBeInTheDocument();
+  });
 });

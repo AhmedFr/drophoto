@@ -1,20 +1,45 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
-import { listMedia } from "@/lib/api/media";
-import { ThumbGrid } from "./components/ThumbGrid";
+import { GalleryToolbar } from "./components/GalleryToolbar";
+import { Lightbox } from "./components/Lightbox";
+import { VirtualGrid } from "./components/VirtualGrid";
+import { useMediaCount } from "./hooks/useMediaCount";
+import { useMediaInfinite } from "./hooks/useMediaInfinite";
+import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
 
 export function GalleryPage() {
-  const media = useQuery({ queryKey: ["media", 0], queryFn: () => listMedia(500, 0) });
-  const items = media.data ?? [];
+  const media = useMediaInfinite();
+  const count = useMediaCount();
+  const density = useGalleryStore((s) => s.density);
+  const items = media.items;
+
+  // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s `onClose`).
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  // `items` can shrink out from under an open lightbox (e.g. a refetch after
+  // a scan removes media) — clamp `openIndex` back into range, or close it
+  // entirely once there's nothing left to show. Adjusted during render
+  // (React's documented pattern for state derived from a value that just
+  // changed: https://react.dev/learn/you-might-not-need-an-effect) rather
+  // than in an effect, so there's no extra frame where a stale, out-of-range
+  // index reaches `Lightbox`. The `prevItemsLength` guard makes this run at
+  // most once per `items.length` change instead of on every render.
+  const [prevItemsLength, setPrevItemsLength] = useState(items.length);
+  if (items.length !== prevItemsLength) {
+    setPrevItemsLength(items.length);
+    if (openIndex !== null && openIndex >= items.length) {
+      setOpenIndex(items.length ? items.length - 1 : null);
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Gallery">
-        <span className="font-mono text-[10px] text-faint">{items.length} items</span>
+        <GalleryToolbar count={count} />
       </PageHeader>
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-hidden">
         {media.isError && (
           <p className="px-5 pt-5 font-mono text-[11px] text-red-400">{(media.error as Error).message}</p>
         )}
@@ -37,9 +62,28 @@ export function GalleryPage() {
             .
           </div>
         ) : (
-          <ThumbGrid items={items} />
+          <VirtualGrid
+            items={items}
+            targetRowHeight={DENSITY_ROW_HEIGHT[density]}
+            onOpen={setOpenIndex}
+            onNearEnd={() => {
+              if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
+            }}
+          />
         )}
       </div>
+      {openIndex !== null && (
+        <Lightbox
+          items={items}
+          index={openIndex}
+          onClose={() => setOpenIndex(null)}
+          onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
+          onNext={() => {
+            if (openIndex < items.length - 1) setOpenIndex(openIndex + 1);
+            else if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
+          }}
+        />
+      )}
     </div>
   );
 }

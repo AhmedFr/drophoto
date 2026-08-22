@@ -33,3 +33,6 @@ dp-metadata = { path = "../crates/dp-metadata" }
 dp-thumbs = { path = "../crates/dp-thumbs" }
 dp-jobs = { path = "../crates/dp-jobs" }
 
+[dev-dependencies]
+tempfile = "3"
+

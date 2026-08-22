@@ -121,12 +121,46 @@ pub struct NewMedia {
     pub lon: Option<f64>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaSort {
+    #[default]
+    TakenDesc,
+    TakenAsc,
+    AddedDesc,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct MediaQuery {
+    pub kinds: Vec<MediaKind>,
+    pub exts: Vec<String>,
+    pub sort: MediaSort,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+impl MediaQuery {
+    pub const MAX_LIMIT: u32 = 2000;
+
+    /// Clamps `limit` to `1..=MAX_LIMIT`, leaving the rest of the query
+    /// untouched.
+    pub fn clamped(self) -> Self {
+        Self {
+            limit: self.limit.clamp(1, Self::MAX_LIMIT),
+            ..self
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MediaItem {
     pub row: MediaRow,
     pub thumb_path: String,
+    pub preview_path: String,
     pub drive_name: String,
     pub online: bool,
+    pub original_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -157,5 +191,35 @@ mod tests {
     #[test]
     fn from_ext_unknown_extension_is_none() {
         assert_eq!(MediaKind::from_ext("txt"), None);
+    }
+
+    #[test]
+    fn clamped_raises_zero_limit_to_one() {
+        let q = MediaQuery {
+            limit: 0,
+            ..Default::default()
+        }
+        .clamped();
+        assert_eq!(q.limit, 1);
+    }
+
+    #[test]
+    fn clamped_caps_limit_at_max() {
+        let q = MediaQuery {
+            limit: 9999,
+            ..Default::default()
+        }
+        .clamped();
+        assert_eq!(q.limit, MediaQuery::MAX_LIMIT);
+    }
+
+    #[test]
+    fn media_query_deserializes_from_an_empty_object() {
+        let q: MediaQuery = serde_json::from_str("{}").expect("missing fields should default");
+        assert_eq!(q.kinds, Vec::<MediaKind>::new());
+        assert_eq!(q.exts, Vec::<String>::new());
+        assert_eq!(q.limit, 0);
+        // `limit: 0` is only meaningful pre-`clamped()` — callers clamp before querying.
+        assert_eq!(q.clone().clamped().limit, 1);
     }
 }
