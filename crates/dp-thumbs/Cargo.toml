@@ -1,0 +1,17 @@
+[package]
+name = "dp-thumbs"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+dp-core = { path = "../dp-core" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+webp = "0.3"
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
+which = "7"
