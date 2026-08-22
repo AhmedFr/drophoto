@@ -31,3 +31,6 @@ target/
 fixtures/*.raf
 fixtures/*.cr3
 fixtures/*.arw
+
+*storybook.log
+storybook-static
