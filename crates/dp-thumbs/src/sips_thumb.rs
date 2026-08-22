@@ -3,7 +3,7 @@ use std::path::Path;
 use dp_core::{DpError, DpResult};
 use image::RgbImage;
 
-use crate::{resize_fit, ThumbnailProvider};
+use crate::{blocking, resize_fit, ThumbnailProvider};
 
 const EXTS: &[&str] = &["heic", "heif"];
 
@@ -71,11 +71,13 @@ impl ThumbnailProvider for SipsThumb {
             path: Some(out_path.display().to_string()),
         })?;
 
-        let img = image::load_from_memory(&bytes).map_err(|e| DpError::Sidecar {
-            tool: "sips".into(),
-            message: format!("failed to decode sips output: {e}"),
-        })?;
-
-        Ok(resize_fit(img.to_rgb8(), max_px))
+        blocking(move || {
+            let img = image::load_from_memory(&bytes).map_err(|e| DpError::Sidecar {
+                tool: "sips".into(),
+                message: format!("failed to decode sips output: {e}"),
+            })?;
+            Ok(resize_fit(img.to_rgb8(), max_px))
+        })
+        .await
     }
 }

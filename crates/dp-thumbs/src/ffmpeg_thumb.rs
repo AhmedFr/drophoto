@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use dp_core::{DpError, DpResult};
 use image::RgbImage;
 
-use crate::{resize_fit, ThumbnailProvider};
+use crate::{blocking, resize_fit, ThumbnailProvider};
 
 const EXTS: &[&str] = &["mp4", "mov", "m4v"];
 
@@ -64,7 +64,10 @@ impl FfmpegThumb {
                     }
                 })?;
 
-            let produced = out_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+            let produced = tokio::fs::metadata(out_path)
+                .await
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
 
             if output.status.success() && produced {
                 return Ok(());
@@ -112,11 +115,13 @@ impl ThumbnailProvider for FfmpegThumb {
             path: Some(out_path.display().to_string()),
         })?;
 
-        let img = image::load_from_memory(&bytes).map_err(|e| DpError::Sidecar {
-            tool: "ffmpeg".into(),
-            message: format!("failed to decode ffmpeg output: {e}"),
-        })?;
-
-        Ok(resize_fit(img.to_rgb8(), max_px))
+        blocking(move || {
+            let img = image::load_from_memory(&bytes).map_err(|e| DpError::Sidecar {
+                tool: "ffmpeg".into(),
+                message: format!("failed to decode ffmpeg output: {e}"),
+            })?;
+            Ok(resize_fit(img.to_rgb8(), max_px))
+        })
+        .await
     }
 }

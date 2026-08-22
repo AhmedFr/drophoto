@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use dp_core::{DpError, DpResult};
 use image::RgbImage;
 
-use crate::{resize_fit, ThumbnailProvider};
+use crate::{blocking, resize_fit, ThumbnailProvider};
 
 const EXTS: &[&str] = &["raf", "cr2", "cr3", "arw", "nef", "dng", "orf", "rw2"];
 
@@ -83,11 +83,13 @@ impl ThumbnailProvider for ExiftoolPreviewThumb {
     async fn render(&self, path: &Path, max_px: u32) -> DpResult<RgbImage> {
         let bytes = self.extract_preview(path).await?;
 
-        let img = image::load_from_memory(&bytes).map_err(|e| DpError::Sidecar {
-            tool: "exiftool".into(),
-            message: format!("failed to decode extracted preview: {e}"),
-        })?;
-
-        Ok(resize_fit(img.to_rgb8(), max_px))
+        blocking(move || {
+            let img = image::load_from_memory(&bytes).map_err(|e| DpError::Sidecar {
+                tool: "exiftool".into(),
+                message: format!("failed to decode extracted preview: {e}"),
+            })?;
+            Ok(resize_fit(img.to_rgb8(), max_px))
+        })
+        .await
     }
 }

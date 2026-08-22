@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use dp_core::{DpError, DpResult};
 use image::RgbImage;
 
+use crate::blocking;
+
 /// Lossy WebP encoding quality used for stored thumbnails (0-100).
 const WEBP_QUALITY: f32 = 82.0;
 
@@ -33,8 +35,12 @@ impl ThumbStore {
     pub async fn write(&self, hash: &str, size: u32, img: &RgbImage) -> DpResult<PathBuf> {
         let path = self.path(hash, size);
 
-        let (w, h) = (img.width(), img.height());
-        let encoded = webp::Encoder::from_rgb(img, w, h).encode(WEBP_QUALITY);
+        let img = img.clone();
+        let encoded = blocking(move || {
+            let (w, h) = (img.width(), img.height());
+            Ok(webp::Encoder::from_rgb(&img, w, h).encode(WEBP_QUALITY).to_vec())
+        })
+        .await?;
 
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| DpError::Io {
@@ -43,12 +49,10 @@ impl ThumbStore {
             })?;
         }
 
-        tokio::fs::write(&path, &*encoded)
-            .await
-            .map_err(|e| DpError::Io {
-                message: format!("failed to write thumbnail: {e}"),
-                path: Some(path.display().to_string()),
-            })?;
+        tokio::fs::write(&path, &encoded).await.map_err(|e| DpError::Io {
+            message: format!("failed to write thumbnail: {e}"),
+            path: Some(path.display().to_string()),
+        })?;
 
         Ok(path)
     }

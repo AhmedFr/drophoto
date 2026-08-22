@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use dp_core::{DpError, DpResult};
 use image::RgbImage;
 
-use crate::{resize_fit, ThumbnailProvider};
+use crate::{blocking, resize_fit, ThumbnailProvider};
 
 /// [`ThumbnailProvider`] backed by the `image` crate's native decoders
 /// (JPEG, PNG, TIFF, WebP).
@@ -19,18 +19,13 @@ impl ThumbnailProvider for ImageCrateThumb {
 
     async fn render(&self, path: &Path, max_px: u32) -> DpResult<RgbImage> {
         let path: PathBuf = path.to_path_buf();
-        let img = tokio::task::spawn_blocking(move || {
-            image::open(&path).map_err(|e| DpError::Io {
+        blocking(move || {
+            let img = image::open(&path).map_err(|e| DpError::Io {
                 message: format!("failed to decode image: {e}"),
                 path: Some(path.display().to_string()),
-            })
+            })?;
+            Ok(resize_fit(img.to_rgb8(), max_px))
         })
         .await
-        .map_err(|e| DpError::Io {
-            message: format!("image decode task panicked: {e}"),
-            path: None,
-        })??;
-
-        Ok(resize_fit(img.to_rgb8(), max_px))
     }
 }

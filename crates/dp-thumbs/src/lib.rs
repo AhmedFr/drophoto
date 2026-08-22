@@ -14,7 +14,7 @@ pub use store::ThumbStore;
 
 use std::path::Path;
 
-use dp_core::DpResult;
+use dp_core::{DpError, DpResult};
 use image::{imageops::FilterType, RgbImage};
 
 /// Thumbnail sizes (longest edge, px) generated for each media item.
@@ -46,4 +46,17 @@ pub fn resize_fit(img: RgbImage, max_px: u32) -> RgbImage {
     let new_w = ((w as f64 * scale).round() as u32).max(1);
     let new_h = ((h as f64 * scale).round() as u32).max(1);
     image::imageops::resize(&img, new_w, new_h, FilterType::Triangle)
+}
+
+/// Run a CPU-bound closure on tokio's blocking thread pool. Used to keep
+/// decode/resize/encode work (which can take tens of milliseconds per
+/// file, and runs in a loop over potentially thousands of files during a
+/// scan) off the async worker threads.
+pub(crate) async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> DpResult<T> + Send + 'static,
+) -> DpResult<T> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| DpError::Io {
+        message: e.to_string(),
+        path: None,
+    })?
 }
