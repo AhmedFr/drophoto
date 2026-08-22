@@ -1,7 +1,14 @@
 import "@testing-library/jest-dom/vitest";
-import { afterEach } from "vitest";
+import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { clearMocks } from "@tauri-apps/api/mocks";
+
+// jsdom implements neither `scrollTo` nor `scrollIntoView`, so anything
+// that calls them (TanStack Router's scroll restoration, Radix
+// DropdownMenu/Tooltip positioning) logs a "Not implemented" warning per
+// call across the whole suite. Stub both globally so tests stay quiet.
+window.scrollTo = vi.fn();
+Element.prototype.scrollIntoView = vi.fn();
 
 // Node >=22 exposes its own global `localStorage` (stable on newer
 // releases), which shadows jsdom's implementation in vitest's jsdom test

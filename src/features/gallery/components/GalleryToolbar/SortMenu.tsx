@@ -15,7 +15,7 @@ export function SortMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger className="border border-border-2 px-2.5 py-1.5 font-mono text-[10px] text-muted-foreground hover:border-border-3 hover:text-foreground">
-        {sort} ▾
+        {sort} <span aria-hidden="true">▾</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {SORT_OPTIONS.map((option) => (
