@@ -16,6 +16,19 @@
   --ghost: #4e4e4a;
   --primary: #f4f4f2;
   --primary-foreground: #0a0a0a;
+  --card: #111110;
+  --card-foreground: #f4f4f2;
+  --popover: #111110;
+  --popover-foreground: #f4f4f2;
+  --secondary: #141412;
+  --secondary-foreground: #f4f4f2;
+  --muted: #141412;
+  --accent: #1e1e1c;
+  --accent-foreground: #f4f4f2;
+  --destructive: #e5484d;
+  --destructive-foreground: #f4f4f2;
+  --input: #242422;
+  --ring: #2e2e2a;
   --radius: 0px;
 }
 
@@ -33,6 +46,19 @@
   --color-ghost: var(--ghost);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
   --font-sans: "Outfit Variable", sans-serif;
   --font-mono: "JetBrains Mono Variable", monospace;
   --radius-sm: 0px;
