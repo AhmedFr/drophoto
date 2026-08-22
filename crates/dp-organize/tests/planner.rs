@@ -169,9 +169,13 @@ fn collision_with_existing_paths() {
 fn pairs_share_stem_and_folder() {
     let mut rule = rule(1);
     rule.keep_pairs = true;
+    // Straddles midnight: the pair's timestamps fall on different
+    // calendar days, so grouping by the *earliest* date (not just "some"
+    // shared date) is actually exercised — using either row's own date
+    // independently would put them in different day-stamped files.
     let rows = vec![
-        row(1, "cards/DSCF0912.RAF", "h-raf", Some("2025-09-12T14:03:21Z")),
-        row(2, "cards/DSCF0912.JPG", "h-jpg", Some("2025-09-12T14:03:23Z")),
+        row(1, "cards/DSCF0912.RAF", "h-raf", Some("2025-09-12T23:59:58Z")),
+        row(2, "cards/DSCF0912.JPG", "h-jpg", Some("2025-09-13T00:00:02Z")),
     ];
     let organized_hashes = HashSet::new();
     let existing_paths = HashSet::new();
@@ -219,4 +223,76 @@ fn already_in_place_is_skipped() {
     assert_eq!(items[0].status, PlanStatus::SkippedCollision);
     assert_eq!(items[0].reason.as_deref(), Some("already in place"));
     assert_eq!(items[0].new_rel_path, items[0].old_rel_path);
+}
+
+/// Regression test for a CRITICAL bug: two rows grouped into the same
+/// `keep_pairs` unit whose computed targets are equal *case-insensitively*
+/// (but not case-sensitively) used to make the old suffix-the-whole-group
+/// algorithm loop forever, since bumping a *shared* suffix never breaks a
+/// tie between two candidates that are identical up to case. `plan()` must
+/// terminate and hand back two distinct (case-insensitively) paths.
+#[test]
+fn disambiguates_case_insensitive_collisions_within_a_pair() {
+    let mut rule = rule(1);
+    rule.keep_pairs = true;
+    let rows = vec![
+        row(1, "cards/Photo.jpg", "h1", Some("2025-09-12T14:03:21Z")),
+        row(2, "cards/photo.JPG", "h2", Some("2025-09-12T14:03:21Z")),
+    ];
+    let organized_hashes = HashSet::new();
+    let existing_paths = HashSet::new();
+    let input = PlanInput {
+        rule: &rule,
+        rows: &rows,
+        organized_hashes: &organized_hashes,
+        existing_paths: &existing_paths,
+        now: "2026-01-01T00:00:00Z".parse().unwrap(),
+    };
+
+    let items = plan(&input, &HandlebarsTemplate, &no_mtime).unwrap();
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].status, PlanStatus::Planned);
+    assert_eq!(items[1].status, PlanStatus::Planned);
+    assert_ne!(
+        items[0].new_rel_path.to_lowercase(),
+        items[1].new_rel_path.to_lowercase(),
+        "the two members must land at distinct (even case-insensitively) paths"
+    );
+    assert_eq!(items[0].new_rel_path, "archive/2025/Q3/2025-09-12_Photo.jpg");
+    assert_eq!(items[1].new_rel_path, "archive/2025/Q3/2025-09-12_photo_1.jpg");
+}
+
+/// Regression test for the same CRITICAL bug, via a duplicated catalog row
+/// (identical `rel_path` appearing twice, e.g. a catalog inconsistency)
+/// rather than a case-variant filename. `organized_hashes` doesn't catch
+/// this (different hashes), so both rows reach collision handling with
+/// fully identical candidates and must still be disambiguated without
+/// looping.
+#[test]
+fn disambiguates_duplicate_rows_within_a_pair() {
+    let mut rule = rule(1);
+    rule.keep_pairs = true;
+    let rows = vec![
+        row(1, "cards/DSCF1000.RAF", "h1", Some("2025-09-12T14:03:21Z")),
+        row(2, "cards/DSCF1000.RAF", "h2", Some("2025-09-12T14:03:21Z")),
+    ];
+    let organized_hashes = HashSet::new();
+    let existing_paths = HashSet::new();
+    let input = PlanInput {
+        rule: &rule,
+        rows: &rows,
+        organized_hashes: &organized_hashes,
+        existing_paths: &existing_paths,
+        now: "2026-01-01T00:00:00Z".parse().unwrap(),
+    };
+
+    let items = plan(&input, &HandlebarsTemplate, &no_mtime).unwrap();
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].status, PlanStatus::Planned);
+    assert_eq!(items[1].status, PlanStatus::Planned);
+    assert_ne!(items[0].new_rel_path, items[1].new_rel_path);
+    assert_eq!(items[0].new_rel_path, "archive/2025/Q3/2025-09-12_DSCF1000.raf");
+    assert_eq!(items[1].new_rel_path, "archive/2025/Q3/2025-09-12_DSCF1000_1.raf");
 }

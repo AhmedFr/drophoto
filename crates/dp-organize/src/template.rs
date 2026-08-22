@@ -3,8 +3,9 @@
 //! Templates are plain handlebars variable interpolations (no helpers,
 //! no blocks) over a fixed, known set of variables. Rendering is strict:
 //! any variable outside that set is rejected before rendering is
-//! attempted, and each variable's rendered value is sanitized so it can
-//! never introduce a stray path separator.
+//! attempted, each variable's rendered value is sanitized so it can
+//! never introduce a stray path separator, and the fully rendered path
+//! is validated to reject traversal (`.`, `..`) and a leading `/`.
 
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 use dp_core::{DpError, DpResult};
@@ -45,7 +46,8 @@ impl NamingTemplate for HandlebarsTemplate {
             path: None,
         })?;
 
-        let sanitized = rendered.trim_start_matches('.').trim();
+        let sanitized = sanitize_path(&rendered.replace('\0', ""))?;
+
         if sanitized.is_empty() {
             return Err(DpError::Unsupported {
                 message: "template rendered to an empty path".into(),
@@ -53,7 +55,7 @@ impl NamingTemplate for HandlebarsTemplate {
             });
         }
 
-        Ok(sanitized.to_string())
+        Ok(sanitized)
     }
 }
 
@@ -119,12 +121,45 @@ fn build_data(vars: &TemplateVars) -> BTreeMap<&'static str, String> {
 }
 
 /// Sanitizes a single rendered variable's value so it can never smuggle
-/// a path separator, a leading dot, or stray whitespace into the
-/// surrounding template text. Used as handlebars' escape function, so it
-/// runs once per `{{var}}` substitution rather than over the template's
-/// literal text (which is trusted, author-controlled configuration and
-/// may legitimately contain `/` to express nested folders).
+/// a path separator, a NUL byte, a leading dot, or stray whitespace into
+/// the surrounding template text. Used as handlebars' escape function,
+/// so it runs once per `{{var}}` substitution rather than over the
+/// template's literal text (which is trusted, author-controlled
+/// configuration and may legitimately contain `/` to express nested
+/// folders).
 fn sanitize_segment(value: &str) -> String {
-    let replaced = value.replace(['/', '\\'], "-");
-    replaced.trim_start_matches('.').trim().to_string()
+    let no_nul = value.replace('\0', "");
+    let replaced = no_nul.replace(['/', '\\'], "-");
+    let trimmed = replaced.trim();
+    let no_dots = trimmed.trim_start_matches('.');
+    no_dots.trim().to_string()
+}
+
+/// Validates and normalizes a fully rendered template's path: rejects a
+/// leading `/` and any `.`/`..` path component, and collapses repeated
+/// `/` separators (and any leading/trailing ones) away.
+fn sanitize_path(rendered: &str) -> DpResult<String> {
+    let trimmed = rendered.trim();
+    if trimmed.starts_with('/') {
+        return Err(DpError::Unsupported {
+            message: "template path must not start with '/'".into(),
+            path: None,
+        });
+    }
+
+    let mut components = Vec::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() {
+            continue;
+        }
+        if part == "." || part == ".." {
+            return Err(DpError::Unsupported {
+                message: format!("template path must not contain '{part}' components"),
+                path: None,
+            });
+        }
+        components.push(part);
+    }
+
+    Ok(components.join("/"))
 }

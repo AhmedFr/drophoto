@@ -51,6 +51,33 @@ async fn refuses_to_overwrite() {
     assert_eq!(std::fs::read(&to).unwrap(), b"already here");
 }
 
+/// macOS's default filesystem is case-insensitive: renaming a file to a
+/// path that differs only by letter case is renaming it to itself, not
+/// overwriting a different file, and must succeed without hitting the
+/// no-overwrite guard.
+#[tokio::test]
+async fn rename_handles_case_only_difference() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = dir.path().join("Photo.jpg");
+    std::fs::write(&from, b"hello").unwrap();
+    let to = dir.path().join("photo.jpg");
+
+    let strategy = RenameStrategy::new(Arc::new(Blake3Hasher));
+    strategy.move_file(&from, &to).await.unwrap();
+
+    assert_eq!(std::fs::read(&to).unwrap(), b"hello");
+
+    let entries: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["photo.jpg".to_string()],
+        "the file must end up under its new casing, and only once"
+    );
+}
+
 #[tokio::test]
 async fn copy_verify_delete_moves_when_rename_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -94,4 +121,41 @@ async fn copy_verify_delete_keeps_source_on_mismatch() {
     assert_eq!(err.to_string(), "verification failed");
     assert!(from.exists(), "source must survive a verification mismatch");
     assert!(!to.exists(), "destination must be cleaned up on mismatch");
+
+    let leftover: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        leftover,
+        vec!["src.txt".to_string()],
+        "the partial temp copy must be removed on mismatch, and the final path must never appear"
+    );
+}
+
+#[tokio::test]
+async fn copy_verify_delete_leaves_no_temp_file_on_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = dir.path().join("src.txt");
+    std::fs::write(&from, b"hello").unwrap();
+    let to = dir.path().join("dst.txt");
+
+    let strategy = CopyVerifyDeleteStrategy {
+        hasher: Arc::new(Blake3Hasher),
+    };
+    strategy.move_file(&from, &to).await.unwrap();
+
+    assert!(!from.exists());
+    assert!(to.exists());
+    assert_eq!(std::fs::read(&to).unwrap(), b"hello");
+
+    let leftover: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        leftover,
+        vec!["dst.txt".to_string()],
+        "no partial temp file should remain after a successful move"
+    );
 }

@@ -9,12 +9,10 @@ dp-hash = { path = "../dp-hash" }
 chrono = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }
 handlebars = "6"
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = "3"
-dp-organize = { path = ".", features = ["test-util"] }
-
-[features]
-test-util = []

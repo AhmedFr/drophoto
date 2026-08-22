@@ -65,3 +65,32 @@ fn validate_template_rejects_bad() {
     assert!(validate_template("{{yyyy}}-{{mm}}-{{dd}}_{{stem}}").is_ok());
     assert!(validate_template("{{nope}}").is_err());
 }
+
+#[test]
+fn rejects_dot_dot_segment() {
+    let v = vars("2025-09-12T14:03:21Z", "IMG_4821", "raf");
+    let tpl = HandlebarsTemplate;
+
+    assert!(tpl.render("../../x/{{yyyy}}", &v).is_err());
+    assert!(validate_template("../{{yyyy}}").is_err());
+    assert!(validate_template("{{yyyy}}/../escape").is_err());
+    assert!(validate_template("{{yyyy}}/.").is_err());
+}
+
+#[test]
+fn rejects_leading_slash() {
+    let v = vars("2025-09-12T14:03:21Z", "IMG_4821", "raf");
+    let tpl = HandlebarsTemplate;
+
+    assert!(tpl.render("/{{yyyy}}", &v).is_err());
+    assert!(validate_template("/etc/{{yyyy}}").is_err());
+}
+
+#[test]
+fn collapses_double_slash() {
+    let v = vars("2025-09-12T14:03:21Z", "IMG_4821", "raf");
+    let tpl = HandlebarsTemplate;
+
+    let out = tpl.render("a//b", &v).unwrap();
+    assert_eq!(out, "a/b");
+}

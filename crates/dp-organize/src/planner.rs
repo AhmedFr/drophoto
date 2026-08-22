@@ -5,9 +5,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use dp_core::{DpResult, MediaRow, OrganizePlanItem, OrganizeRule, PlanStatus};
+use dp_core::{DpError, DpResult, MediaRow, OrganizePlanItem, OrganizeRule, PlanStatus};
 
 use crate::template::{NamingTemplate, TemplateVars};
+
+/// Hard cap on how many `_n` suffixes we'll try before giving up on a
+/// name. Guards against ever looping forever when a collision can't be
+/// resolved (it always can be, in practice, well before this).
+const MAX_SUFFIX: usize = 10_000;
 
 /// Everything the planner needs to compute a plan for one drive's
 /// organize rule.
@@ -53,7 +58,7 @@ pub fn plan(
         .collect();
 
     let effective_dates = if rule.keep_pairs {
-        group_min_dates(rows, &own_dates)
+        group_min_dates(rows, &own_dates)?
     } else {
         own_dates
     };
@@ -92,13 +97,18 @@ pub fn plan(
             input.organized_hashes,
             &mut taken,
             &mut results,
-        );
+        )?;
     }
 
-    Ok(results
+    results
         .into_iter()
-        .map(|item| item.expect("every row is assigned exactly one plan item"))
-        .collect())
+        .enumerate()
+        .map(|(i, item)| {
+            item.ok_or_else(|| DpError::Db {
+                message: format!("planner failed to assign a plan item for row index {i}"),
+            })
+        })
+        .collect()
 }
 
 /// Plans one collision unit (a single row, or a keep_pairs group), and
@@ -111,7 +121,7 @@ fn plan_unit(
     organized_hashes: &HashSet<String>,
     taken: &mut HashSet<String>,
     results: &mut [Option<OrganizePlanItem>],
-) {
+) -> DpResult<()> {
     let mut movable: Vec<usize> = Vec::new();
 
     for &idx in unit {
@@ -136,7 +146,10 @@ fn plan_unit(
             &candidates[idx].ext,
         );
 
-        if candidate_path == row.rel_path {
+        // Case-insensitive: macOS's default filesystem is case-insensitive,
+        // so a candidate that differs from the current path only by case
+        // is already "in place" for our purposes.
+        if candidate_path.to_lowercase() == row.rel_path.to_lowercase() {
             results[idx] = Some(OrganizePlanItem {
                 media_id: row.id,
                 old_rel_path: row.rel_path.clone(),
@@ -152,32 +165,36 @@ fn plan_unit(
     }
 
     if movable.is_empty() {
-        return;
+        return Ok(());
     }
 
-    let mut suffix = 0usize;
-    loop {
-        let attempt: Vec<String> = movable
-            .iter()
-            .map(|&idx| {
-                let file = if suffix == 0 {
-                    candidates[idx].file.clone()
-                } else {
-                    format!("{}_{}", candidates[idx].file, suffix)
-                };
-                build_path(&rule.root, &candidates[idx].folder, &file, &candidates[idx].ext)
-            })
-            .collect();
+    // A collision suffix applies to the whole unit together (so a kept
+    // pair moves in lockstep): find the smallest suffix at which none of
+    // the unit's members collide with anything already taken.
+    let group_suffix = find_group_suffix(rule, candidates, &movable, taken)?;
 
-        let mut lowered: Vec<String> = attempt.iter().map(|p| p.to_lowercase()).collect();
-        let collides_with_taken = lowered.iter().any(|p| taken.contains(p));
-        lowered.sort();
-        let collides_within_batch = lowered.windows(2).any(|w| w[0] == w[1]);
-
-        if !collides_with_taken && !collides_within_batch {
-            for (&idx, path) in movable.iter().zip(attempt) {
-                let row = &rows[idx];
-                taken.insert(path.to_lowercase());
+    // Within that shared baseline, commit members one at a time. This
+    // naturally — and, crucially, *terminatingly* — disambiguates the
+    // rare case where two members of the same unit produce identical (or
+    // case-insensitively identical) candidates: the second member sees
+    // the first's freshly-committed path in `taken` and keeps bumping its
+    // own suffix until it finds a free one, rather than both members
+    // forever bumping the same shared suffix in lockstep.
+    for &idx in &movable {
+        let row = &rows[idx];
+        let mut n = group_suffix;
+        loop {
+            if n > MAX_SUFFIX {
+                return Err(DpError::Unsupported {
+                    message: format!("could not find a free name for media {}", row.id),
+                    path: None,
+                });
+            }
+            let file = suffixed_file(&candidates[idx].file, n);
+            let path = build_path(&rule.root, &candidates[idx].folder, &file, &candidates[idx].ext);
+            let lowered = path.to_lowercase();
+            if !taken.contains(&lowered) {
+                taken.insert(lowered);
                 results[idx] = Some(OrganizePlanItem {
                     media_id: row.id,
                     old_rel_path: row.rel_path.clone(),
@@ -185,11 +202,50 @@ fn plan_unit(
                     status: PlanStatus::Planned,
                     reason: None,
                 });
+                break;
             }
-            return;
+            n += 1;
         }
+    }
 
-        suffix += 1;
+    Ok(())
+}
+
+/// The smallest suffix `n` such that none of `movable`'s candidates at
+/// that suffix collide with `taken`. Only considers external collisions
+/// — members colliding with *each other* are resolved afterwards, per
+/// member, by the caller.
+fn find_group_suffix(
+    rule: &OrganizeRule,
+    candidates: &[Candidate],
+    movable: &[usize],
+    taken: &HashSet<String>,
+) -> DpResult<usize> {
+    let mut n = 0usize;
+    loop {
+        if n > MAX_SUFFIX {
+            return Err(DpError::Unsupported {
+                message: "could not find a free name for a collision group".into(),
+                path: None,
+            });
+        }
+        let all_free = movable.iter().all(|&idx| {
+            let file = suffixed_file(&candidates[idx].file, n);
+            let path = build_path(&rule.root, &candidates[idx].folder, &file, &candidates[idx].ext);
+            !taken.contains(&path.to_lowercase())
+        });
+        if all_free {
+            return Ok(n);
+        }
+        n += 1;
+    }
+}
+
+fn suffixed_file(file: &str, n: usize) -> String {
+    if n == 0 {
+        file.to_string()
+    } else {
+        format!("{file}_{n}")
     }
 }
 
@@ -221,7 +277,7 @@ fn row_group_key(row: &MediaRow) -> (String, String) {
 
 /// For each row, the earliest `own_dates` value among all rows sharing
 /// its group key.
-fn group_min_dates(rows: &[MediaRow], own_dates: &[DateTime<Utc>]) -> Vec<DateTime<Utc>> {
+fn group_min_dates(rows: &[MediaRow], own_dates: &[DateTime<Utc>]) -> DpResult<Vec<DateTime<Utc>>> {
     let mut group_min: HashMap<(String, String), DateTime<Utc>> = HashMap::new();
     for (row, date) in rows.iter().zip(own_dates.iter()) {
         let key = row_group_key(row);
@@ -235,7 +291,14 @@ fn group_min_dates(rows: &[MediaRow], own_dates: &[DateTime<Utc>]) -> Vec<DateTi
             .or_insert(*date);
     }
 
-    rows.iter().map(|row| group_min[&row_group_key(row)]).collect()
+    rows.iter()
+        .map(|row| {
+            let key = row_group_key(row);
+            group_min.get(&key).copied().ok_or_else(|| DpError::Db {
+                message: "planner group lookup failed unexpectedly".into(),
+            })
+        })
+        .collect()
 }
 
 /// Groups row indices by [`row_group_key`], preserving the order each
