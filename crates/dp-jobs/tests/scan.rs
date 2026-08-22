@@ -3,12 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, NewDrive};
+use dp_core::{Drive, DriveRole, NewDrive};
 use dp_hash::{Blake3Hasher, Hasher};
-use dp_jobs::{JobEvent, JobRunner, ScanDeps, ScanJob};
+use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
 use dp_metadata::ExiftoolProvider;
 use dp_thumbs::{ThumbChain, ThumbStore};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 fn fx(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -49,6 +50,19 @@ fn default_deps(catalog: Arc<dyn Catalog>, store: Arc<ThumbStore>) -> ScanDeps {
         thumbs: Arc::new(ThumbChain::default_chain()),
         store,
     }
+}
+
+async fn register_drive(catalog: &Arc<dyn Catalog>, name: &str, mount_path: &Path) -> Drive {
+    catalog
+        .register_drive(NewDrive {
+            name: name.into(),
+            mount_path: mount_path.to_string_lossy().into_owned(),
+            role: DriveRole::Source,
+            capacity: 1_000_000,
+            free: 500_000,
+        })
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -152,5 +166,80 @@ async fn cancelling_immediately_emits_cancelled() {
     assert!(
         matches!(terminal, JobEvent::Cancelled { .. }),
         "expected Cancelled, got {terminal:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_direct_with_pre_cancelled_token_flags_cancelled_and_processes_nothing() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Direct Pre-Cancel Drive", drive_dir.path()).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let job = ScanJob::new("scan-direct-precancel".into(), drive, deps);
+
+    // Cancel *before* run() is even called, isolating the "stopped early"
+    // path from any race with the runner's own bookkeeping.
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = JobCtx { events: tx, cancel };
+
+    let outcome = job.run(ctx).await.unwrap();
+
+    assert!(outcome.cancelled, "expected cancelled=true, got {outcome:?}");
+    assert_eq!(
+        outcome.ok + outcome.failed,
+        0,
+        "expected no files processed when already cancelled, got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_direct_with_live_token_processes_everything_and_flags_not_cancelled() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Direct Live Drive", drive_dir.path()).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let job = ScanJob::new("scan-direct-live".into(), drive, deps);
+
+    // A token that is never cancelled — proves `cancelled` is derived from
+    // an actual early exit, not merely the token's live/dead state.
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = JobCtx {
+        events: tx,
+        cancel: CancellationToken::new(),
+    };
+
+    let outcome = job.run(ctx).await.unwrap();
+
+    assert!(!outcome.cancelled, "expected cancelled=false, got {outcome:?}");
+    assert_eq!(
+        outcome.ok + outcome.failed,
+        2,
+        "expected both files processed, got {outcome:?}"
     );
 }

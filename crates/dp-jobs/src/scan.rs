@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -58,6 +58,12 @@ impl Job for ScanJob {
         let done = AtomicU64::new(0);
         let ok = AtomicU64::new(0);
         let failed = AtomicU64::new(0);
+        // Set only inside process_file's pre-file cancellation check, so it
+        // reflects an actual early exit (at least one file was skipped
+        // because of cancellation) rather than the token's state at some
+        // arbitrary later instant, which would race against cancellation
+        // arriving right as the job finishes on its own.
+        let stopped_early = AtomicBool::new(false);
 
         stream::iter(files)
             .for_each_concurrent(SCAN_CONCURRENCY, |file| {
@@ -66,8 +72,20 @@ impl Job for ScanJob {
                 let done = &done;
                 let ok = &ok;
                 let failed = &failed;
+                let stopped_early = &stopped_early;
                 async move {
-                    process_file(&ctx, self, &mount_path, file, total, done, ok, failed).await;
+                    process_file(
+                        &ctx,
+                        self,
+                        &mount_path,
+                        file,
+                        total,
+                        done,
+                        ok,
+                        failed,
+                        stopped_early,
+                    )
+                    .await;
                 }
             })
             .await;
@@ -76,7 +94,7 @@ impl Job for ScanJob {
             ok: ok.load(Ordering::SeqCst),
             failed: failed.load(Ordering::SeqCst),
             skipped: 0,
-            cancelled: ctx.cancel.is_cancelled(),
+            cancelled: stopped_early.load(Ordering::SeqCst),
         })
     }
 }
@@ -137,8 +155,10 @@ async fn process_file(
     done: &AtomicU64,
     ok: &AtomicU64,
     failed: &AtomicU64,
+    stopped_early: &AtomicBool,
 ) {
     if ctx.cancel.is_cancelled() {
+        stopped_early.store(true, Ordering::SeqCst);
         return;
     }
 
