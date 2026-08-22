@@ -127,6 +127,15 @@ pub(crate) async fn organized_hashes(pool: &SqlitePool, hashes: &[String]) -> Dp
     Ok(result)
 }
 
+pub(crate) async fn list_rel_paths(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<String>> {
+    let rows = sqlx::query("SELECT rel_path FROM media WHERE drive_id = ?")
+        .bind(drive_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+    rows.iter().map(|r| r.try_get("rel_path").map_err(db)).collect()
+}
+
 pub(crate) async fn mark_media_organized(
     pool: &SqlitePool,
     media_id: i64,

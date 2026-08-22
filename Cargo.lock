@@ -1057,10 +1057,12 @@ name = "dp-jobs"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "dp-catalog",
  "dp-core",
  "dp-hash",
  "dp-metadata",
+ "dp-organize",
  "dp-thumbs",
  "futures",
  "serde",
@@ -1134,11 +1136,13 @@ dependencies = [
 name = "drophoto"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dp-catalog",
  "dp-core",
  "dp-hash",
  "dp-jobs",
  "dp-metadata",
+ "dp-organize",
  "dp-thumbs",
  "dp-volumes",
  "serde",

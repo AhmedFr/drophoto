@@ -31,6 +31,7 @@ pub trait Catalog: Send + Sync {
     async fn list_unorganized(&self, drive_id: i64, root: &str) -> DpResult<Vec<MediaRow>>;
     async fn unorganized_summary(&self, drive_id: i64, root: &str) -> DpResult<UnorganizedSummary>;
     async fn organized_hashes(&self, hashes: &[String]) -> DpResult<HashSet<String>>;
+    async fn list_rel_paths(&self, drive_id: i64) -> DpResult<Vec<String>>;
     async fn create_organize_job(&self, drive_id: i64, planned: u64) -> DpResult<i64>;
     async fn finish_organize_job(
         &self,
@@ -110,6 +111,10 @@ impl Catalog for SqliteCatalog {
 
     async fn organized_hashes(&self, hashes: &[String]) -> DpResult<HashSet<String>> {
         organize::organized_hashes(&self.pool, hashes).await
+    }
+
+    async fn list_rel_paths(&self, drive_id: i64) -> DpResult<Vec<String>> {
+        organize::list_rel_paths(&self.pool, drive_id).await
     }
 
     async fn create_organize_job(&self, drive_id: i64, planned: u64) -> DpResult<i64> {

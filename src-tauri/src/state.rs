@@ -3,6 +3,7 @@ use dp_core::{DpError, DpResult};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobRunner};
 use dp_metadata::{ExiftoolProvider, MetadataProvider};
+use dp_organize::{default_strategy, MoveStrategy};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use dp_volumes::{SysinfoVolumes, VolumeProvider};
 use std::collections::HashMap;
@@ -21,12 +22,15 @@ pub struct AppState {
     pub metadata: Arc<dyn MetadataProvider>,
     pub thumbs: Arc<ThumbChain>,
     pub store: Arc<ThumbStore>,
+    pub strategy: Arc<dyn MoveStrategy>,
     pub runner: JobRunner,
-    /// Job id of the in-flight scan for each drive, keyed by drive id.
-    /// Stale entries (a job that finished or was cancelled) are pruned
-    /// lazily the next time [`AppState::start_scan`] checks them against
-    /// [`JobRunner::is_running`].
-    active_scans: Mutex<HashMap<i64, String>>,
+    /// Job id of the in-flight job for each `(kind, drive_id)` pair,
+    /// where `kind` is `"scan"` or `"organize"` — each drive can have at
+    /// most one running job of each kind at a time. Stale entries (a job
+    /// that finished or was cancelled) are pruned lazily the next time
+    /// [`AppState::start_scan`]/[`AppState::start_organize`] checks them
+    /// against [`JobRunner::is_running`].
+    active_jobs: Mutex<HashMap<(String, i64), String>>,
 }
 
 impl AppState {
@@ -55,15 +59,18 @@ impl AppState {
             }
         });
 
+        let hasher: Arc<dyn Hasher> = Arc::new(Blake3Hasher);
+
         Ok(Self {
             volumes: Arc::new(SysinfoVolumes),
             catalog: Arc::new(catalog),
-            hasher: Arc::new(Blake3Hasher),
+            strategy: default_strategy(hasher.clone()),
+            hasher,
             metadata: Arc::new(ExiftoolProvider::from_path()),
             thumbs: Arc::new(ThumbChain::default_chain()),
             store: Arc::new(ThumbStore::new(thumbs_root)),
             runner,
-            active_scans: Mutex::new(HashMap::new()),
+            active_jobs: Mutex::new(HashMap::new()),
         })
     }
 
@@ -71,31 +78,60 @@ impl AppState {
     /// in which case the existing job id is returned instead of starting a
     /// duplicate. `make_job` builds the [`Job`] given the id it will run
     /// under.
+    pub fn start_scan(&self, drive_id: i64, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> String {
+        self.start_job("scan", drive_id, make_job)
+    }
+
+    /// Starts an organize job for `drive_id`, unless one is already
+    /// running for it — in which case the existing job id is returned
+    /// instead of starting a duplicate. `make_job` builds the [`Job`]
+    /// given the id it will run under.
+    pub fn start_organize(&self, drive_id: i64, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> String {
+        self.start_job("organize", drive_id, make_job)
+    }
+
+    /// Returns the running job id for `(kind, drive_id)`, if any, without
+    /// starting anything. Lets a caller skip redundant work (e.g.
+    /// re-planning an organize job) up front when it already knows the
+    /// spawn itself would just be deduped.
+    pub fn active_job(&self, kind: &str, drive_id: i64) -> Option<String> {
+        let jobs = lock_active_jobs(&self.active_jobs);
+        let job_id = jobs.get(&(kind.to_string(), drive_id))?;
+        self.runner.is_running(job_id).then(|| job_id.clone())
+    }
+
+    /// Starts a `kind` job ("scan" or "organize") for `drive_id`, unless
+    /// one is already running for that `(kind, drive_id)` pair — in which
+    /// case the existing job id is returned instead of starting a
+    /// duplicate.
     ///
     /// The check-and-insert happens under a single lock acquisition so two
-    /// concurrent calls for the same drive can't both observe "not
-    /// running" and each spawn their own job.
-    pub fn start_scan(&self, drive_id: i64, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> String {
-        let mut scans = lock_active_scans(&self.active_scans);
-        if let Some(job_id) = scans.get(&drive_id) {
+    /// concurrent calls for the same `(kind, drive_id)` can't both observe
+    /// "not running" and each spawn their own job.
+    fn start_job(&self, kind: &str, drive_id: i64, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> String {
+        let key = (kind.to_string(), drive_id);
+        let mut jobs = lock_active_jobs(&self.active_jobs);
+        if let Some(job_id) = jobs.get(&key) {
             if self.runner.is_running(job_id) {
                 return job_id.clone();
             }
         }
 
-        let job_id = self.runner.next_id("scan");
+        let job_id = self.runner.next_id(kind);
         self.runner.spawn(job_id.clone(), make_job(job_id.clone()));
-        scans.insert(drive_id, job_id.clone());
+        jobs.insert(key, job_id.clone());
         job_id
     }
 }
 
-/// Locks `active_scans`, recovering from mutex poisoning instead of
+/// Locks `active_jobs`, recovering from mutex poisoning instead of
 /// unwrapping — the guarded section is a trivial `HashMap` lookup/insert
 /// that can't leave the map in a state worth propagating a poisoned-lock
 /// panic for.
-fn lock_active_scans(active_scans: &Mutex<HashMap<i64, String>>) -> MutexGuard<'_, HashMap<i64, String>> {
-    active_scans
+fn lock_active_jobs(
+    active_jobs: &Mutex<HashMap<(String, i64), String>>,
+) -> MutexGuard<'_, HashMap<(String, i64), String>> {
+    active_jobs
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

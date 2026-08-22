@@ -1,9 +1,11 @@
 //! Background job infrastructure: a `Job` trait, an async `JobRunner`, and
 //! `ScanJob` (drive scanning with progress events).
 
+mod organize;
 mod runner;
 mod scan;
 
+pub use organize::{OrganizeDeps, OrganizeJob};
 pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};
 

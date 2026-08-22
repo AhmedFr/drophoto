@@ -186,6 +186,41 @@ async fn organized_hashes_only_returns_organized() {
 }
 
 #[tokio::test]
+async fn list_rel_paths_returns_all_paths_for_drive_regardless_of_organized_state() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let other_drive_id = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            capacity: 100,
+            free: 40,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    c.upsert_media(nm(drive_id, "plain.jpg", "h-plain"))
+        .await
+        .unwrap();
+    let organized_id = c
+        .upsert_media(nm(drive_id, "organized.jpg", "h-org"))
+        .await
+        .unwrap();
+    c.mark_media_organized(organized_id, "archive/organized.jpg")
+        .await
+        .unwrap();
+    c.upsert_media(nm(other_drive_id, "elsewhere.jpg", "h-other"))
+        .await
+        .unwrap();
+
+    let mut paths = c.list_rel_paths(drive_id).await.unwrap();
+    paths.sort();
+    assert_eq!(paths, ["archive/organized.jpg", "plain.jpg"]);
+}
+
+#[tokio::test]
 async fn job_lifecycle() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
