@@ -31,6 +31,7 @@ export type MediaItem = {
   preview_path: string;
   drive_name: string;
   online: boolean;
+  original_path: string | null;
 };
 
 export type MediaSort = "taken_desc" | "taken_asc" | "added_desc";

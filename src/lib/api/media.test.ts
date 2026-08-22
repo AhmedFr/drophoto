@@ -29,6 +29,7 @@ const item: MediaItem = {
   preview_path: "/tmp/thumbs/hash1/2000.webp",
   drive_name: "Kodachrome",
   online: true,
+  original_path: null,
 };
 
 const query: MediaQuery = {

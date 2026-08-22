@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
 import { GalleryToolbar } from "./components/GalleryToolbar";
+import { Lightbox } from "./components/Lightbox";
 import { VirtualGrid } from "./components/VirtualGrid";
 import { useMediaCount } from "./hooks/useMediaCount";
 import { useMediaInfinite } from "./hooks/useMediaInfinite";
@@ -14,10 +15,8 @@ export function GalleryPage() {
   const density = useGalleryStore((s) => s.density);
   const items = media.items;
 
-  // Opened by `VirtualGrid`'s `onOpen`; the lightbox that reads it is added
-  // in Task 2.6.
+  // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s `onClose`).
   const [openIndex, setOpenIndex] = useState<number | null>(null);
-  void openIndex;
 
   return (
     <div className="flex h-full flex-col">
@@ -57,6 +56,18 @@ export function GalleryPage() {
           />
         )}
       </div>
+      {openIndex !== null && (
+        <Lightbox
+          items={items}
+          index={openIndex}
+          onClose={() => setOpenIndex(null)}
+          onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
+          onNext={() => {
+            if (openIndex < items.length - 1) setOpenIndex(openIndex + 1);
+            else if (media.hasNextPage) media.fetchNextPage();
+          }}
+        />
+      )}
     </div>
   );
 }

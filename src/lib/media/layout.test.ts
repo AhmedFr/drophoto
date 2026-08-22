@@ -33,6 +33,7 @@ function makeItem(width: number | null, height: number | null, takenAt: string |
     preview_path: `preview-${id}.jpg`,
     drive_name: "Drive",
     online: true,
+    original_path: null,
   };
 }
 

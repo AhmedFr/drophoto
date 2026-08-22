@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  basename,
   formatCoords,
   formatDims,
   formatDuration,
@@ -9,6 +10,16 @@ import {
   monthKey,
   monthLabel,
 } from "./format";
+
+describe("basename", () => {
+  it("returns the last path segment", () => {
+    expect(basename("photos/family/beach.jpg")).toBe("beach.jpg");
+  });
+
+  it("returns the path unchanged when there is no separator", () => {
+    expect(basename("beach.jpg")).toBe("beach.jpg");
+  });
+});
 
 describe("monthLabel", () => {
   it("formats a UTC month and year", () => {

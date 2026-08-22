@@ -159,6 +159,7 @@ pub struct MediaItem {
     pub preview_path: String,
     pub drive_name: String,
     pub online: bool,
+    pub original_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]

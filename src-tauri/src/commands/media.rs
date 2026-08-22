@@ -1,16 +1,7 @@
+use crate::commands::media_item::to_item;
 use crate::state::AppState;
-use dp_core::{DpError, Drive, MediaItem, MediaQuery, MediaRow};
+use dp_core::{DpError, MediaItem, MediaQuery};
 use tauri::State;
-
-fn to_item(state: &AppState, row: MediaRow, drive: Drive) -> MediaItem {
-    MediaItem {
-        thumb_path: state.store.path(&row.hash, 400).to_string_lossy().into_owned(),
-        preview_path: state.store.path(&row.hash, 2000).to_string_lossy().into_owned(),
-        drive_name: drive.name,
-        online: drive.online,
-        row,
-    }
-}
 
 #[tauri::command]
 pub async fn query_media(state: State<'_, AppState>, query: MediaQuery) -> Result<Vec<MediaItem>, DpError> {
@@ -19,7 +10,7 @@ pub async fn query_media(state: State<'_, AppState>, query: MediaQuery) -> Resul
         .query_media(&query)
         .await?
         .into_iter()
-        .map(|(r, d)| to_item(&state, r, d))
+        .map(|(r, d)| to_item(&state.store, r, d))
         .collect())
 }
 
@@ -31,5 +22,5 @@ pub async fn count_media(state: State<'_, AppState>, query: MediaQuery) -> Resul
 #[tauri::command]
 pub async fn get_media(state: State<'_, AppState>, id: i64) -> Result<MediaItem, DpError> {
     let (r, d) = state.catalog.get_media_with_drive(id).await?;
-    Ok(to_item(&state, r, d))
+    Ok(to_item(&state.store, r, d))
 }

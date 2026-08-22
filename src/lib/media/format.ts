@@ -87,3 +87,8 @@ export function formatDims(w: number | null, h: number | null): string {
   if (w === null || h === null) return "—";
   return `${w} × ${h}`;
 }
+
+/** The last path segment of a `/`-separated `relPath`, e.g. a filename. */
+export function basename(relPath: string): string {
+  return relPath.split("/").pop() ?? relPath;
+}

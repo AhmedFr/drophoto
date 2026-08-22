@@ -60,6 +60,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
     preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
     drive_name: "Kodachrome",
     online: true,
+    original_path: null,
     ...overrides,
   };
 }
