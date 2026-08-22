@@ -1,5 +1,6 @@
 import type { MouseEvent } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Dialog as DialogPrimitive } from "radix-ui";
 import { useKeyboardNav } from "@/lib/hooks/useKeyboardNav";
 import { basename } from "@/lib/media/format";
 import { LightboxImage } from "./LightboxImage";
@@ -12,67 +13,88 @@ const navButtonClass =
 export function Lightbox({ items, index, onClose, onPrev, onNext }: LightboxProps) {
   const item = items[index];
 
+  // Escape and outside-click are already handled by Radix's `Dialog.Content`
+  // (via its focus-trapping `DismissableLayer`) — this hook only covers
+  // arrow-key navigation, which Radix doesn't know about. Keeping `onClose`
+  // wired to Escape here too is harmless: both handlers call the same
+  // idempotent `setOpenIndex(null)`.
   useKeyboardNav({ enabled: true, onClose, onPrev, onNext });
 
   const stop = (e: MouseEvent) => e.stopPropagation();
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={basename(item.row.rel_path)}
-      className="fixed inset-0 z-50 flex bg-[rgba(6,6,6,0.97)]"
-      onClick={onClose}
+    <DialogPrimitive.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
     >
-      <div className="flex flex-1 flex-col">
-        <div className="flex items-center justify-between p-6">
-          <button
-            type="button"
-            onClick={onClose}
-            className="font-mono text-[10.5px] tracking-[1.5px] text-dim hover:text-foreground"
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay
+          data-testid="lightbox-overlay"
+          className="fixed inset-0 z-50 bg-[rgba(6,6,6,0.97)]"
+        />
+        <DialogPrimitive.Content
+          aria-describedby={undefined}
+          className="fixed inset-0 z-50 flex outline-none"
+          onClick={onClose}
+        >
+          <DialogPrimitive.Title className="sr-only">{basename(item.row.rel_path)}</DialogPrimitive.Title>
+
+          <div className="flex flex-1 flex-col">
+            <div className="flex items-center justify-between p-6">
+              <button
+                type="button"
+                onClick={(e) => {
+                  stop(e);
+                  onClose();
+                }}
+                className="font-mono text-[10.5px] tracking-[1.5px] text-dim hover:text-foreground"
+              >
+                CLOSE
+              </button>
+              <span className="font-mono text-[10.5px] tracking-[1.5px] text-dim">
+                {String(index + 1).padStart(2, "0")} / {items.length}
+              </span>
+            </div>
+
+            <div className="flex flex-1 items-center justify-center gap-4 overflow-hidden px-6 pb-6">
+              <button
+                type="button"
+                aria-label="Previous"
+                className={navButtonClass}
+                onClick={(e) => {
+                  stop(e);
+                  onPrev();
+                }}
+              >
+                <ChevronLeft size={16} />
+              </button>
+
+              <LightboxImage key={item.row.id} item={item} />
+
+              <button
+                type="button"
+                aria-label="Next"
+                className={navButtonClass}
+                onClick={(e) => {
+                  stop(e);
+                  onNext();
+                }}
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+
+          <aside
+            className="w-[372px] shrink-0 overflow-y-auto border-l border-border bg-[#0b0b0a] p-6"
+            onClick={stop}
           >
-            CLOSE
-          </button>
-          <span className="font-mono text-[10.5px] tracking-[1.5px] text-dim">
-            {String(index + 1).padStart(2, "0")} / {items.length}
-          </span>
-        </div>
-
-        <div className="flex flex-1 items-center justify-center gap-4 overflow-hidden px-6 pb-6">
-          <button
-            type="button"
-            aria-label="Previous"
-            className={navButtonClass}
-            onClick={(e) => {
-              stop(e);
-              onPrev();
-            }}
-          >
-            <ChevronLeft size={16} />
-          </button>
-
-          <LightboxImage key={item.row.id} item={item} />
-
-          <button
-            type="button"
-            aria-label="Next"
-            className={navButtonClass}
-            onClick={(e) => {
-              stop(e);
-              onNext();
-            }}
-          >
-            <ChevronRight size={16} />
-          </button>
-        </div>
-      </div>
-
-      <aside
-        className="w-[372px] shrink-0 overflow-y-auto border-l border-border bg-[#0b0b0a] p-6"
-        onClick={stop}
-      >
-        <MetaPanel item={item} />
-      </aside>
-    </div>
+            <MetaPanel key={item.row.id} item={item} />
+          </aside>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }

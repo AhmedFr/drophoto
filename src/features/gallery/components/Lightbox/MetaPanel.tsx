@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { revealInFinder } from "@/lib/api/opener";
@@ -20,6 +21,16 @@ export function MetaPanel({ item }: MetaPanelProps) {
   const { row } = item;
   const coords = formatCoords(row.lat, row.lon);
   const canReveal = item.online && item.original_path != null;
+  const [revealError, setRevealError] = useState<string | null>(null);
+
+  const handleReveal = async () => {
+    setRevealError(null);
+    try {
+      await revealInFinder(item.original_path!);
+    } catch (err) {
+      setRevealError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -60,14 +71,10 @@ export function MetaPanel({ item }: MetaPanelProps) {
         </MetaSection>
       </div>
 
-      <Button
-        variant="outline"
-        className="mt-6 w-full"
-        disabled={!canReveal}
-        onClick={() => revealInFinder(item.original_path!)}
-      >
+      <Button variant="outline" className="mt-6 w-full" disabled={!canReveal} onClick={handleReveal}>
         Reveal in Finder
       </Button>
+      {revealError && <p className="mt-2 font-mono text-[10px] text-red-400">{revealError}</p>}
     </div>
   );
 }

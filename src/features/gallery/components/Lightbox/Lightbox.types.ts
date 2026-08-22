@@ -6,5 +6,4 @@ export type LightboxProps = {
   onClose(): void;
   onPrev(): void;
   onNext(): void;
-  onNearEnd?(): void;
 };

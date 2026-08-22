@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "core:event:default",
-    "opener:default",
-    "opener:allow-reveal-item-in-dir"
+    "opener:default"
   ]
 }

@@ -1,7 +1,10 @@
-import { screen } from "@testing-library/react";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
 import { MetaPanel } from "./MetaPanel";
+
+vi.mock("@tauri-apps/plugin-opener");
 
 function item(overrides: Partial<MediaItem> = {}): MediaItem {
   return {
@@ -83,4 +86,21 @@ it("enables Reveal in Finder when online with an original_path", () => {
   render(<MetaPanel item={item()} />);
 
   expect(screen.getByRole("button", { name: /reveal in finder/i })).toBeEnabled();
+});
+
+it("disables Reveal in Finder when online but there is no original_path", () => {
+  render(<MetaPanel item={item({ online: true, original_path: null })} />);
+
+  expect(screen.getByRole("button", { name: /reveal in finder/i })).toBeDisabled();
+});
+
+it("shows an error message when revealing in Finder fails", async () => {
+  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+  vi.mocked(revealItemInDir).mockRejectedValue(new Error("no such file"));
+  const user = userEvent.setup();
+  render(<MetaPanel item={item()} />);
+
+  await user.click(screen.getByRole("button", { name: /reveal in finder/i }));
+
+  expect(await screen.findByText("no such file")).toBeInTheDocument();
 });

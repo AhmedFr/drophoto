@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
@@ -124,4 +124,68 @@ it("calls onNext when pressing ArrowRight", () => {
   fireEvent.keyDown(window, { key: "ArrowRight" });
 
   expect(onNext).toHaveBeenCalledTimes(1);
+});
+
+it("calls onClose exactly once when clicking CLOSE", async () => {
+  const onClose = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <Lightbox items={items(3)} index={0} onClose={onClose} onPrev={vi.fn()} onNext={vi.fn()} />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "CLOSE" }));
+
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("closes when pressing Escape", async () => {
+  const onClose = vi.fn();
+  render(
+    <Lightbox items={items(3)} index={0} onClose={onClose} onPrev={vi.fn()} onNext={vi.fn()} />,
+  );
+
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+});
+
+it("closes when clicking the overlay behind the dialog", async () => {
+  const onClose = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <Lightbox items={items(3)} index={0} onClose={onClose} onPrev={vi.fn()} onNext={vi.fn()} />,
+  );
+
+  await user.click(screen.getByTestId("lightbox-overlay"));
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+});
+
+it("moves focus inside the dialog when opened", async () => {
+  render(<Lightbox items={items(3)} index={0} onClose={vi.fn()} onPrev={vi.fn()} onNext={vi.fn()} />);
+
+  await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+});
+
+it("traps Tab focus within the dialog", async () => {
+  const user = userEvent.setup();
+  render(<Lightbox items={items(3)} index={0} onClose={vi.fn()} onPrev={vi.fn()} onNext={vi.fn()} />);
+
+  const dialog = screen.getByRole("dialog");
+  await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+  await user.tab();
+  await user.tab();
+
+  expect(dialog.contains(document.activeElement)).toBe(true);
+});
+
+it("locks page scroll while open", async () => {
+  render(<Lightbox items={items(3)} index={0} onClose={vi.fn()} onPrev={vi.fn()} onNext={vi.fn()} />);
+
+  await waitFor(() => {
+    const locked =
+      document.body.style.overflow === "hidden" || document.body.style.pointerEvents === "none";
+    expect(locked).toBe(true);
+  });
 });

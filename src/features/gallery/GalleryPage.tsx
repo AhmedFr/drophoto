@@ -64,7 +64,7 @@ export function GalleryPage() {
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
           onNext={() => {
             if (openIndex < items.length - 1) setOpenIndex(openIndex + 1);
-            else if (media.hasNextPage) media.fetchNextPage();
+            else if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
           }}
         />
       )}
