@@ -121,6 +121,22 @@ pub struct NewMedia {
     pub lon: Option<f64>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct MediaMetadata {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    pub taken_at: Option<DateTime<Utc>>,
+    pub camera: Option<String>,
+    pub lens: Option<String>,
+    pub aperture: Option<f64>,
+    pub shutter: Option<f64>,
+    pub iso: Option<u32>,
+    pub focal_mm: Option<f64>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

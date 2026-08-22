@@ -1,0 +1,15 @@
+[package]
+name = "dp-metadata"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+dp-core = { path = "../dp-core" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+which = "7"
