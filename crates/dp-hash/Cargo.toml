@@ -1,0 +1,14 @@
+[package]
+name = "dp-hash"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+dp-core = { path = "../dp-core" }
+blake3 = "1"
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
