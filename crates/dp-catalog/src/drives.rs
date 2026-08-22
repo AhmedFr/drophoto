@@ -10,7 +10,7 @@ fn role_to_str(role: DriveRole) -> &'static str {
     }
 }
 
-fn role_from_str(s: &str) -> DpResult<DriveRole> {
+pub(crate) fn role_from_str(s: &str) -> DpResult<DriveRole> {
     match s {
         "source" => Ok(DriveRole::Source),
         "archive" => Ok(DriveRole::Archive),

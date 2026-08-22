@@ -19,6 +19,7 @@ pub fn run() {
             commands::volumes::list_volumes,
             commands::drives::register_drive,
             commands::drives::list_drives,
+            commands::media::list_media,
             commands::scan::start_scan,
             commands::scan::cancel_job,
         ])

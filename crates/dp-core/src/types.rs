@@ -121,6 +121,14 @@ pub struct NewMedia {
     pub lon: Option<f64>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MediaItem {
+    pub row: MediaRow,
+    pub thumb_path: String,
+    pub drive_name: String,
+    pub online: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct MediaMetadata {
     pub width: Option<u32>,

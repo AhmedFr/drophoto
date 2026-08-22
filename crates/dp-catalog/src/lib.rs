@@ -13,6 +13,7 @@ pub trait Catalog: Send + Sync {
     async fn set_drive_presence(&self, id: i64, mount_path: Option<&str>, free: Option<u64>) -> DpResult<()>;
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64>;
     async fn list_media(&self, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>>;
+    async fn list_media_with_drive(&self, limit: u32, offset: u32) -> DpResult<Vec<(MediaRow, Drive)>>;
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64>;
     async fn media_hash_exists(&self, hash: &str) -> DpResult<bool>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
@@ -38,6 +39,10 @@ impl Catalog for SqliteCatalog {
 
     async fn list_media(&self, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>> {
         media::list_media(&self.pool, limit, offset).await
+    }
+
+    async fn list_media_with_drive(&self, limit: u32, offset: u32) -> DpResult<Vec<(MediaRow, Drive)>> {
+        media::list_media_with_drive(&self.pool, limit, offset).await
     }
 
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64> {
