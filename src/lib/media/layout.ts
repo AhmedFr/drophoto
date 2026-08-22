@@ -73,14 +73,24 @@ export function buildLayout(
   const layout: LayoutItem[] = [];
   let i = 0;
   while (i < items.length) {
-    const key = monthKey(items[i].row.taken_at);
+    const monthKeyValue = monthKey(items[i].row.taken_at);
     let j = i + 1;
-    while (j < items.length && monthKey(items[j].row.taken_at) === key) j++;
+    while (j < items.length && monthKey(items[j].row.taken_at) === monthKeyValue) j++;
 
     const group = items.slice(i, j);
-    const label = key === "undated" ? "Undated" : monthLabel(items[i].row.taken_at);
-    layout.push({ kind: "header", key: `h:${key}`, label, count: group.length, height: HEADER_HEIGHT });
-    layout.push(...packGroup(group, i, key, containerWidth, targetRowHeight));
+    const label = monthKeyValue === "undated" ? "Undated" : monthLabel(items[i].row.taken_at);
+    // Include the group's start index (`i`) so that when a month recurs
+    // non-consecutively (e.g. after an ADDED sort), each occurrence still
+    // gets a positionally unique key instead of colliding on `monthKey`.
+    const groupKey = `${monthKeyValue}:${i}`;
+    layout.push({
+      kind: "header",
+      key: `h:${groupKey}`,
+      label,
+      count: group.length,
+      height: HEADER_HEIGHT,
+    });
+    layout.push(...packGroup(group, i, groupKey, containerWidth, targetRowHeight));
 
     i = j;
   }

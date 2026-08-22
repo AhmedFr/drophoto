@@ -1,20 +1,24 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
 import { virtualizerMockFactory } from "@/test/mockVirtualizer";
 import { VirtualGrid } from "./VirtualGrid";
 
-vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory());
+const virtualizerSpies = vi.hoisted(() => ({ measure: vi.fn() }));
+vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory(virtualizerSpies));
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://mock/${path}`,
 }));
+
+let latestResizeCallback: ResizeObserverCallback | null = null;
 
 class ResizeObserverStub {
   #callback: ResizeObserverCallback;
 
   constructor(callback: ResizeObserverCallback) {
     this.#callback = callback;
+    latestResizeCallback = callback;
   }
 
   observe() {
@@ -29,6 +33,8 @@ class ResizeObserverStub {
 }
 
 beforeEach(() => {
+  latestResizeCallback = null;
+  virtualizerSpies.measure.mockClear();
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
 });
 
@@ -95,4 +101,21 @@ it("does not call onNearEnd again for the same layout length", () => {
   );
   rerender(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} />);
   expect(onNearEnd).toHaveBeenCalledTimes(1);
+});
+
+it("re-measures the virtualizer when the container is resized", () => {
+  const items = [item(1), item(2)];
+  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} />);
+
+  const callsAfterMount = virtualizerSpies.measure.mock.calls.length;
+  expect(callsAfterMount).toBeGreaterThan(0);
+
+  act(() => {
+    latestResizeCallback?.(
+      [{ contentRect: { width: 600 } } as ResizeObserverEntry],
+      {} as ResizeObserver,
+    );
+  });
+
+  expect(virtualizerSpies.measure.mock.calls.length).toBeGreaterThan(callsAfterMount);
 });

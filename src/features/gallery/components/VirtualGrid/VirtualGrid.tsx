@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { buildLayout, GAP } from "@/lib/media/layout";
 import { JustifiedRow } from "./JustifiedRow";
@@ -6,13 +6,13 @@ import { MonthHeader } from "./MonthHeader";
 import { useContainerWidth } from "./useContainerWidth";
 import type { VirtualGridProps } from "./VirtualGrid.types";
 
-const PADDING = 32; // p-4 on both sides of the scroll element
-
-export function VirtualGrid({ items, targetRowHeight, onOpen, onNearEnd }: VirtualGridProps) {
+function VirtualGridImpl({ items, targetRowHeight, onOpen, onNearEnd }: VirtualGridProps) {
+  // `useContainerWidth` measures `contentRect.width`, which already excludes
+  // the scroll element's `p-4` padding — no further subtraction needed here.
   const { ref, width } = useContainerWidth<HTMLDivElement>();
 
   const layout = useMemo(
-    () => buildLayout(items, width - PADDING, targetRowHeight),
+    () => buildLayout(items, width, targetRowHeight),
     [items, width, targetRowHeight],
   );
 
@@ -22,6 +22,15 @@ export function VirtualGrid({ items, targetRowHeight, onOpen, onNearEnd }: Virtu
     estimateSize: (i) => layout[i].height + GAP,
     overscan: 6,
   });
+
+  // TanStack Virtual's measurement memo isn't keyed on `estimateSize`, so a
+  // container resize that doesn't change `layout.length` (e.g. the same
+  // number of rows re-packed at a new width) leaves stale `start`/total-size
+  // values behind. Re-measuring whenever `layout` is a new reference (i.e.
+  // whenever width, items, or row height change) keeps them in sync.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [virtualizer, layout]);
 
   const virtualItems = virtualizer.getVirtualItems();
   const maxIndex = virtualItems.reduce((max, v) => Math.max(max, v.index), -1);
@@ -73,3 +82,5 @@ export function VirtualGrid({ items, targetRowHeight, onOpen, onNearEnd }: Virtu
     </div>
   );
 }
+
+export const VirtualGrid = memo(VirtualGridImpl);

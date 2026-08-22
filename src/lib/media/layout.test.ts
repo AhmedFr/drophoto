@@ -114,7 +114,7 @@ describe("buildLayout", () => {
     const layout = buildLayout(items, 1000, 240);
     const headers = headersOf(layout);
     expect(headers).toHaveLength(1);
-    expect(headers[0]).toMatchObject({ label: "Undated", count: 2, key: "h:undated" });
+    expect(headers[0]).toMatchObject({ label: "Undated", count: 2, key: "h:undated:0" });
   });
 
   it("keeps tile index continuous across rows and groups, matching position in the flat items array", () => {
@@ -145,5 +145,19 @@ describe("buildLayout", () => {
     const layout = buildLayout([item], 1000, 240);
     const row = rowsOf(layout)[0];
     expect(row.tiles[0].width).toBeCloseTo((4 / 3) * 240, 5);
+  });
+
+  it("gives every LayoutItem a positionally unique key when a month recurs non-consecutively", () => {
+    // An ADDED sort can interleave months out of chronological order, so the
+    // same `monthKey` ("2025-09") can appear in two separate, non-adjacent
+    // groups — the keys must still be distinct.
+    const items = [
+      makeItem(100, 100, "2025-09-01T00:00:00Z"),
+      makeItem(100, 100, "2025-08-01T00:00:00Z"),
+      makeItem(100, 100, "2025-09-15T00:00:00Z"),
+    ];
+    const layout = buildLayout(items, 1000, 240);
+    const keys = new Set(layout.map((l) => l.key));
+    expect(keys.size).toBe(layout.length);
   });
 });

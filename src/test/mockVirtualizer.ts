@@ -1,3 +1,7 @@
+import { vi, type Mock } from "vitest";
+
+export type VirtualizerSpies = { measure: Mock };
+
 /**
  * Factory for a `@tanstack/react-virtual` mock that renders every index
  * unconditionally, sized 260px apart, instead of relying on jsdom's lack
@@ -13,8 +17,18 @@
  * import { virtualizerMockFactory } from "@/test/mockVirtualizer";
  * vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory());
  * ```
+ *
+ * To assert on `measure()` calls (e.g. after simulating a resize), create
+ * the spy with `vi.hoisted` — so it exists before the hoisted `vi.mock`
+ * call runs — and pass it in:
+ *
+ * ```ts
+ * const virtualizerSpies = vi.hoisted(() => ({ measure: vi.fn() }));
+ * vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory(virtualizerSpies));
+ * ```
  */
-export function virtualizerMockFactory() {
+export function virtualizerMockFactory(spies?: VirtualizerSpies) {
+  const measure = spies?.measure ?? vi.fn();
   return {
     useVirtualizer: (opts: { count: number }) => ({
       getVirtualItems: () =>
@@ -26,6 +40,7 @@ export function virtualizerMockFactory() {
         })),
       getTotalSize: () => opts.count * 260,
       measureElement: () => {},
+      measure,
     }),
   };
 }
