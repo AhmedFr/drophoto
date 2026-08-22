@@ -63,6 +63,13 @@ it("calls onOpen with the tile index on Enter", () => {
   expect(onOpen).toHaveBeenCalledWith(7);
 });
 
+it("calls onOpen with the tile index on Space", () => {
+  const onOpen = vi.fn();
+  render(<Tile tile={tile({ index: 7 })} onOpen={onOpen} />);
+  fireEvent.keyDown(screen.getByRole("button"), { key: " " });
+  expect(onOpen).toHaveBeenCalledWith(7);
+});
+
 it("shows a video badge with the formatted duration", () => {
   const t = tile({ item: item({ row: { ...item().row, kind: "video", duration_ms: 42_000 } }) });
   render(<Tile tile={t} onOpen={() => {}} />);

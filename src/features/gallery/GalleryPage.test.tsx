@@ -3,12 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
-import { mockUseVirtualizer } from "@/test/mockVirtualizer";
+import { virtualizerMockFactory } from "@/test/mockVirtualizer";
 import { renderWithRouter } from "@/test/renderWithRouter";
 import { useGalleryStore } from "./store/galleryStore";
 import { GalleryPage } from "./GalleryPage";
 
-mockUseVirtualizer();
+vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory());
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tauri-apps/api/core")>();

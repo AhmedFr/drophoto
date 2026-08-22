@@ -12,11 +12,16 @@ export function Tile({ tile, onOpen }: TileProps) {
       role="button"
       tabIndex={0}
       aria-label={row.rel_path}
-      className="group relative shrink-0 cursor-pointer overflow-hidden bg-surface-2 outline-none"
+      className="group relative shrink-0 cursor-pointer overflow-hidden bg-surface-2 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
       style={{ width, height }}
       onClick={() => onOpen(index)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onOpen(index);
+        if (e.key === "Enter") {
+          onOpen(index);
+        } else if (e.key === " ") {
+          e.preventDefault();
+          onOpen(index);
+        }
       }}
     >
       <img

@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
-import { mockUseVirtualizer } from "@/test/mockVirtualizer";
+import { virtualizerMockFactory } from "@/test/mockVirtualizer";
 import { VirtualGrid } from "./VirtualGrid";
 
-mockUseVirtualizer();
+vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory());
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://mock/${path}`,

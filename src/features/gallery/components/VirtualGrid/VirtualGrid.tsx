@@ -45,13 +45,19 @@ export function VirtualGrid({ items, targetRowHeight, onOpen, onNearEnd }: Virtu
           return (
             <div
               key={row.key}
-              ref={virtualizer.measureElement}
               data-index={virtualItem.index}
               style={{
                 position: "absolute",
                 top: 0,
                 left: 0,
                 width: "100%",
+                // Height (row height + GAP, border-box with GAP as bottom
+                // padding) matches `estimateSize` exactly, since row heights
+                // are deterministic from `buildLayout` — no `measureElement`
+                // needed, and no drift between the estimate and the real box.
+                height: row.height + GAP,
+                paddingBottom: GAP,
+                boxSizing: "border-box",
                 transform: `translateY(${virtualItem.start}px)`,
               }}
             >
