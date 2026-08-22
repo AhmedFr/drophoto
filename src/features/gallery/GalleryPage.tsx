@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
+import { GalleryToolbar } from "./components/GalleryToolbar";
 import { VirtualGrid } from "./components/VirtualGrid";
 import { useMediaCount } from "./hooks/useMediaCount";
 import { useMediaInfinite } from "./hooks/useMediaInfinite";
@@ -12,7 +13,6 @@ export function GalleryPage() {
   const count = useMediaCount();
   const density = useGalleryStore((s) => s.density);
   const items = media.items;
-  const headerCount = count ?? items.length;
 
   // Opened by `VirtualGrid`'s `onOpen`; the lightbox that reads it is added
   // in Task 2.6.
@@ -22,7 +22,7 @@ export function GalleryPage() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Gallery">
-        <span className="font-mono text-[10px] text-faint">{headerCount} items</span>
+        <GalleryToolbar count={count} />
       </PageHeader>
       <div className="flex-1 overflow-hidden">
         {media.isError && (

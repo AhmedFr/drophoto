@@ -1,4 +1,5 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { beforeEach, vi } from "vitest";
@@ -129,4 +130,27 @@ it("shows an error message when the media query fails", async () => {
   });
   renderPage();
   expect(await screen.findByText("boom")).toBeInTheDocument();
+});
+
+it("changing a type chip re-queries media with the new filter", async () => {
+  const calls: { exts: string[] }[] = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "query_media") {
+      const { query } = args as { query: { exts: string[] } };
+      calls.push(query);
+      return [];
+    }
+    if (cmd === "count_media") return 0;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText("0 items");
+  await user.click(await screen.findByRole("button", { name: "RAW" }));
+
+  await waitFor(() => {
+    const last = calls[calls.length - 1];
+    expect(last?.exts).toEqual(["raf", "cr2", "cr3", "arw", "nef", "dng", "orf", "rw2"]);
+  });
 });
