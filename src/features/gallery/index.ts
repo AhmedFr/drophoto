@@ -1,0 +1,1 @@
+export { galleryModule } from "./module";

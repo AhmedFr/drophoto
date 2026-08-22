@@ -1,0 +1,10 @@
+[package]
+name = "dp-volumes"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+dp-core = { path = "../dp-core" }
+sysinfo = "0.33"
+async-trait = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,12 @@
+[package]
+name = "dp-core"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

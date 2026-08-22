@@ -1,0 +1,98 @@
+@import "tailwindcss";
+@import "@fontsource-variable/outfit";
+@import "@fontsource-variable/jetbrains-mono";
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #f4f4f2;
+  --surface: #111110;
+  --surface-2: #141412;
+  --border: #1e1e1c;
+  --border-2: #242422;
+  --border-3: #2e2e2a;
+  --muted-foreground: #8a8a86;
+  --dim: #6a6a66;
+  --faint: #57574f;
+  --ghost: #4e4e4a;
+  --primary: #f4f4f2;
+  --primary-foreground: #0a0a0a;
+  --card: #111110;
+  --card-foreground: #f4f4f2;
+  --popover: #111110;
+  --popover-foreground: #f4f4f2;
+  --secondary: #141412;
+  --secondary-foreground: #f4f4f2;
+  --muted: #141412;
+  --accent: #1e1e1c;
+  --accent-foreground: #f4f4f2;
+  --destructive: #e5484d;
+  --destructive-foreground: #f4f4f2;
+  --input: #242422;
+  --ring: #2e2e2a;
+  --radius: 0px;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-2: var(--border-2);
+  --color-border-3: var(--border-3);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-dim: var(--dim);
+  --color-faint: var(--faint);
+  --color-ghost: var(--ghost);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-sans: "Outfit Variable", sans-serif;
+  --font-mono: "JetBrains Mono Variable", monospace;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+::selection {
+  background: #f4f4f2;
+  color: #0a0a0a;
+}
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: #242422;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
