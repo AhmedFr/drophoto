@@ -1,0 +1,136 @@
+import { createElement, type ReactNode } from "react";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { mockIPC } from "@tauri-apps/api/mocks";
+import { vi } from "vitest";
+import { useOrganizeRun } from "./useOrganizeRun";
+
+vi.mock("@tauri-apps/api/event");
+
+function wrapperFor(queryClient: QueryClient) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return createElement(QueryClientProvider, { client: queryClient }, children);
+  };
+}
+
+async function mockListen() {
+  const { listen } = await import("@tauri-apps/api/event");
+  let handler: ((event: { payload: unknown }) => void) | undefined;
+  vi.mocked(listen).mockImplementation((_name, cb) => {
+    handler = cb as (event: { payload: unknown }) => void;
+    return Promise.resolve(vi.fn());
+  });
+  return { emit: (payload: unknown) => act(() => handler?.({ payload })) };
+}
+
+function renderRun(driveIds: number[]) {
+  const queryClient = new QueryClient();
+  const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+  const view = renderHook(() => useOrganizeRun(driveIds), { wrapper: wrapperFor(queryClient) });
+  return { ...view, invalidateSpy };
+}
+
+it("starts the first drive's job on start()", async () => {
+  const startOrganize = vi.fn().mockResolvedValue("job-1");
+  mockIPC((cmd) => (cmd === "start_organize" ? startOrganize() : undefined));
+  await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+
+  await waitFor(() => expect(result.current.running).toBe(true));
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+});
+
+it("shows progress from the current job's progress event", async () => {
+  mockIPC((cmd) => (cmd === "start_organize" ? "job-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  emit({ kind: "progress", job_id: "job-1", done: 3, total: 10, current: "a.jpg" });
+  await waitFor(() => expect(result.current.progress).toEqual({ done: 3, total: 10 }));
+});
+
+it("starts the next drive's job only after the current one finishes", async () => {
+  const jobIds = ["job-1", "job-2"];
+  let call = 0;
+  mockIPC((cmd) => (cmd === "start_organize" ? jobIds[call++] : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1, 2]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  emit({ kind: "finished", job_id: "job-1", ok: 5, failed: 0, skipped: 1 });
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-2"));
+  expect(result.current.done).toBe(false);
+  expect(result.current.running).toBe(true);
+
+  emit({ kind: "finished", job_id: "job-2", ok: 2, failed: 1, skipped: 0 });
+  await waitFor(() => expect(result.current.done).toBe(true));
+
+  expect(result.current.running).toBe(false);
+  expect(result.current.totals).toEqual({ moved: 7, skipped: 1, failed: 1 });
+});
+
+it("marks done without incrementing totals when the job is cancelled", async () => {
+  mockIPC((cmd) => (cmd === "start_organize" ? "job-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  emit({ kind: "cancelled", job_id: "job-1" });
+  await waitFor(() => expect(result.current.done).toBe(true));
+  expect(result.current.totals).toEqual({ moved: 0, skipped: 0, failed: 0 });
+});
+
+it("invalidates the plan query once every drive is done", async () => {
+  mockIPC((cmd) => (cmd === "start_organize" ? "job-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result, invalidateSpy } = renderRun([1]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  emit({ kind: "finished", job_id: "job-1", ok: 1, failed: 0, skipped: 0 });
+  await waitFor(() => expect(result.current.done).toBe(true));
+
+  expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["plan", [1]] });
+});
+
+it("calls cancel_job with the current job id", async () => {
+  const cancelJobSpy = vi.fn();
+  mockIPC((cmd) => {
+    if (cmd === "start_organize") return "job-1";
+    if (cmd === "cancel_job") return cancelJobSpy();
+  });
+  await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
+
+  act(() => result.current.cancel());
+  await waitFor(() => expect(cancelJobSpy).toHaveBeenCalled());
+});
+
+it("surfaces a start_organize error and stops running", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "start_organize") {
+      throw { code: "Unsupported", message: "a scan job is already running" };
+    }
+    return undefined;
+  });
+  await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+
+  await waitFor(() => expect(result.current.error).toBe("a scan job is already running"));
+  expect(result.current.running).toBe(false);
+});

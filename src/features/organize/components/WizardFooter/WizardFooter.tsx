@@ -5,7 +5,16 @@ import type { WizardFooterProps } from "./WizardFooter.types";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-export function WizardFooter({ step, totalSteps, canContinue, onBack, onContinue }: WizardFooterProps) {
+export function WizardFooter({
+  step,
+  totalSteps,
+  onBack,
+  primaryLabel,
+  onPrimary,
+  primaryDisabled,
+  running,
+  error,
+}: WizardFooterProps) {
   return (
     <footer className="flex h-[66px] flex-none items-center gap-4 border-t border-border px-[22px]">
       {/*
@@ -21,6 +30,17 @@ export function WizardFooter({ step, totalSteps, canContinue, onBack, onContinue
         CANCEL
       </Link>
       <div className="flex-1" />
+      {error && <span className="font-mono text-[10.5px] text-red-400">{error}</span>}
+      {running && (
+        <>
+          <span className="font-mono text-[10.5px] tracking-[1.5px] text-muted-foreground">
+            MOVING {running.done} / {running.total}
+          </span>
+          <Button variant="outline" size="sm" onClick={running.onCancel}>
+            CANCEL
+          </Button>
+        </>
+      )}
       <span className="font-mono text-[10.5px] tracking-[1.5px] text-faint">
         STEP {pad2(step + 1)} / {pad2(totalSteps)}
       </span>
@@ -31,11 +51,11 @@ export function WizardFooter({ step, totalSteps, canContinue, onBack, onContinue
       )}
       <Button
         size="sm"
-        disabled={!canContinue}
-        onClick={onContinue}
+        disabled={primaryDisabled}
+        onClick={onPrimary}
         className="font-mono text-[10.5px] tracking-[1.5px]"
       >
-        CONTINUE →
+        {primaryLabel}
       </Button>
     </footer>
   );
