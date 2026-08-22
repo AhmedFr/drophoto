@@ -119,6 +119,54 @@ async fn unorganized_summary_counts_bytes_kinds_and_range() {
 }
 
 #[tokio::test]
+async fn root_prefix_check_is_immune_to_like_underscore_wildcard() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    // `_` is a single-character LIKE wildcard — "my_archive/%" would also
+    // match "myXarchive/...". The prefix check must treat it literally.
+    c.upsert_media(nm(drive_id, "my_archive/x.jpg", "h-under"))
+        .await
+        .unwrap();
+    c.upsert_media(nm(drive_id, "myXarchive/y.jpg", "h-x"))
+        .await
+        .unwrap();
+
+    let rows = c.list_unorganized(drive_id, "my_archive").await.unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.rel_path.as_str()).collect::<Vec<_>>(),
+        ["myXarchive/y.jpg"]
+    );
+
+    let summary = c.unorganized_summary(drive_id, "my_archive").await.unwrap();
+    assert_eq!(summary.count, 1);
+}
+
+#[tokio::test]
+async fn root_prefix_check_is_immune_to_like_percent_wildcard() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    // `%` is a multi-character LIKE wildcard — "100%/%" would also match
+    // "100abc/...". The prefix check must treat it literally.
+    c.upsert_media(nm(drive_id, "100%/z.jpg", "h-percent"))
+        .await
+        .unwrap();
+    c.upsert_media(nm(drive_id, "100abc/w.jpg", "h-abc"))
+        .await
+        .unwrap();
+
+    let rows = c.list_unorganized(drive_id, "100%").await.unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.rel_path.as_str()).collect::<Vec<_>>(),
+        ["100abc/w.jpg"]
+    );
+
+    let summary = c.unorganized_summary(drive_id, "100%").await.unwrap();
+    assert_eq!(summary.count, 1);
+}
+
+#[tokio::test]
 async fn organized_hashes_only_returns_organized() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
@@ -169,10 +217,17 @@ async fn job_lifecycle() {
     .unwrap();
     c.finish_organize_job(job_id, "done", 1, 0, 1).await.unwrap();
 
+    let job_id2 = c.create_organize_job(drive_id, 0).await.unwrap();
+    c.finish_organize_job(job_id2, "done", 0, 0, 0).await.unwrap();
+
     let jobs = c.list_organize_jobs(10).await.unwrap();
-    assert_eq!(jobs.len(), 1);
-    let job = &jobs[0];
-    assert_eq!(job.id, job_id);
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(
+        jobs.iter().map(|j| j.id).collect::<Vec<_>>(),
+        [job_id2, job_id],
+        "list_organize_jobs must return the newest job first"
+    );
+    let job = jobs.iter().find(|j| j.id == job_id).unwrap();
     assert_eq!(job.drive_name, "A");
     assert_eq!(job.status, "done");
     assert_eq!(job.planned, 2);

@@ -29,7 +29,6 @@ function item(overrides: Partial<MediaItem> = {}): MediaItem {
       lat: 37.7749,
       lon: -122.4194,
       missing_at: null,
-
       organized_at: null,
     },
     thumb_path: "/tmp/thumbs/hash1/400.webp",

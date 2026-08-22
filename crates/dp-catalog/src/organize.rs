@@ -4,6 +4,12 @@ use dp_core::{DpResult, MediaRow, OrganizeRule, UnorganizedSummary};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use std::collections::HashSet;
 
+/// True when `rel_path` sits directly under `<root>/`. Deliberately built
+/// from `substr`/`length` rather than `LIKE` — `LIKE` treats `_` and `%` in
+/// `root` as wildcards, which would misclassify a literal root such as
+/// `my_archive` or `100%`. Bind `root` twice, once for each `?`.
+const UNDER_ROOT_PREDICATE: &str = "substr(rel_path, 1, length(?) + 1) = ? || '/'";
+
 fn row_to_rule(row: &SqliteRow) -> DpResult<OrganizeRule> {
     let keep_pairs: i64 = row.try_get("keep_pairs").map_err(db)?;
     Ok(OrganizeRule {
@@ -49,15 +55,17 @@ pub(crate) async fn list_unorganized(
     drive_id: i64,
     root: &str,
 ) -> DpResult<Vec<MediaRow>> {
-    let pattern = format!("{root}/%");
-    let rows = sqlx::query(
-        "SELECT * FROM media WHERE drive_id = ? AND organized_at IS NULL AND rel_path NOT LIKE ? ORDER BY id",
-    )
-    .bind(drive_id)
-    .bind(&pattern)
-    .fetch_all(pool)
-    .await
-    .map_err(db)?;
+    let sql = format!(
+        "SELECT * FROM media WHERE drive_id = ? AND organized_at IS NULL AND NOT ({UNDER_ROOT_PREDICATE}) \
+         ORDER BY id",
+    );
+    let rows = sqlx::query(&sql)
+        .bind(drive_id)
+        .bind(root)
+        .bind(root)
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
     rows.iter().map(row_to_media).collect()
 }
 
@@ -66,18 +74,19 @@ pub(crate) async fn unorganized_summary(
     drive_id: i64,
     root: &str,
 ) -> DpResult<UnorganizedSummary> {
-    let pattern = format!("{root}/%");
-    let row = sqlx::query(
+    let sql = format!(
         "SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes, \
          COALESCE(SUM(kind = 'photo'), 0) AS photos, COALESCE(SUM(kind = 'video'), 0) AS videos, \
          MIN(taken_at) AS earliest, MAX(taken_at) AS latest \
-         FROM media WHERE drive_id = ? AND organized_at IS NULL AND rel_path NOT LIKE ?",
-    )
-    .bind(drive_id)
-    .bind(&pattern)
-    .fetch_one(pool)
-    .await
-    .map_err(db)?;
+         FROM media WHERE drive_id = ? AND organized_at IS NULL AND NOT ({UNDER_ROOT_PREDICATE})",
+    );
+    let row = sqlx::query(&sql)
+        .bind(drive_id)
+        .bind(root)
+        .bind(root)
+        .fetch_one(pool)
+        .await
+        .map_err(db)?;
     let count: i64 = row.try_get("count").map_err(db)?;
     let bytes: i64 = row.try_get("bytes").map_err(db)?;
     let photos: i64 = row.try_get("photos").map_err(db)?;
