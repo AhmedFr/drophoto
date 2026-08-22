@@ -212,6 +212,33 @@ it("registers a volume from the dialog with the expected input", async () => {
   );
 });
 
+it("unsubscribes its event listeners on unmount", async () => {
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenFns: ReturnType<typeof vi.fn>[] = [];
+  vi.mocked(listen).mockImplementation(() => {
+    const fn = vi.fn();
+    unlistenFns.push(fn);
+    return Promise.resolve(fn);
+  });
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [];
+    if (cmd === "list_volumes") return [];
+    return undefined;
+  });
+  const queryClient = new QueryClient();
+  const { unmount } = render(
+    <QueryClientProvider client={queryClient}>
+      <DrivesPage />
+    </QueryClientProvider>,
+  );
+  await screen.findByText("No drives registered");
+  await waitFor(() => expect(unlistenFns.length).toBeGreaterThan(0));
+
+  unmount();
+
+  await waitFor(() => expect(unlistenFns.every((fn) => fn.mock.calls.length > 0)).toBe(true));
+});
+
 it("starts a scan, shows live progress from job events, and cancels", async () => {
   const { emit } = await mockListen();
   let startScanArgs: unknown;

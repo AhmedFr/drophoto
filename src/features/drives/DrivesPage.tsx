@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { listVolumes } from "@/lib/api/volumes";
 import type { Volume } from "@/lib/api/volumes";
 import { listDrives, registerDrive } from "@/lib/api/drives";
 import { startScan, cancelJob } from "@/lib/api/scan";
-import { onEvent } from "@/lib/api/events";
+import { useTauriEvent } from "@/lib/hooks/useTauriEvent";
 import { VolumeList } from "./components/VolumeList";
 import { DriveCard } from "./components/DriveCard";
 import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
@@ -19,13 +19,9 @@ export function DrivesPage() {
   const [scanJobs, setScanJobs] = useState<Record<number, string>>({});
   const jobEvents = useJobEvents();
 
-  useEffect(
-    () =>
-      void onEvent("drives:changed", () => {
-        queryClient.invalidateQueries({ queryKey: ["drives"] });
-      }).then((unlisten) => unlisten),
-    [queryClient],
-  );
+  useTauriEvent("drives:changed", () => {
+    queryClient.invalidateQueries({ queryKey: ["drives"] });
+  });
 
   const mutation = useMutation({
     mutationFn: registerDrive,

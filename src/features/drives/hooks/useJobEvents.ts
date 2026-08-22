@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { onJobEvent } from "@/lib/api/scan";
+import { useState } from "react";
+import { useTauriEvent } from "@/lib/hooks/useTauriEvent";
 import type { JobEvent } from "@/lib/api/scan";
 
 /**
@@ -11,35 +11,15 @@ import type { JobEvent } from "@/lib/api/scan";
 export function useJobEvents(): Record<string, JobEvent> {
   const [events, setEvents] = useState<Record<string, JobEvent>>({});
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-
-    onJobEvent((event) => {
-      setEvents((prev) => {
-        const current = prev[event.job_id];
-        if (
-          event.kind === "progress" &&
-          current?.kind === "progress" &&
-          event.done < current.done
-        ) {
-          return prev;
-        }
-        return { ...prev, [event.job_id]: event };
-      });
-    }).then((fn) => {
-      if (cancelled) {
-        fn();
-        return;
+  useTauriEvent<JobEvent>("job", (event) => {
+    setEvents((prev) => {
+      const current = prev[event.job_id];
+      if (event.kind === "progress" && current?.kind === "progress" && event.done < current.done) {
+        return prev;
       }
-      unlisten = fn;
+      return { ...prev, [event.job_id]: event };
     });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
+  });
 
   return events;
 }
