@@ -1,10 +1,6 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { vi } from "vitest";
-import { startScan, cancelJob, onJobEvent } from "./scan";
+import { startScan, cancelJob } from "./scan";
 import { ApiError } from "./client";
-import type { JobEvent } from "./scan";
-
-vi.mock("@tauri-apps/api/event");
 
 it("starts a scan with the given drive id", async () => {
   let received: unknown;
@@ -37,20 +33,4 @@ it("cancels a job by id", async () => {
   });
   await cancelJob("scan-0");
   expect(received).toEqual({ jobId: "scan-0" });
-});
-
-it("subscribes to job events via listen", async () => {
-  const { listen } = await import("@tauri-apps/api/event");
-  const unlisten = vi.fn();
-  vi.mocked(listen).mockResolvedValue(unlisten);
-
-  const cb = vi.fn();
-  const result = await onJobEvent(cb);
-
-  expect(listen).toHaveBeenCalledWith("job", expect.any(Function));
-  const handler = vi.mocked(listen).mock.calls[0][1];
-  const event: JobEvent = { kind: "progress", job_id: "scan-0", done: 1, total: 2, current: "a.jpg" };
-  handler({ payload: event } as never);
-  expect(cb).toHaveBeenCalledWith(event);
-  expect(result).toBe(unlisten);
 });

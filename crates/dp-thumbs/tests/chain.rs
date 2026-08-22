@@ -26,6 +26,7 @@ async fn heic_via_sips() {
 #[tokio::test]
 async fn video_via_ffmpeg() {
     if !tool("ffmpeg") {
+        eprintln!("skipping: ffmpeg not installed");
         return;
     }
     let img = ThumbChain::default_chain()
@@ -38,6 +39,7 @@ async fn video_via_ffmpeg() {
 async fn raw_via_exiftool_preview_if_present() {
     let p = fx("sample.raf");
     if !p.exists() || !tool("exiftool") {
+        eprintln!("skipping: sample.raf fixture or exiftool not present");
         return;
     }
     let img = ThumbChain::default_chain().render(&p, "raf", 2000).await.unwrap();

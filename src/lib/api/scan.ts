@@ -1,6 +1,4 @@
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invokeApi } from "./client";
-import { onEvent } from "./events";
 
 export type JobEvent =
   | { kind: "started"; job_id: string }
@@ -12,6 +10,3 @@ export type JobEvent =
 export const startScan = (driveId: number) => invokeApi<string>("start_scan", { driveId });
 
 export const cancelJob = (jobId: string) => invokeApi<void>("cancel_job", { jobId });
-
-export const onJobEvent = (cb: (event: JobEvent) => void): Promise<UnlistenFn> =>
-  onEvent<JobEvent>("job", cb);

@@ -1,7 +1,7 @@
 [package]
 name = "drophoto"
-description = "A Tauri App"
-authors = ["you"]
+description = "Subscription-free photo library over your own drives"
+authors = ["Ahmed Abouelleil"]
 edition.workspace = true
 version.workspace = true
 
