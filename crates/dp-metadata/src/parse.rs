@@ -65,10 +65,13 @@ fn parse_exif_date(raw: &str) -> Option<DateTime<Utc>> {
         return None;
     }
 
-    // Strip a timezone suffix (+02:00, -05:00, Z) if present.
+    // Strip a timezone suffix (+02:00, -05:00, Z) if present. Guarded by
+    // `is_char_boundary` since `raw` may contain multi-byte UTF-8 (e.g. from
+    // corrupt EXIF data), where `raw.len() - 6` could otherwise land inside
+    // a codepoint and panic.
     let without_tz = if let Some(rest) = raw.strip_suffix('Z') {
         rest
-    } else if raw.len() > 6 {
+    } else if raw.len() > 6 && raw.is_char_boundary(raw.len() - 6) {
         let (head, tail) = raw.split_at(raw.len() - 6);
         if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes()[3] == b':' {
             head
@@ -116,5 +119,12 @@ mod tests {
     #[test]
     fn empty_array_is_not_found() {
         assert!(parse_exiftool_json("[]").is_err());
+    }
+
+    #[test]
+    fn non_ascii_date_does_not_panic() {
+        let j = r#"[{"SourceFile":"x.jpg","DateTimeOriginal":"€abcd"}]"#;
+        let m = parse_exiftool_json(j).unwrap();
+        assert_eq!(m.taken_at, None);
     }
 }

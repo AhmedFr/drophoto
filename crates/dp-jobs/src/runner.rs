@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use futures::FutureExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -36,10 +37,16 @@ impl JobRunner {
         }
     }
 
-    /// Generates the next job id, formatted `"scan-{n}"`.
-    pub fn next_id(&self) -> String {
+    /// Generates the next job id, formatted `"{prefix}-{n}"`.
+    pub fn next_id(&self, prefix: &str) -> String {
         let n = self.next_id.fetch_add(1, Ordering::SeqCst);
-        format!("scan-{n}")
+        format!("{prefix}-{n}")
+    }
+
+    /// Whether a job is currently running under `job_id` (i.e. its
+    /// cancellation token is still tracked).
+    pub fn is_running(&self, job_id: &str) -> bool {
+        lock_tokens(&self.tokens).contains_key(job_id)
     }
 
     /// Spawns `job` under `id`, emitting `Started` immediately and then
@@ -66,26 +73,43 @@ impl JobRunner {
                 events: events.clone(),
                 cancel: token.clone(),
             };
-            let result = job.run(ctx).await;
+            let outcome = std::panic::AssertUnwindSafe(job.run(ctx)).catch_unwind().await;
 
             lock_tokens(&tokens).remove(&id);
 
-            let final_event = match result {
-                Ok(outcome) if outcome.cancelled => JobEvent::Cancelled { job_id: id.clone() },
-                Ok(outcome) => JobEvent::Finished {
+            let final_event = match outcome {
+                Ok(Ok(outcome)) if outcome.cancelled => JobEvent::Cancelled { job_id: id.clone() },
+                Ok(Ok(outcome)) => JobEvent::Finished {
                     job_id: id.clone(),
                     ok: outcome.ok,
                     failed: outcome.failed,
                     skipped: outcome.skipped,
                 },
-                Err(_) if token.is_cancelled() => JobEvent::Cancelled { job_id: id.clone() },
-                Err(e) => {
+                Ok(Err(_)) if token.is_cancelled() => JobEvent::Cancelled { job_id: id.clone() },
+                Ok(Err(e)) => {
                     let _ = events
                         .send(JobEvent::ItemError {
                             job_id: id.clone(),
                             path: String::new(),
                             code: error_code(&e).to_string(),
                             message: e.to_string(),
+                        })
+                        .await;
+                    JobEvent::Finished {
+                        job_id: id.clone(),
+                        ok: 0,
+                        failed: 1,
+                        skipped: 0,
+                    }
+                }
+                Err(panic) => {
+                    let message = panic_message(&panic);
+                    let _ = events
+                        .send(JobEvent::ItemError {
+                            job_id: id.clone(),
+                            path: String::new(),
+                            code: "panic".to_string(),
+                            message,
                         })
                         .await;
                     JobEvent::Finished {
@@ -107,5 +131,18 @@ impl JobRunner {
         if let Some(token) = lock_tokens(&self.tokens).get(job_id) {
             token.cancel();
         }
+    }
+}
+
+/// Extracts a human-readable message from a caught panic payload, falling
+/// back to a generic message when the payload isn't a `&str`/`String` (the
+/// common case for `panic!("...")` and friends).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "job panicked".to_string()
     }
 }

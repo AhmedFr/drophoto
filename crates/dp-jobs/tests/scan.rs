@@ -21,6 +21,15 @@ fn has_exiftool() -> bool {
     which::which("exiftool").is_ok()
 }
 
+#[cfg(unix)]
+fn is_root() -> bool {
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+        .unwrap_or(false)
+}
+
 /// Drains `rx` until (and including) the terminal `Finished`/`Cancelled`
 /// event, returning every event seen plus the terminal one.
 async fn drain_until_terminal(rx: &mut mpsc::Receiver<JobEvent>) -> (Vec<JobEvent>, JobEvent) {
@@ -99,7 +108,7 @@ async fn scans_drive_hashes_thumbnails_and_upserts_media() {
 
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
-    let job_id = runner.next_id();
+    let job_id = runner.next_id("scan");
     let job = Arc::new(ScanJob::new(job_id.clone(), drive, deps));
     runner.spawn(job_id, job);
 
@@ -157,7 +166,7 @@ async fn cancelling_immediately_emits_cancelled() {
 
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
-    let job_id = runner.next_id();
+    let job_id = runner.next_id("scan");
     let job = Arc::new(ScanJob::new(job_id.clone(), drive, deps));
     runner.spawn(job_id.clone(), job);
     runner.cancel(&job_id);
@@ -241,5 +250,68 @@ async fn run_direct_with_live_token_processes_everything_and_flags_not_cancelled
         outcome.ok + outcome.failed,
         2,
         "expected both files processed, got {outcome:?}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unreadable_subdirectory_is_reported_as_an_io_item_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+    if is_root() {
+        eprintln!("skipping: running as root, chmod 000 has no effect");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+
+    let locked = drive_dir.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::copy(fx("sample.png"), locked.join("sample.png")).unwrap();
+
+    let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(&locked, perms).unwrap();
+
+    // Ensures the directory is readable again before the tempdir is
+    // dropped (and cleaned up), regardless of how the test exits.
+    struct RestorePerms(PathBuf);
+    impl Drop for RestorePerms {
+        fn drop(&mut self) {
+            if let Ok(meta) = std::fs::metadata(&self.0) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&self.0, perms);
+            }
+        }
+    }
+    let _restore = RestorePerms(locked);
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Locked Subdir Drive", drive_dir.path()).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, deps));
+    runner.spawn(job_id, job);
+
+    let (events, _terminal) = drain_until_terminal(&mut rx).await;
+
+    let saw_io_error = events
+        .iter()
+        .any(|e| matches!(e, JobEvent::ItemError { code, .. } if code == "io"));
+    assert!(
+        saw_io_error,
+        "expected an ItemError with code \"io\", got {events:?}"
     );
 }

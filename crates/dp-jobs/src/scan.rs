@@ -9,6 +9,7 @@ use dp_hash::Hasher;
 use dp_metadata::MetadataProvider;
 use dp_thumbs::{ThumbChain, ThumbStore, THUMB_SIZES};
 use futures::stream::{self, StreamExt};
+use tokio_util::sync::CancellationToken;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
@@ -52,20 +53,33 @@ impl Job for ScanJob {
             message: "drive is offline".into(),
         })?;
 
-        let files = collect_media_files(Path::new(&mount_path));
-        let total = files.len() as u64;
+        let walk_cancel = ctx.cancel.clone();
+        let walk_root = PathBuf::from(&mount_path);
+        let walk = tokio::task::spawn_blocking(move || collect_media_files(&walk_root, &walk_cancel))
+            .await
+            .map_err(|e| DpError::Io {
+                message: format!("scan walk task failed: {e}"),
+                path: None,
+            })?;
 
         let done = AtomicU64::new(0);
         let ok = AtomicU64::new(0);
         let failed = AtomicU64::new(0);
-        // Set only inside process_file's pre-file cancellation check, so it
-        // reflects an actual early exit (at least one file was skipped
-        // because of cancellation) rather than the token's state at some
+        // Set either by the blocking walk noticing cancellation mid-walk, or
+        // inside process_file's pre-file cancellation check, so it reflects
+        // an actual early exit rather than the token's state at some
         // arbitrary later instant, which would race against cancellation
         // arriving right as the job finishes on its own.
-        let stopped_early = AtomicBool::new(false);
+        let stopped_early = AtomicBool::new(walk.stopped_early);
 
-        stream::iter(files)
+        let drive_id = self.drive.id;
+        for (path, message) in &walk.errors {
+            failed.fetch_add(1, Ordering::SeqCst);
+            report_item_error_raw(&ctx, &self.deps, self.id(), drive_id, path, "io", message).await;
+        }
+
+        let total = walk.files.len() as u64;
+        stream::iter(walk.files)
             .for_each_concurrent(SCAN_CONCURRENCY, |file| {
                 let ctx = ctx.clone();
                 let mount_path = mount_path.clone();
@@ -114,25 +128,66 @@ fn is_hidden(entry: &DirEntry) -> bool {
     entry.file_name().to_string_lossy().starts_with('.')
 }
 
+/// Result of walking a drive's mount path: the media files found, any
+/// per-entry I/O errors (e.g. a permission-denied subdirectory), and
+/// whether the walk stopped early because of cancellation.
+struct WalkResult {
+    files: Vec<ScannedFile>,
+    /// `(path, message)` pairs for entries walkdir couldn't read.
+    errors: Vec<(String, String)>,
+    stopped_early: bool,
+}
+
 /// Walks `root`, skipping hidden entries and known housekeeping
 /// directories, returning every file whose extension maps to a
-/// [`MediaKind`].
-fn collect_media_files(root: &Path) -> Vec<ScannedFile> {
-    WalkDir::new(root)
+/// [`MediaKind`]. Runs synchronously (intended for [`tokio::task::spawn_blocking`]):
+/// checks `cancel` on each entry so a long walk can be interrupted, and
+/// records (rather than silently dropping) any entry walkdir fails to read.
+fn collect_media_files(root: &Path, cancel: &CancellationToken) -> WalkResult {
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    let mut stopped_early = false;
+
+    let walker = WalkDir::new(root)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(e))
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| {
-            let ext = e.path().extension()?.to_str()?;
-            let (kind, canonical_ext) = MediaKind::from_ext(ext)?;
-            Some(ScannedFile {
-                path: e.into_path(),
-                ext: canonical_ext,
-                kind,
-            })
-        })
-        .collect()
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(e));
+
+    for entry in walker {
+        if cancel.is_cancelled() {
+            stopped_early = true;
+            break;
+        }
+
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                let path = err.path().map(|p| p.display().to_string()).unwrap_or_default();
+                errors.push((path, err.to_string()));
+                continue;
+            }
+        };
+
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+        let Some((kind, canonical_ext)) = MediaKind::from_ext(ext) else {
+            continue;
+        };
+        files.push(ScannedFile {
+            path: entry.into_path(),
+            ext: canonical_ext,
+            kind,
+        });
+    }
+
+    WalkResult {
+        files,
+        errors,
+        stopped_early,
+    }
 }
 
 /// Path of `path` relative to `mount_path`, using forward slashes.
@@ -267,19 +322,32 @@ async fn report_item_error(
     path: &str,
     e: &DpError,
 ) {
-    let code = error_code(e);
-    let message = e.to_string();
+    report_item_error_raw(ctx, deps, job_id, drive_id, path, error_code(e), &e.to_string()).await;
+}
+
+/// Emits an `ItemError` and records it in the catalog from a raw `code` +
+/// `message`, for errors (e.g. walkdir I/O failures) that don't originate
+/// as a [`DpError`].
+async fn report_item_error_raw(
+    ctx: &JobCtx,
+    deps: &ScanDeps,
+    job_id: &str,
+    drive_id: i64,
+    path: &str,
+    code: &str,
+    message: &str,
+) {
     let _ = ctx
         .events
         .send(JobEvent::ItemError {
             job_id: job_id.to_string(),
             path: path.to_string(),
             code: code.to_string(),
-            message: message.clone(),
+            message: message.to_string(),
         })
         .await;
     let _ = deps
         .catalog
-        .record_scan_error(drive_id, path, code, &message)
+        .record_scan_error(drive_id, path, code, message)
         .await;
 }

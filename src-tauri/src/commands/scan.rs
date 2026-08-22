@@ -30,10 +30,7 @@ pub async fn start_scan(state: State<'_, AppState>, drive_id: i64) -> Result<Str
         store: state.store.clone(),
     };
 
-    let id = state.runner.next_id();
-    state
-        .runner
-        .spawn(id.clone(), Arc::new(ScanJob::new(id.clone(), drive, deps)));
+    let id = state.start_scan(drive_id, |job_id| Arc::new(ScanJob::new(job_id, drive, deps)));
     Ok(id)
 }
 
