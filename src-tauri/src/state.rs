@@ -275,7 +275,7 @@ fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> R
     match decision {
         Admission::Start => Resolution::Spawn,
         Admission::Existing(job_id) => {
-            if !exclusive && job_id.starts_with(id_prefix) {
+            if !exclusive && job_id.starts_with(&format!("{id_prefix}-")) {
                 Resolution::Reuse(job_id)
             } else {
                 Resolution::Refuse(GENERIC_CONFLICT.into())
