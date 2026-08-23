@@ -156,3 +156,14 @@ it("triggers a sidecar sync sweep when a drives:changed event arrives", async ()
 
   await waitFor(() => expect(startSidecarSyncAll).toHaveBeenCalledTimes(1));
 });
+
+it("does not re-trigger a sidecar sync sweep when a sidecar sync job itself finishes (loop guard)", async () => {
+  const { emit } = await mockListen();
+  renderBridge();
+
+  await emit("job", { kind: "finished", job_id: "sidecar-0", ok: 1, failed: 0, skipped: 0 });
+
+  // Give any (wrongly) fired async trigger a chance to run before asserting its absence.
+  await waitFor(() => expect(useJobsStore.getState().events["sidecar-0"]).toBeDefined());
+  expect(startSidecarSyncAll).not.toHaveBeenCalled();
+});

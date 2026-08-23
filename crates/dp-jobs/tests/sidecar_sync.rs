@@ -229,6 +229,152 @@ async fn missing_file_is_failed_and_flag_kept() {
     assert_eq!(pending_ids(&catalog, drive.id).await, vec![a_id]);
 }
 
+/// A subdirectory that was an ordinary directory when the row was tagged
+/// (and marked pending) can be replaced — by an attacker, or a races
+/// with something else entirely — with a symlink escaping the mount
+/// before the sync job actually runs. The lexical deny-list check alone
+/// can't catch this (the path string itself never mentions anywhere
+/// outside the mount); only resolving the sidecar's real, symlink-
+/// followed location — the same guard `OrganizeJob`/`RevertJob` apply to
+/// every move destination — does.
+#[tokio::test]
+async fn symlinked_directory_escaping_the_mount_is_failed_and_flag_kept() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let outside_dir = tempfile::tempdir().unwrap();
+
+    // `sub` starts out as an ordinary directory holding the real file —
+    // this is what the row is tagged against.
+    std::fs::create_dir(drive_dir.path().join("sub")).unwrap();
+    std::fs::write(drive_dir.path().join("sub/a.jpg"), b"content-a").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "sub/a.jpg", "h-a"))
+        .await
+        .unwrap();
+    catalog
+        .tag_media(&[a_id], &["tag".to_string()], &[])
+        .await
+        .unwrap();
+
+    // `sub` is now replaced with a symlink to somewhere outside the
+    // mount — a file of the same name exists there too, so the file
+    // itself still resolves (the sync job must get past the existence
+    // check and reach the symlink-resolution guard on the sidecar path).
+    std::fs::remove_dir_all(drive_dir.path().join("sub")).unwrap();
+    std::os::unix::fs::symlink(outside_dir.path(), drive_dir.path().join("sub")).unwrap();
+    std::fs::write(outside_dir.path().join("a.jpg"), b"content-a").unwrap();
+
+    let (events, terminal) = run_sync(&catalog, drive.clone()).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 1, "events: {events:?}");
+
+    let saw_denied = events
+        .iter()
+        .any(|e| matches!(e, JobEvent::ItemError { code, .. } if code == "denied"));
+    assert!(saw_denied, "expected a denied ItemError, got {events:?}");
+
+    // Nothing was ever written — not inside the mount, not outside it.
+    assert!(!outside_dir.path().join("a.jpg.xmp").exists());
+    assert_eq!(pending_ids(&catalog, drive.id).await, vec![a_id]);
+}
+
+/// A [`Sidecars`] decorator that simulates a concurrent tag edit landing
+/// on `media_id` *while* the real write is in flight — used to prove the
+/// lost-update guard in [`dp_jobs::SidecarSyncJob::finish_row`] (not
+/// itself public; exercised only through the job's observable behaviour
+/// here).
+struct AddsTagDuringWrite {
+    inner: ExiftoolSidecars,
+    catalog: Arc<dyn Catalog>,
+    media_id: i64,
+    extra_tag: String,
+}
+
+#[async_trait]
+impl Sidecars for AddsTagDuringWrite {
+    async fn write_subjects(&self, media_path: &Path, subjects: &[String]) -> DpResult<()> {
+        self.catalog
+            .tag_media(&[self.media_id], std::slice::from_ref(&self.extra_tag), &[])
+            .await?;
+        self.inner.write_subjects(media_path, subjects).await
+    }
+
+    async fn read_subjects(&self, media_path: &Path) -> DpResult<Vec<String>> {
+        self.inner.read_subjects(media_path).await
+    }
+}
+
+#[tokio::test]
+async fn lost_update_leaves_flag_set_when_tags_change_during_write() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    catalog
+        .tag_media(&[a_id], &["one".to_string()], &[])
+        .await
+        .unwrap();
+
+    let sidecars = Arc::new(AddsTagDuringWrite {
+        inner: ExiftoolSidecars::from_path(),
+        catalog: catalog.clone(),
+        media_id: a_id,
+        extra_tag: "extra".to_string(),
+    });
+    let deps = SidecarSyncDeps {
+        catalog: catalog.clone(),
+        sidecars,
+        home: None,
+    };
+    let job_id = "sidecar-lost-update".to_string();
+    let job = Arc::new(SidecarSyncJob::new(job_id.clone(), drive.clone(), deps));
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    // Neither ok nor failed: the write itself succeeded, but the result
+    // is stale the instant it landed, so it isn't tallied as a genuine
+    // success — see `SidecarSyncJob::finish_row`.
+    assert_eq!((ok, failed, skipped), (0, 0, 0), "events: {events:?}");
+
+    // The sidecar really was written, with the tags known at write time...
+    let reader = ExiftoolSidecars::from_path();
+    let written = reader
+        .read_subjects(&drive_dir.path().join("a.jpg"))
+        .await
+        .unwrap();
+    assert_eq!(written, vec!["one".to_string()]);
+
+    // ...but the flag was left set, since the row's tags changed underneath the write.
+    assert_eq!(pending_ids(&catalog, drive.id).await, vec![a_id]);
+}
+
 #[tokio::test]
 async fn offline_drive_fails_job() {
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());

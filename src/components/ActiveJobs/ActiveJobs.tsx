@@ -4,9 +4,9 @@ import type { router } from "@/app/router";
 import { DotLoader } from "@/components/DotLoader";
 import { activeJobs, useJobsStore } from "@/lib/jobs/jobsStore";
 
-/** Scan jobs live under `/drives`; organize and revert jobs both live under the `/organize` wizard. */
+/** Scan and sidecar-sync jobs live under `/drives`; organize and revert jobs both live under the `/organize` wizard. */
 function targetPath(jobId: string): string {
-  return jobId.startsWith("scan-") ? "/drives" : "/organize";
+  return jobId.startsWith("scan-") || jobId.startsWith("sidecar-") ? "/drives" : "/organize";
 }
 
 /**

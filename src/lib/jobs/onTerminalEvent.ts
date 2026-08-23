@@ -17,6 +17,12 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
  * completed job could have changed, and shows exactly one toast for it.
  * `started`/`progress`/`item_error` events are no-ops; only a job's own
  * terminal event should invalidate or toast, never a per-item one.
+ *
+ * A sidecar sync (`job_id` prefixed `"sidecar-"`) is a background sweep
+ * nobody explicitly asked for — its own success is silent (no toast),
+ * so it never interrupts whatever the user's actually doing. A failure
+ * still surfaces as the usual error toast: it's the one outcome worth
+ * knowing about unprompted.
  */
 export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label: string): void {
   if (event.kind !== "finished" && event.kind !== "cancelled") return;
@@ -24,6 +30,8 @@ export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label
   for (const queryKey of INVALIDATE_KEYS) {
     queryClient.invalidateQueries({ queryKey: [...queryKey] });
   }
+
+  if (event.job_id.startsWith("sidecar-") && event.failed === 0) return;
 
   if (event.kind === "cancelled") {
     toast(`${label} cancelled — ${event.ok} file${event.ok === 1 ? "" : "s"} done`);

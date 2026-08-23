@@ -14,6 +14,7 @@ use dp_core::{DpError, DpResult, Drive, MediaRow};
 use dp_metadata::{sidecar_path, Sidecars};
 use futures::FutureExt;
 
+use crate::move_guards::destination_stays_on_drive;
 use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
 
 /// External dependencies a [`SidecarSyncJob`] needs, injected so tests can
@@ -134,10 +135,16 @@ impl SidecarSyncJob {
     /// deny-checks both it and its sidecar path (same
     /// [`is_denied_path`] shape [`crate::ScanJob::run`] uses — a
     /// canonicalized `mount`, this call's `home`), confirms the file still
-    /// exists, then writes the row's current tag names to its sidecar and
-    /// clears the pending flag. Any failure along the way is recorded via
-    /// [`Self::record_failed`] and leaves the row's `sidecar_pending` flag
-    /// untouched, so a later sync retries it.
+    /// exists, then — the same symlink-resolution guard
+    /// [`crate::OrganizeJob`]/[`crate::RevertJob`] apply to every move
+    /// destination — confirms the sidecar's path still really resolves
+    /// under `mount` once symlinks are followed, before ever writing to
+    /// it. Only then does it write the row's current tag names to the
+    /// sidecar and clear the pending flag (see [`Self::finish_row`] for
+    /// the lost-update check that guards that last step). Any failure
+    /// along the way is recorded via [`Self::record_failed`] and leaves
+    /// the row's `sidecar_pending` flag untouched, so a later sync
+    /// retries it.
     async fn sync_row(&self, ctx: &JobCtx, mount: &Path, row: &MediaRow) {
         let abs = mount.join(&row.rel_path);
         let sidecar = sidecar_path(&abs);
@@ -155,6 +162,17 @@ impl SidecarSyncJob {
             return;
         }
 
+        if !destination_stays_on_drive(&sidecar, mount).await {
+            self.record_failed(
+                ctx,
+                row,
+                "denied",
+                "sidecar path resolves outside the drive".into(),
+            )
+            .await;
+            return;
+        }
+
         let mut names = match self.deps.catalog.tag_names_for_media(row.id).await {
             Ok(names) => names,
             Err(e) => {
@@ -166,6 +184,40 @@ impl SidecarSyncJob {
 
         if let Err(e) = self.deps.sidecars.write_subjects(&abs, &names).await {
             self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
+            return;
+        }
+
+        self.finish_row(ctx, row, &names).await;
+    }
+
+    /// After a successful [`Sidecars::write_subjects`], re-fetches the
+    /// row's tag names and only clears `sidecar_pending` if they still
+    /// match `written` (case-insensitively, as sets) — i.e. nothing
+    /// re-tagged this row while the write was in flight. If they've
+    /// diverged, the flag is deliberately left set: clearing it here
+    /// would lose that concurrent change, silently leaving the sidecar
+    /// out of sync until something *else* happened to mark the row
+    /// pending again. Leaving it set costs nothing but a redundant write
+    /// on the next sweep, which does catch it.
+    ///
+    /// A failure fetching the fresh tag names is treated the same as any
+    /// other failure here: recorded, flag left set. The sidecar itself
+    /// was already written by this point and is not rolled back — same
+    /// data-safety stance as [`crate::OrganizeJob`]/[`crate::RevertJob`]
+    /// never undoing a real filesystem change after the fact.
+    async fn finish_row(&self, ctx: &JobCtx, row: &MediaRow, written: &[String]) {
+        let fresh = match self.deps.catalog.tag_names_for_media(row.id).await {
+            Ok(names) => names,
+            Err(e) => {
+                self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
+                return;
+            }
+        };
+
+        if !same_tag_set(&fresh, written) {
+            // Lost-update: something changed this row's tags after
+            // `write_subjects` read them. Leave `sidecar_pending` set so
+            // the next sweep picks up the now-current tag set.
             return;
         }
 
@@ -193,4 +245,14 @@ impl SidecarSyncJob {
             })
             .await;
     }
+}
+
+/// Whether `a` and `b` contain the same names, ignoring order, duplicates,
+/// and case — used by [`SidecarSyncJob::finish_row`] to detect a lost
+/// update (the row's tags changed between `tag_names_for_media` and the
+/// sidecar write completing).
+fn same_tag_set(a: &[String], b: &[String]) -> bool {
+    let a: std::collections::HashSet<String> = a.iter().map(|s| s.to_lowercase()).collect();
+    let b: std::collections::HashSet<String> = b.iter().map(|s| s.to_lowercase()).collect();
+    a == b
 }

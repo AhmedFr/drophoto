@@ -45,6 +45,7 @@ describe("jobKindFromId", () => {
     ["scan-12", "Scan"],
     ["organize-0", "Organize"],
     ["revert-3", "Revert"],
+    ["sidecar-0", "Sidecar sync"],
     ["mystery-1", "Job"],
   ])("derives %s -> %s", (jobId, expected) => {
     expect(jobKindFromId(jobId)).toBe(expected);

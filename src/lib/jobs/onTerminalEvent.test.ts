@@ -111,3 +111,39 @@ it("uses singular 'file' when cancelled after exactly one file", () => {
 
   expect(toast).toHaveBeenCalledWith("Scan cancelled — 1 file done");
 });
+
+it("is silent (but still invalidates) for a sidecar sync that finishes with no failures", () => {
+  const { queryClient, invalidateSpy } = client();
+  onTerminalEvent(
+    { kind: "finished", job_id: "sidecar-0", ok: 3, failed: 0, skipped: 0 },
+    queryClient,
+    "Sidecar sync",
+  );
+
+  expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["media"] });
+  expect(toast).not.toHaveBeenCalled();
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("is silent for a sidecar sync that is cancelled with no failures", () => {
+  const { queryClient } = client();
+  onTerminalEvent(
+    { kind: "cancelled", job_id: "sidecar-0", ok: 1, failed: 0, skipped: 0 },
+    queryClient,
+    "Sidecar sync",
+  );
+
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it("still shows an error toast for a sidecar sync that finishes with failures", () => {
+  const { queryClient } = client();
+  onTerminalEvent(
+    { kind: "finished", job_id: "sidecar-0", ok: 1, failed: 2, skipped: 0 },
+    queryClient,
+    "Sidecar sync",
+  );
+
+  expect(toast.error).toHaveBeenCalledWith("Sidecar sync finished with 2 errors");
+});
