@@ -7,7 +7,7 @@ Three independently mergeable slices, each leaving the app fully usable:
 
 ## 1. Decisions (user-confirmed)
 
-1. **Tags live in the catalog AND in XMP sidecars** (`<file>.xmp`, `XMP-dc:Subject`). Drives stay self-describing; a re-scan re-imports tags; catalog loss loses nothing. No `{{tags}}` file-name segment (supersedes the §7 note — tagging never renames files).
+1. **Tags live in the catalog AND in XMP sidecars** — one sidecar per file, named by appending `.xmp` to the full file name (`IMG_001.jpg` → `IMG_001.jpg.xmp`, darktable-style, so a RAW+JPEG pair never collides on one stem), carrying `XMP-dc:Subject`. Drives stay self-describing; a re-scan re-imports tags; catalog loss loses nothing. No `{{tags}}` file-name segment (supersedes the §7 note — tagging never renames files).
 2. **Offline geocoding, online map tiles.** Bundled GeoNames cities dataset (pop ≥ 1000, ~15 MB source, compacted at build) for GPS → nearest city with zero network. Map tiles load from OpenFreeMap when online; offline shows placeholder + place list.
 3. **Tagging works offline.** Catalog takes the tag instantly; rows are marked `sidecar_pending`; a sweep writes XMPs when the drive next appears and after every scan.
 4. **Three PRs, one spec** (this document).
@@ -48,7 +48,7 @@ ALTER TABLE media ADD COLUMN place_id INTEGER REFERENCES places(id);
 
 **Rust:**
 - `dp-catalog`: `tags.rs` — `list_tags`, `tags_for_media(ids)`, `tag_media(ids, add, remove)`, `list_sidecar_pending(drive_id)`, `clear_sidecar_pending(media_id)`.
-- `dp-metadata`: `SidecarWriter` trait + exiftool impl — writes/merges `<abs path>.xmp` `XMP-dc:Subject` (whole-list replace with catalog truth; never touches the image file); `read_sidecar_tags(path)` for scan import.
+- `dp-metadata`: `SidecarWriter` trait + exiftool impl — writes/merges the `<file name>.xmp` sidecar's `XMP-dc:Subject` (whole-list replace with catalog truth; never touches the image file); `read_sidecar_tags(path)` for scan import.
 - `dp-jobs`: **`SidecarSyncJob`** (per drive, JobRunner admission kind `"sidecar"`, non-exclusive with scan? — NO: same per-drive one-job rule as everything else). Iterates `list_sidecar_pending`, deny-list-checks each path, writes the sidecar, clears the flag. Triggered: (a) after every scan of that drive, (b) when a drive with pending rows comes online (drive-presence watcher), (c) manually from Drives.
 - **Scan import:** during scan, if `<file>.xmp` exists, parse `dc:Subject` and union those tags into the catalog (catalog ∪ sidecar; no deletions).
 - **Organize/Revert:** when moving a media file, also move its `.xmp` sidecar (same guards; sidecar move failure = item-level warning recorded on the item, not a job failure; revert moves it back).
