@@ -615,13 +615,24 @@ async fn process_file(
 /// Empty/whitespace-only subject strings are filtered out before reaching
 /// `tag_media`, so a stray blank entry in the sidecar can never become an
 /// empty-named tag. The import is a pure union (`tag_media(&[media_id],
-/// &subjects, &[])`) — it never removes a catalog tag — and,
-/// per Task 4a.1, `tag_media` only marks a row sidecar-pending when its
-/// tag set actually changes, so importing subjects that already match the
-/// catalog leaves the row's pending flag untouched. The scan never calls
-/// `clear_sidecar_pending` itself: there's nothing to clear when nothing
-/// was marked pending, and clearing an already-pending row would be
-/// incorrect (out of scope for the sync job's own bookkeeping).
+/// &subjects, &[])`) — it never removes a catalog tag.
+///
+/// `tag_media` marks a row sidecar-pending on *any* real tag-set change
+/// (Task 4a.1), which would otherwise leave a freshly-imported row pending
+/// even though the sidecar already holds exactly what was just imported —
+/// the sync job would then rewrite every such sidecar once, for nothing.
+/// So after the `tag_media` call, this re-fetches the row's full tag set
+/// via `tag_names_for_media` and compares it against the imported
+/// `subjects`, case-insensitively as sets:
+/// - Equal (the common case — the row's tags now exactly mirror the
+///   sidecar) → `clear_sidecar_pending(media_id)`: the sidecar already
+///   holds the truth, there's nothing to sync back.
+/// - Not equal (the row already carried catalog tags beyond the sidecar's
+///   subjects) → leave pending, so the sync job writes the union back to
+///   the sidecar.
+///
+/// This is the *only* place scan ever calls `clear_sidecar_pending` — it
+/// never blindly clears an already-pending row for any other reason.
 ///
 /// A sidecar read failure (missing `exiftool`, corrupt/unparsable XMP, ...)
 /// is recorded via [`report_item_error`] and otherwise ignored — it must
@@ -651,7 +662,31 @@ async fn import_sidecar_tags(
 
     if let Err(e) = deps.catalog.tag_media(&[media_id], &subjects, &[]).await {
         report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
+        return;
     }
+
+    match deps.catalog.tag_names_for_media(media_id).await {
+        Ok(catalog_names) => {
+            if tag_sets_match_case_insensitive(&catalog_names, &subjects) {
+                if let Err(e) = deps.catalog.clear_sidecar_pending(media_id).await {
+                    report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
+                }
+            }
+        }
+        Err(e) => {
+            report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
+        }
+    }
+}
+
+/// Whether `a` and `b` contain the same names, ignoring order, duplicates,
+/// and case — used to decide whether a row's full catalog tag set now
+/// exactly mirrors what was just imported from its sidecar (see
+/// [`import_sidecar_tags`]).
+fn tag_sets_match_case_insensitive(a: &[String], b: &[String]) -> bool {
+    let a: std::collections::HashSet<String> = a.iter().map(|s| s.to_lowercase()).collect();
+    let b: std::collections::HashSet<String> = b.iter().map(|s| s.to_lowercase()).collect();
+    a == b
 }
 
 async fn advance_progress(ctx: &JobCtx, job_id: &str, done: &AtomicU64, total: u64, current: &str) {

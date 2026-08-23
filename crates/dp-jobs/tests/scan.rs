@@ -828,13 +828,14 @@ async fn walk_progress_events_precede_the_first_per_file_progress() {
 }
 
 /// Task 4a.4: a scan imports an existing XMP sidecar's subjects as catalog
-/// tags. The first import genuinely links a new tag to the row, so
-/// `tag_media` (per Task 4a.1) marks it sidecar-pending like any other
-/// real tag change — the scan never calls `clear_sidecar_pending` itself,
-/// leaving that to the sync job. A *second* scan, with the sidecar
-/// unchanged and the row already synced (pending cleared), must leave the
-/// row un-pending: `tag_media` no-ops when the tag set doesn't actually
-/// change, so importing identical tags marks nothing pending.
+/// tags. `tag_media` itself marks a fresh link as a real tag-set change
+/// (Task 4a.1) — pending, same as any other tag change — but a first scan
+/// of a file that arrives with a sidecar should *not* leave the row
+/// pending: the sidecar already holds exactly what was just imported, so
+/// there's nothing for the sync job to write back. `import_sidecar_tags`
+/// achieves this by comparing the row's full tag set against the imported
+/// subjects right after the `tag_media` call and clearing pending when
+/// they match.
 #[tokio::test]
 async fn scan_imports_sidecar_subjects_as_tags() {
     if !has_exiftool() {
@@ -859,17 +860,12 @@ async fn scan_imports_sidecar_subjects_as_tags() {
 
     let thumbs_dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
 
-    let deps = default_deps(catalog.clone(), store.clone());
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(
-        job_id.clone(),
-        drive.clone(),
-        vec![src.clone()],
-        deps,
-    ));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive.clone(), vec![src], deps));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -889,40 +885,107 @@ async fn scan_imports_sidecar_subjects_as_tags() {
     let tag_names: Vec<&str> = tags.iter().map(|(_, t)| t.name.as_str()).collect();
     assert_eq!(tag_names, vec!["holiday"], "tags: {tags:?}");
 
-    // First import is a genuine change (no prior tags) — pending is set,
-    // same as any other real tag change. Simulate the sync job having
-    // caught up (written the sidecar, cleared pending) before the next
-    // scan.
+    let pending = catalog.list_sidecar_pending(drive.id).await.unwrap();
+    assert!(
+        !pending.iter().any(|m| m.id == media_id),
+        "a first scan whose imported tags exactly match the sidecar must not leave the row pending, got {pending:?}"
+    );
+}
+
+/// When a media row already carries a catalog tag beyond what its sidecar
+/// holds, importing the sidecar's subjects must still leave the row
+/// sidecar-pending: the catalog's tag set (the union) no longer matches
+/// the sidecar's content, so the sync job needs to write it back.
+#[tokio::test]
+async fn scan_leaves_row_pending_when_catalog_has_a_tag_the_sidecar_lacks() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let media_path = drive_dir.path().join("extra.jpg");
+    std::fs::copy(fx("sample.jpg"), &media_path).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Extra Tag Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    // Seed the row at the exact (drive_id, rel_path) the scan will upsert
+    // into, so the scan updates this same row (and its tags survive)
+    // rather than creating a new one — `upsert_media` never touches tags.
+    let media_id = catalog
+        .upsert_media(NewMedia {
+            drive_id: drive.id,
+            rel_path: "extra.jpg".into(),
+            hash: "seed-hash".into(),
+            size: 1,
+            kind: MediaKind::Photo,
+            ext: "jpg".into(),
+            width: None,
+            height: None,
+            duration_ms: None,
+            taken_at: None,
+            camera: None,
+            lens: None,
+            aperture: None,
+            shutter: None,
+            iso: None,
+            focal_mm: None,
+            lat: None,
+            lon: None,
+            organized_at: None,
+            source_id: Some(src.id),
+        })
+        .await
+        .unwrap();
+    catalog
+        .tag_media(&[media_id], &["extra".to_string()], &[])
+        .await
+        .unwrap();
+    // Isolate the assertion below to the sidecar-import step: without
+    // this, the pending flag set by seeding the "extra" tag above would
+    // make the post-scan assertion trivially true for the wrong reason.
+    catalog.clear_sidecar_pending(media_id).await.unwrap();
+
+    let sidecars = ExiftoolSidecars::from_path();
+    sidecars
+        .write_subjects(&media_path, &["holiday".to_string()])
+        .await
+        .unwrap();
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive.clone(), vec![src], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!(ok, 1, "events: {events:?}");
+            assert_eq!(failed, 0, "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let tags = catalog.tags_for_media(&[media_id]).await.unwrap();
+    let mut tag_names: Vec<&str> = tags.iter().map(|(_, t)| t.name.as_str()).collect();
+    tag_names.sort_unstable();
+    assert_eq!(
+        tag_names,
+        vec!["extra", "holiday"],
+        "the sidecar import must union with, not replace, the existing catalog tag; tags: {tags:?}"
+    );
+
     let pending = catalog.list_sidecar_pending(drive.id).await.unwrap();
     assert!(
         pending.iter().any(|m| m.id == media_id),
-        "the first sidecar import is a real tag change and must mark the row pending, got {pending:?}"
-    );
-    catalog.clear_sidecar_pending(media_id).await.unwrap();
-
-    // Re-scan with the sidecar unchanged: `tag_media` no-ops because the
-    // catalog's tag set already matches, so the row must NOT be marked
-    // pending again, and the scan itself never calls
-    // `clear_sidecar_pending` — there's nothing here for it to clear.
-    let deps2 = default_deps(catalog.clone(), store);
-    let (tx2, mut rx2) = mpsc::channel(256);
-    let runner2 = JobRunner::new(tx2);
-    let job_id2 = runner2.next_id("scan");
-    let job2 = Arc::new(ScanJob::new(job_id2.clone(), drive.clone(), vec![src], deps2));
-    runner2.spawn(job_id2, job2);
-    let (events2, terminal2) = drain_until_terminal(&mut rx2).await;
-    match terminal2 {
-        JobEvent::Finished { ok, failed, .. } => {
-            assert_eq!(ok, 1, "events: {events2:?}");
-            assert_eq!(failed, 0, "events: {events2:?}");
-        }
-        other => panic!("expected Finished, got {other:?} (events: {events2:?})"),
-    }
-
-    let pending_after_rescan = catalog.list_sidecar_pending(drive.id).await.unwrap();
-    assert!(
-        !pending_after_rescan.iter().any(|m| m.id == media_id),
-        "re-importing identical subjects must not re-mark the row pending, got {pending_after_rescan:?}"
+        "the catalog's tag set (union) no longer matches the sidecar, so the row must stay pending, got {pending:?}"
     );
 }
 
