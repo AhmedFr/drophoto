@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,17 @@ export function MetaPanel({ item, onTagPanelOpenChange }: MetaPanelProps) {
     setTagPanelOpenState(next);
     onTagPanelOpenChange?.(next);
   }
+
+  // This panel is keyed on `item.row.id` by the lightbox, so navigating
+  // to another photo unmounts it — without this cleanup, an open
+  // TagPanel's `true` would outlive the panel and permanently disable
+  // GalleryPage's Escape-clears-selection branch for the session.
+  const notifyClosed = onTagPanelOpenChange;
+  useEffect(() => {
+    return () => {
+      notifyClosed?.(false);
+    };
+  }, [notifyClosed]);
 
   // A single-id `states` map can only ever read "all" (has the tag) or be
   // absent (doesn't) — "some" needs more than one id — so this doubles as

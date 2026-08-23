@@ -230,3 +230,17 @@ it("disables the chip remove and + buttons while a tag mutation is in flight", a
 
   await waitFor(() => expect(addButton).toBeEnabled());
 });
+
+it("notifies the tag panel closed when unmounting (lightbox item change)", async () => {
+  const onOpenChange = vi.fn();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { unmount } = render(
+    <QueryClientProvider client={queryClient}>
+      <MetaPanel item={item()} onTagPanelOpenChange={onOpenChange} />
+    </QueryClientProvider>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "Add tag" }));
+  expect(onOpenChange).toHaveBeenLastCalledWith(true);
+  unmount();
+  expect(onOpenChange).toHaveBeenLastCalledWith(false);
+});
