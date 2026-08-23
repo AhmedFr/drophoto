@@ -1,3 +1,4 @@
+import { ActiveJobs } from "@/components/ActiveJobs";
 import { cn } from "@/lib/utils";
 import type { SidebarProps } from "./Sidebar.types";
 export function Sidebar({ items, activeId, onNavigate }: SidebarProps) {
@@ -33,6 +34,7 @@ export function Sidebar({ items, activeId, onNavigate }: SidebarProps) {
           );
         })}
       </ul>
+      <ActiveJobs />
     </nav>
   );
 }

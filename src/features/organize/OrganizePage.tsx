@@ -23,10 +23,11 @@ export function OrganizePage() {
 
   const { rows, organizedCount, scan, scanningDriveId, scanError } = useUnorganized();
   const drives = rows.map((r) => r.drive);
+  const driveNames = Object.fromEntries(drives.map((d) => [d.id, d.name]));
 
   const planQuery = usePlan(selectedDriveIds);
   const rule = useRule(selectedDriveIds);
-  const run = useOrganizeRun(selectedDriveIds);
+  const run = useOrganizeRun(selectedDriveIds, driveNames);
   const doneSummary = useDoneSummary(selectedDriveIds, run.done);
   const revertRun = useRevertRun(doneSummary.jobIds);
 

@@ -3,9 +3,17 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
+import type { JobEvent } from "@/lib/api/scan";
 import { useOrganizeRun } from "./useOrganizeRun";
 
-vi.mock("@tauri-apps/api/event");
+beforeEach(() => {
+  // `useOrganizeRun` reads job events from the global `jobsStore` (via
+  // `useJobEvents`) rather than listening for the "job" Tauri event
+  // itself — in the real app `JobEventsBridge` applies those events, so
+  // tests seed the store directly instead of mocking `listen`.
+  useJobsStore.setState({ events: {}, labels: {} });
+});
 
 function wrapperFor(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -13,20 +21,14 @@ function wrapperFor(queryClient: QueryClient) {
   };
 }
 
-async function mockListen() {
-  const { listen } = await import("@tauri-apps/api/event");
-  let handler: ((event: { payload: unknown }) => void) | undefined;
-  vi.mocked(listen).mockImplementation((_name, cb) => {
-    handler = cb as (event: { payload: unknown }) => void;
-    return Promise.resolve(vi.fn());
-  });
-  return { emit: (payload: unknown) => act(() => handler?.({ payload })) };
+function mockListen() {
+  return { emit: (payload: unknown) => act(() => useJobsStore.getState().applyEvent(payload as JobEvent)) };
 }
 
-function renderRun(driveIds: number[]) {
+function renderRun(driveIds: number[], driveNames?: Record<number, string>) {
   const queryClient = new QueryClient();
   const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-  const view = renderHook(() => useOrganizeRun(driveIds), { wrapper: wrapperFor(queryClient) });
+  const view = renderHook(() => useOrganizeRun(driveIds, driveNames), { wrapper: wrapperFor(queryClient) });
   return { ...view, invalidateSpy };
 }
 
@@ -176,6 +178,16 @@ it("calls cancel_job with the current job id", async () => {
 
   act(() => result.current.cancel());
   await waitFor(() => expect(cancelJobSpy).toHaveBeenCalled());
+});
+
+it("records the drive's name as the started job's label when driveNames is given", async () => {
+  mockIPC((cmd) => (cmd === "start_organize" ? "job-1" : undefined));
+  await mockListen();
+
+  const { result } = renderRun([1], { 1: "Kodachrome" });
+  act(() => result.current.start());
+
+  await waitFor(() => expect(useJobsStore.getState().labels["job-1"]).toBe("Kodachrome"));
 });
 
 it("surfaces a start_organize error and stops running", async () => {
