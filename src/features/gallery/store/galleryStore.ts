@@ -69,8 +69,21 @@ export const useGalleryStore = create<GalleryState>()(
   persist(
     (set) => ({
       ...DEFAULTS,
-      setTypeFilter: (typeFilter) => set({ typeFilter }),
-      setSort: (sort) => set({ sort }),
+      // Changing the filter or sort can drop ids out of the visible list —
+      // a still-selected id whose tile is no longer shown would be an
+      // invisible tag-target, so the selection is cleared whenever the
+      // value actually changes (a no-op set, e.g. re-picking the current
+      // filter, leaves it alone).
+      setTypeFilter: (typeFilter) =>
+        set((state) =>
+          state.typeFilter === typeFilter
+            ? { typeFilter }
+            : { typeFilter, selectedIds: [], anchorIndex: null },
+        ),
+      setSort: (sort) =>
+        set((state) =>
+          state.sort === sort ? { sort } : { sort, selectedIds: [], anchorIndex: null },
+        ),
       setDensity: (density) => set({ density }),
       toggleSelected: (id, index) =>
         set((state) => ({

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
@@ -31,17 +31,32 @@ export function GalleryPage() {
   // selection computes ids between the anchor and `index` (inclusive) over
   // the loaded `items` array; without an anchor it degrades to a plain
   // toggle, per the brief.
-  const handleToggle = (index: number, shiftKey: boolean) => {
-    if (shiftKey && anchorIndex !== null) {
-      const [lo, hi] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex];
-      const ids = items.slice(lo, hi + 1).map((it) => it.row.id);
-      selectRange(ids);
-      return;
-    }
-    const item = items[index];
-    if (!item) return;
-    toggleSelected(item.row.id, index);
-  };
+  //
+  // `useCallback` here is load-bearing, not just tidy: `VirtualGrid` is
+  // wrapped in `React.memo`, and an inline function identity that changes
+  // every render (as this closes over `items`/`anchorIndex`) would defeat
+  // that memoization on every `GalleryPage` render, not just on selection
+  // changes.
+  const handleToggle = useCallback(
+    (index: number, shiftKey: boolean) => {
+      if (shiftKey && anchorIndex !== null) {
+        const [lo, hi] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex];
+        const ids = items.slice(lo, hi + 1).map((it) => it.row.id);
+        selectRange(ids);
+        return;
+      }
+      const item = items[index];
+      if (!item) return;
+      toggleSelected(item.row.id, index);
+    },
+    [anchorIndex, items, selectRange, toggleSelected],
+  );
+
+  // Same reasoning as `handleToggle` above — kept stable so it doesn't
+  // defeat `VirtualGrid`'s memoization on every render.
+  const handleNearEnd = useCallback(() => {
+    if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
+  }, [media]);
 
   // Clear the selection when the page unmounts (e.g. navigating away), so a
   // stale selection doesn't linger for the next visit.
@@ -61,15 +76,25 @@ export function GalleryPage() {
   // listener, so a selected + open lightbox stays open while the selection
   // clears; with no selection, the event passes through untouched and
   // Escape closes the lightbox as before.
+  //
+  // `selectedIds` is read via a ref (updated every render, no dependency
+  // array of its own) rather than as an effect dependency, so the
+  // `document` listener isn't torn down and re-added on every toggle —
+  // only when `clearSelection`'s identity would ever change.
+  const selectedIdsRef = useRef(selectedIds);
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key !== "Escape" || selectedIds.length === 0) return;
+      if (e.key !== "Escape" || selectedIdsRef.current.length === 0) return;
       e.stopImmediatePropagation();
       clearSelection();
     }
     document.addEventListener("keydown", handleKeyDown, { capture: true });
     return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
-  }, [selectedIds, clearSelection]);
+  }, [clearSelection]);
 
   // `items` can shrink out from under an open lightbox (e.g. a refetch after
   // a scan removes media) — clamp `openIndex` back into range, or close it
@@ -119,9 +144,7 @@ export function GalleryPage() {
             items={items}
             targetRowHeight={DENSITY_ROW_HEIGHT[density]}
             onOpen={setOpenIndex}
-            onNearEnd={() => {
-              if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
-            }}
+            onNearEnd={handleNearEnd}
             selectedIds={selectedIdSet}
             onToggle={handleToggle}
           />

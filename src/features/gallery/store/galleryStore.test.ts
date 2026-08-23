@@ -130,6 +130,38 @@ describe("selection", () => {
     expect(persisted.state).not.toHaveProperty("selectedIds");
     expect(persisted.state).not.toHaveProperty("anchorIndex");
   });
+
+  it("setTypeFilter clears the selection when the filter actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTypeFilter("RAW");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("setTypeFilter to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTypeFilter("ALL");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("setSort clears the selection when the sort actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setSort("OLDEST");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("setSort to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setSort("NEWEST");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
 });
 
 describe("buildQuery", () => {
