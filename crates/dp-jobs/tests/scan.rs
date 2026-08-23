@@ -6,7 +6,7 @@ use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{Drive, DriveRole, MediaKind, NewDrive, NewMedia, NewSource, Source};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
-use dp_metadata::ExiftoolProvider;
+use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, Sidecars};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -58,6 +58,7 @@ fn default_deps(catalog: Arc<dyn Catalog>, store: Arc<ThumbStore>) -> ScanDeps {
         metadata: Arc::new(ExiftoolProvider::from_path()),
         thumbs: Arc::new(ThumbChain::default_chain()),
         store,
+        sidecars: Arc::new(ExiftoolSidecars::from_path()),
         home: None,
     }
 }
@@ -824,4 +825,220 @@ async fn walk_progress_events_precede_the_first_per_file_progress() {
         walk_progress_index.unwrap() < real_progress_index.unwrap(),
         "expected the walk-progress event to precede the first real progress event, got {events:?}"
     );
+}
+
+/// Task 4a.4: a scan imports an existing XMP sidecar's subjects as catalog
+/// tags. The first import genuinely links a new tag to the row, so
+/// `tag_media` (per Task 4a.1) marks it sidecar-pending like any other
+/// real tag change — the scan never calls `clear_sidecar_pending` itself,
+/// leaving that to the sync job. A *second* scan, with the sidecar
+/// unchanged and the row already synced (pending cleared), must leave the
+/// row un-pending: `tag_media` no-ops when the tag set doesn't actually
+/// change, so importing identical tags marks nothing pending.
+#[tokio::test]
+async fn scan_imports_sidecar_subjects_as_tags() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("Pictures")).unwrap();
+    let media_path = drive_dir.path().join("Pictures/a.jpg");
+    std::fs::copy(fx("sample.jpg"), &media_path).unwrap();
+
+    let sidecars = ExiftoolSidecars::from_path();
+    sidecars
+        .write_subjects(&media_path, &["holiday".to_string()])
+        .await
+        .unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Sidecar Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let deps = default_deps(catalog.clone(), store.clone());
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive.clone(),
+        vec![src.clone()],
+        deps,
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!(ok, 1, "events: {events:?}");
+            assert_eq!(failed, 0, "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1, "rows: {rows:?}");
+    let media_id = rows[0].id;
+
+    let tags = catalog.tags_for_media(&[media_id]).await.unwrap();
+    let tag_names: Vec<&str> = tags.iter().map(|(_, t)| t.name.as_str()).collect();
+    assert_eq!(tag_names, vec!["holiday"], "tags: {tags:?}");
+
+    // First import is a genuine change (no prior tags) — pending is set,
+    // same as any other real tag change. Simulate the sync job having
+    // caught up (written the sidecar, cleared pending) before the next
+    // scan.
+    let pending = catalog.list_sidecar_pending(drive.id).await.unwrap();
+    assert!(
+        pending.iter().any(|m| m.id == media_id),
+        "the first sidecar import is a real tag change and must mark the row pending, got {pending:?}"
+    );
+    catalog.clear_sidecar_pending(media_id).await.unwrap();
+
+    // Re-scan with the sidecar unchanged: `tag_media` no-ops because the
+    // catalog's tag set already matches, so the row must NOT be marked
+    // pending again, and the scan itself never calls
+    // `clear_sidecar_pending` — there's nothing here for it to clear.
+    let deps2 = default_deps(catalog.clone(), store);
+    let (tx2, mut rx2) = mpsc::channel(256);
+    let runner2 = JobRunner::new(tx2);
+    let job_id2 = runner2.next_id("scan");
+    let job2 = Arc::new(ScanJob::new(job_id2.clone(), drive.clone(), vec![src], deps2));
+    runner2.spawn(job_id2, job2);
+    let (events2, terminal2) = drain_until_terminal(&mut rx2).await;
+    match terminal2 {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!(ok, 1, "events: {events2:?}");
+            assert_eq!(failed, 0, "events: {events2:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events2:?})"),
+    }
+
+    let pending_after_rescan = catalog.list_sidecar_pending(drive.id).await.unwrap();
+    assert!(
+        !pending_after_rescan.iter().any(|m| m.id == media_id),
+        "re-importing identical subjects must not re-mark the row pending, got {pending_after_rescan:?}"
+    );
+}
+
+/// A sidecar read failure (here: `exiftool` itself can't be run) must not
+/// fail the media file it belongs to: the file is still scanned and
+/// cataloged, and the sidecar failure is recorded as a normal item error
+/// instead. `exiftool` is in practice lenient about malformed XMP content
+/// (still exits 0, just reports no subjects), so the read failure is
+/// induced at the process level instead — the same `DpError::Sidecar`
+/// path a genuinely broken `exiftool` install would hit.
+#[tokio::test]
+async fn scan_records_error_for_corrupt_sidecar_but_still_scans_the_file() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let media_path = drive_dir.path().join("b.jpg");
+    std::fs::copy(fx("sample.jpg"), &media_path).unwrap();
+    // Only needs to exist — `read_subjects` checks existence via a plain
+    // filesystem stat before ever invoking `exiftool`, so its content
+    // doesn't matter for reaching the induced binary-not-found failure
+    // below.
+    std::fs::write(drive_dir.path().join("b.jpg.xmp"), b"placeholder").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Corrupt Sidecar Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let mut deps = default_deps(catalog.clone(), store);
+    // Swap in a binary that can't be found, so `read_subjects` fails with
+    // `DpError::Sidecar` for this file's (existing) sidecar.
+    deps.sidecars = Arc::new(ExiftoolSidecars::new("dp-test-nonexistent-exiftool-binary"));
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!(ok, 1, "the media file must still be scanned, events: {events:?}");
+            assert_eq!(
+                failed, 0,
+                "a sidecar read failure must never fail the file itself, events: {events:?}"
+            );
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    assert_eq!(catalog.count_media(None).await.unwrap(), 1);
+
+    let saw_sidecar_error = events.iter().any(|e| {
+        matches!(e, JobEvent::ItemError { path, code, .. } if path.ends_with("b.jpg") && code == "sidecar")
+    });
+    assert!(
+        saw_sidecar_error,
+        "expected an ItemError{{code: \"sidecar\"}} for the corrupt sidecar, got {events:?}"
+    );
+}
+
+/// `.xmp` sidecar files themselves must never be indexed as media — the
+/// extension filter in `collect_media_files` (via `MediaKind::from_ext`)
+/// already excludes them; this proves it end-to-end.
+#[tokio::test]
+async fn xmp_sidecar_files_are_never_indexed_as_media() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let media_path = drive_dir.path().join("c.jpg");
+    std::fs::copy(fx("sample.jpg"), &media_path).unwrap();
+
+    let sidecars = ExiftoolSidecars::from_path();
+    sidecars
+        .write_subjects(&media_path, &["beach".to_string()])
+        .await
+        .unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Xmp Not Media Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => {
+            assert_eq!(
+                ok, 1,
+                "only c.jpg must be indexed, not its .xmp sidecar, events: {events:?}"
+            );
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    assert_eq!(catalog.count_media(None).await.unwrap(), 1);
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(
+        rows.iter().all(|r| !r.rel_path.ends_with(".xmp")),
+        "no row's rel_path should end in .xmp, got {rows:?}"
+    );
+    assert_eq!(rows[0].rel_path, "c.jpg");
 }

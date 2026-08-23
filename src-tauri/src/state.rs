@@ -2,7 +2,7 @@ use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{DpError, DpResult};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobRunner};
-use dp_metadata::{ExiftoolProvider, MetadataProvider};
+use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, MetadataProvider, Sidecars};
 use dp_organize::{default_strategy, MoveStrategy};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use dp_volumes::{SysinfoVolumes, VolumeProvider};
@@ -23,6 +23,7 @@ pub struct AppState {
     pub metadata: Arc<dyn MetadataProvider>,
     pub thumbs: Arc<ThumbChain>,
     pub store: Arc<ThumbStore>,
+    pub sidecars: Arc<dyn Sidecars>,
     pub strategy: Arc<dyn MoveStrategy>,
     pub runner: JobRunner,
     /// The current user's home directory (`$HOME`), resolved once at
@@ -83,6 +84,7 @@ impl AppState {
             metadata: Arc::new(ExiftoolProvider::from_path()),
             thumbs: Arc::new(ThumbChain::default_chain()),
             store: Arc::new(ThumbStore::new(thumbs_root)),
+            sidecars: Arc::new(ExiftoolSidecars::from_path()),
             runner,
             home,
             active_jobs: Mutex::new(HashMap::new()),
