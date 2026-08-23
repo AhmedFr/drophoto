@@ -89,24 +89,48 @@ async fn get_rule_returns_default_then_saved() {
 async fn list_unorganized_excludes_organized_and_root_prefixed() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
 
-    c.upsert_media(nm(drive_id, "plain.jpg", "h-plain"))
+    c.upsert_media(nm_with_source(drive_id, "plain.jpg", "h-plain", source_id))
         .await
         .unwrap();
     let organized_id = c
-        .upsert_media(nm(drive_id, "organized.jpg", "h-org"))
+        .upsert_media(nm_with_source(drive_id, "organized.jpg", "h-org", source_id))
         .await
         .unwrap();
     c.mark_media_organized(organized_id, "archive/organized.jpg")
         .await
         .unwrap();
-    c.upsert_media(nm(drive_id, "archive/x.jpg", "h-archive"))
+    c.upsert_media(nm_with_source(drive_id, "archive/x.jpg", "h-archive", source_id))
         .await
         .unwrap();
 
     let rows = c.list_unorganized(drive_id, "archive").await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].rel_path, "plain.jpg");
+}
+
+/// The planner never even sees a legacy row (`source_id IS NULL`) —
+/// `list_unorganized` excludes it outright, rather than relying solely
+/// on `PlanInput::require_source` to catch it downstream.
+#[tokio::test]
+async fn list_unorganized_excludes_rows_with_no_source() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
+
+    c.upsert_media(nm_with_source(drive_id, "has-source.jpg", "h-has", source_id))
+        .await
+        .unwrap();
+    c.upsert_media(nm(drive_id, "legacy.jpg", "h-legacy"))
+        .await
+        .unwrap();
+
+    let rows = c.list_unorganized(drive_id, "archive").await.unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.rel_path.as_str()).collect::<Vec<_>>(),
+        ["has-source.jpg"]
+    );
 }
 
 #[tokio::test]
@@ -370,9 +394,9 @@ async fn unorganized_summary_excludes_legacy_rows_from_count_but_not_total() {
     assert_eq!(summary.total, 2, "total still counts every row on the drive");
 }
 
-/// `legacy` surfaces the same count as `count_media_without_source`, so a
-/// caller doesn't need a second round-trip to know how many rows on this
-/// drive need a re-scan before they can ever be organized.
+/// `legacy` counts a drive's source-less rows so a caller doesn't need a
+/// second round-trip to know how many need a re-scan before they can
+/// ever be organized.
 #[tokio::test]
 async fn unorganized_summary_reports_the_legacy_count() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
@@ -391,10 +415,43 @@ async fn unorganized_summary_reports_the_legacy_count() {
 
     let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
     assert_eq!(summary.legacy, 2);
-    assert_eq!(
-        summary.legacy,
-        c.count_media_without_source(drive_id).await.unwrap()
-    );
+}
+
+/// `legacy` reuses the exact "organizable" predicate (unorganized,
+/// outside root) minus the source requirement — a source-less row that's
+/// *already organized* doesn't need a re-scan to be resolved, so it must
+/// not count.
+#[tokio::test]
+async fn unorganized_summary_legacy_excludes_an_already_organized_row() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    let organized_id = c
+        .upsert_media(nm(drive_id, "legacy-organized.jpg", "h-legacy-organized"))
+        .await
+        .unwrap();
+    c.mark_media_organized(organized_id, "archive/legacy-organized.jpg")
+        .await
+        .unwrap();
+
+    let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
+    assert_eq!(summary.legacy, 0);
+}
+
+/// Same predicate, other half: a source-less row already sitting under
+/// the rule's root doesn't need a re-scan either, so it must not count
+/// as `legacy`.
+#[tokio::test]
+async fn unorganized_summary_legacy_excludes_a_row_already_under_root() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    c.upsert_media(nm(drive_id, "archive/legacy-in-place.jpg", "h-legacy-in-place"))
+        .await
+        .unwrap();
+
+    let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
+    assert_eq!(summary.legacy, 0);
 }
 
 #[tokio::test]

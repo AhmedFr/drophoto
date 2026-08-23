@@ -52,6 +52,10 @@ pub trait Catalog: Send + Sync {
     async fn delete_source(&self, id: i64) -> DpResult<()>;
     async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
     async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64>;
+    /// Count of `drive_id`'s legacy rows — never attributed to a source,
+    /// still unorganized, and outside `root` — see
+    /// `dp_core::UnorganizedSummary::legacy`.
+    async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64>;
 }
 
 #[async_trait]
@@ -177,5 +181,9 @@ impl Catalog for SqliteCatalog {
 
     async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64> {
         sources::count_media_without_source(&self.pool, drive_id).await
+    }
+
+    async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {
+        organize::count_legacy_unorganized(&self.pool, drive_id, root).await
     }
 }

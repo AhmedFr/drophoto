@@ -16,10 +16,16 @@ export function SourceRow({ summary, selected, onToggle, onScan, scanning }: Sou
   // A drive with no media rows at all has never been scanned. A drive
   // that *does* have rows but nothing left unorganized is simply done —
   // it used to be mislabelled "scan to index" and offered a pointless
-  // rescan, because both cases share `count === 0`.
+  // rescan, because both cases share `count === 0`. A third case shares
+  // that same `count === 0`, though: every remaining row could be
+  // *legacy* (scanned before sources existed) rather than truly
+  // organized — re-scanning is what resolves it, so it needs its own
+  // state rather than being folded into "All organized".
   const neverScanned = total === 0;
-  const allOrganized = !neverScanned && count === 0;
-  const selectable = !neverScanned && !allOrganized;
+  const legacyOnly = !neverScanned && count === 0 && legacy > 0;
+  const allOrganized = !neverScanned && count === 0 && legacy === 0;
+  const selectable = !neverScanned && !allOrganized && !legacyOnly;
+  const showScanNow = neverScanned || legacyOnly;
 
   return (
     <li
@@ -59,7 +65,7 @@ export function SourceRow({ summary, selected, onToggle, onScan, scanning }: Sou
           <span className="font-mono text-[10px] text-faint">{legacy} not covered by a source — re-scan</span>
         )}
       </div>
-      {neverScanned && (
+      {showScanNow && (
         <Button variant="outline" size="xs" disabled={scanning} onClick={onScan}>
           {scanning ? "SCANNING…" : "SCAN NOW"}
         </Button>

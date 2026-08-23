@@ -32,8 +32,8 @@ function emptySummary(driveId: number): UnorganizedSummary {
  * Joins online drives with their `list_unorganized_summaries` row (a drive
  * with no row yet — never scanned — gets a synthetic zero-count summary so
  * it still shows up with a "scan to index" prompt), and derives the count
- * of already-organized media (total minus unorganized, across all drives)
- * for the Detect step's stat strip.
+ * of already-organized media (total minus unorganized minus legacy, across
+ * all drives) for the Detect step's stat strip.
  */
 export function useUnorganized(): UseUnorganizedResult {
   const queryClient = useQueryClient();
@@ -66,7 +66,12 @@ export function useUnorganized(): UseUnorganizedResult {
     .map((d) => ({ ...(summariesByDrive.get(d.id) ?? emptySummary(d.id)), drive: d }));
 
   const totalUnorganized = summaries.reduce((sum, s) => sum + s.count, 0);
-  const organizedCount = Math.max(0, (totalQuery.data ?? 0) - totalUnorganized);
+  // Legacy rows are neither organized nor (yet) organizable — they must
+  // not fall out of `count` and land in `organizedCount` by default, or
+  // the strip would claim photos are "already organized" when what's
+  // really needed is a re-scan.
+  const totalLegacy = summaries.reduce((sum, s) => sum + s.legacy, 0);
+  const organizedCount = Math.max(0, (totalQuery.data ?? 0) - totalUnorganized - totalLegacy);
 
   return {
     rows,

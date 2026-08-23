@@ -216,8 +216,9 @@ impl OrganizeJob {
     /// `ItemError` event. Returns whether the item ended up fully applied
     /// (moved *and* recorded).
     ///
-    /// Before ever touching the filesystem, two checks stand between a
-    /// bad plan and the user's files:
+    /// Before ever touching the filesystem, three checks — run in this
+    /// order, matching the code below — stand between a bad plan and the
+    /// user's files:
     ///
     /// 1. [`escapes_mount`], applied to *both* `new_rel_path` and
     ///    `old_rel_path` — a `root`/template that somehow produced an
@@ -226,11 +227,7 @@ impl OrganizeJob {
     ///    `old_rel_path` would have the job read from outside it).
     ///    `save_rule`/`validate_template` are expected to reject such
     ///    rules long before a job ever sees them.
-    /// 2. [`destination_is_inside`] — `escapes_mount` is purely lexical,
-    ///    so a *directory symlink* sitting inside the mount (say
-    ///    `<mount>/archive` pointing at someone's home directory) would
-    ///    sail past it and have the move write outside the drive.
-    /// 3. [`dp_core::denylist::is_denied_path`], applied to *both* `to`
+    /// 2. [`dp_core::denylist::is_denied_path`], applied to *both* `to`
     ///    and `from` — the organize safety deny-list. Nothing upstream
     ///    (the planner, `save_rule`/`validate_root`) re-checks a row's
     ///    *source* path against the deny-list once it's already in the
@@ -238,6 +235,11 @@ impl OrganizeJob {
     ///    under a denied name (e.g. a literal `root` of `Caches`); this is
     ///    the last line of defense before either side of a move touches
     ///    the filesystem.
+    /// 3. [`destination_stays_on_drive`] (wrapping [`destination_is_inside`])
+    ///    — `escapes_mount` is purely lexical, so a *directory symlink*
+    ///    sitting inside the mount (say `<mount>/archive` pointing at
+    ///    someone's home directory) would sail past it and have the move
+    ///    write outside the drive.
     async fn apply_move(&self, ctx: &JobCtx, mount_path: &str, item: &OrganizePlanItem) -> bool {
         let mount = Path::new(mount_path);
         let to = mount.join(&item.new_rel_path);

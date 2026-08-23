@@ -19,12 +19,14 @@ use crate::commands::organize::validate_root;
 pub(crate) struct DrivePlan {
     pub items: Vec<OrganizePlanItem>,
     pub bytes: u64,
-    /// Media rows on this drive never attributed to a source — see
+    /// This drive's legacy rows — never attributed to a source, still
+    /// unorganized, and outside the rule's root — see
     /// [`dp_core::MediaRow::source_id`] and
-    /// [`dp_catalog::Catalog::count_media_without_source`]. These never
-    /// appear in `items` (the planner skips them via
-    /// `PlanInput::require_source`), so a caller that wants to know they
-    /// exist has to ask for this count separately.
+    /// [`dp_catalog::Catalog::count_legacy_unorganized`]. `list_unorganized`
+    /// excludes these outright (`PlanInput::require_source` is a
+    /// defense-in-depth backstop, not the only thing keeping them out of
+    /// `items`), so a caller that wants to know they exist has to ask
+    /// for this count separately.
     pub legacy: u64,
 }
 
@@ -81,7 +83,7 @@ pub(crate) async fn plan_for_drive(catalog: &Arc<dyn Catalog>, drive: &Drive) ->
         .filter_map(|i| sizes.get(&i.media_id))
         .sum();
 
-    let legacy = catalog.count_media_without_source(drive.id).await?;
+    let legacy = catalog.count_legacy_unorganized(drive.id, &rule.root).await?;
 
     Ok(DrivePlan { items, bytes, legacy })
 }

@@ -93,6 +93,22 @@ it("derives organizedCount as total media minus unorganized across all drives", 
   await waitFor(() => expect(result.current.organizedCount).toBe(7));
 });
 
+it("excludes legacy rows from organizedCount — a legacy row isn't organized, just uncounted", async () => {
+  const summaryWithLegacy = { ...summary, legacy: 2 };
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_unorganized_summaries") return [summaryWithLegacy];
+    if (cmd === "count_media") return 10;
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useUnorganized(), { wrapper });
+
+  // total 10, count 3 (unorganized-and-organizable), legacy 2 -> 10-3-2 = 5,
+  // not 7 (which would wrongly count the 2 legacy rows as organized).
+  await waitFor(() => expect(result.current.organizedCount).toBe(5));
+});
+
 it("calls start_scan for the given drive id", async () => {
   let scanArgs: unknown;
   mockIPC((cmd, args) => {

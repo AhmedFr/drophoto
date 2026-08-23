@@ -55,9 +55,16 @@ pub(crate) async fn list_unorganized(
     drive_id: i64,
     root: &str,
 ) -> DpResult<Vec<MediaRow>> {
+    // `source_id IS NOT NULL`: a row scanned before sources existed can
+    // never actually be organized (the planner requires a source — see
+    // `PlanInput::require_source`), so the planner must never even see
+    // it. Filtering here, rather than relying solely on the planner's
+    // own `require_source` gate, keeps that gate a defense-in-depth
+    // backstop instead of the only thing standing between a legacy row
+    // and a move.
     let sql = format!(
-        "SELECT * FROM media WHERE drive_id = ? AND organized_at IS NULL AND NOT ({UNDER_ROOT_PREDICATE}) \
-         ORDER BY id",
+        "SELECT * FROM media WHERE drive_id = ? AND organized_at IS NULL AND source_id IS NOT NULL \
+         AND NOT ({UNDER_ROOT_PREDICATE}) ORDER BY id",
     );
     let rows = sqlx::query(&sql)
         .bind(drive_id)
@@ -75,11 +82,11 @@ pub(crate) async fn unorganized_summary(
     root: &str,
 ) -> DpResult<UnorganizedSummary> {
     // `source_id IS NOT NULL`: a row scanned before sources existed can
-    // never actually be organized (the planner requires a source via
-    // `PlanInput::require_source`), so it must not inflate `count` —
-    // callers would otherwise offer to organize photos that immediately
-    // come back skipped. Such rows are surfaced separately, below, as
-    // `legacy`.
+    // never actually be organized (the planner requires a source, and
+    // `list_unorganized` already excludes such rows outright), so it
+    // must not inflate `count` — callers would otherwise offer to
+    // organize photos that were never eligible in the first place. Such
+    // rows are surfaced separately, below, as `legacy`.
     let sql = format!(
         "SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes, \
          COALESCE(SUM(kind = 'photo'), 0) AS photos, COALESCE(SUM(kind = 'video'), 0) AS videos, \
@@ -112,7 +119,7 @@ pub(crate) async fn unorganized_summary(
         .map_err(db)?;
     let total: i64 = total_row.try_get("total").map_err(db)?;
 
-    let legacy = crate::sources::count_media_without_source(pool, drive_id).await?;
+    let legacy = count_legacy_unorganized(pool, drive_id, root).await?;
 
     Ok(UnorganizedSummary {
         drive_id,
@@ -173,4 +180,28 @@ pub(crate) async fn mark_media_organized(
         .await
         .map_err(db)?;
     Ok(())
+}
+
+/// Count of media rows on `drive_id` that are `legacy`: never attributed
+/// to a source (`source_id IS NULL` — scanned before sources existed),
+/// still unorganized, and outside `root`. This is deliberately the exact
+/// predicate [`list_unorganized`]/[`unorganized_summary`] use for
+/// "organizable", minus the source requirement — a legacy row is, by
+/// definition, every other row that *would* be organizable if only it
+/// had a source. A row that's already organized, or already sitting
+/// under `root`, doesn't need a re-scan to be resolved, so neither
+/// counts here.
+pub(crate) async fn count_legacy_unorganized(pool: &SqlitePool, drive_id: i64, root: &str) -> DpResult<u64> {
+    let sql = format!(
+        "SELECT COUNT(*) FROM media WHERE drive_id = ? AND source_id IS NULL AND organized_at IS NULL \
+         AND NOT ({UNDER_ROOT_PREDICATE})",
+    );
+    let count: i64 = sqlx::query_scalar(&sql)
+        .bind(drive_id)
+        .bind(root)
+        .bind(root)
+        .fetch_one(pool)
+        .await
+        .map_err(db)?;
+    Ok(count as u64)
 }

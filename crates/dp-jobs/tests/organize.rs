@@ -796,6 +796,10 @@ impl Catalog for FailingCatalog {
     async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64> {
         self.0.count_media_without_source(drive_id).await
     }
+
+    async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {
+        self.0.count_legacy_unorganized(drive_id, root).await
+    }
 }
 
 #[tokio::test]

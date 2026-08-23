@@ -105,3 +105,40 @@ it("does not show a re-scan hint when every row is covered by a source", () => {
   render(<SourceRow summary={summary} selected={false} onToggle={vi.fn()} onScan={vi.fn()} />);
   expect(screen.queryByText(/not covered by a source/)).not.toBeInTheDocument();
 });
+
+it("shows the re-scan notice and SCAN NOW (not All organized) when everything left is legacy", () => {
+  const legacyOnly: UnorganizedRow = {
+    ...summary,
+    count: 0,
+    total: 5,
+    photos: 0,
+    videos: 0,
+    bytes: 0,
+    earliest: null,
+    latest: null,
+    legacy: 4,
+  };
+  const onScan = vi.fn();
+  render(<SourceRow summary={legacyOnly} selected={false} onToggle={vi.fn()} onScan={onScan} />);
+  expect(screen.queryByText("All organized")).not.toBeInTheDocument();
+  expect(screen.getByText("4 not covered by a source — re-scan")).toBeInTheDocument();
+  const scanButton = screen.getByRole("button", { name: /scan now/i });
+  fireEvent.click(scanButton);
+  expect(onScan).toHaveBeenCalled();
+});
+
+it("disables SCAN NOW while scanning in the legacy-only state", () => {
+  const legacyOnly: UnorganizedRow = {
+    ...summary,
+    count: 0,
+    total: 5,
+    photos: 0,
+    videos: 0,
+    bytes: 0,
+    earliest: null,
+    latest: null,
+    legacy: 4,
+  };
+  render(<SourceRow summary={legacyOnly} selected={false} onToggle={vi.fn()} onScan={vi.fn()} scanning />);
+  expect(screen.getByRole("button", { name: /scanning/i })).toBeDisabled();
+});
