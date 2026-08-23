@@ -12,4 +12,10 @@ export type UseUnorganizedResult = {
   scan: (driveId: number) => void;
   /** The drive currently being scanned via `scan`, if any. */
   scanningDriveId: number | null;
+  /**
+   * The most recent `scan` failure, and the drive it was for — so the
+   * row that triggered it can show why nothing happened, instead of the
+   * button silently reverting from "SCANNING…".
+   */
+  scanError: { driveId: number; message: string } | null;
 };

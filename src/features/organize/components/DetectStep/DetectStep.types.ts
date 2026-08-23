@@ -7,4 +7,7 @@ export type DetectStepProps = {
   onScan: (driveId: number) => void;
   organizedCount: number;
   scanningDriveId?: number | null;
+  /** The last scan failure, and which drive it belongs to — see
+   * `UseUnorganizedResult.scanError`. Routed to that drive's row only. */
+  scanError?: { driveId: number; message: string } | null;
 };

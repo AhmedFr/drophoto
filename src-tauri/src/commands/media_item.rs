@@ -10,6 +10,7 @@ pub fn to_item(store: &ThumbStore, row: MediaRow, drive: Drive) -> MediaItem {
     let original_path = drive
         .mount_path
         .map(|m| Path::new(&m).join(&row.rel_path).to_string_lossy().into_owned());
+    let has_thumb = store.exists(&row.hash, 400);
 
     MediaItem {
         thumb_path: store.path(&row.hash, 400).to_string_lossy().into_owned(),
@@ -17,6 +18,7 @@ pub fn to_item(store: &ThumbStore, row: MediaRow, drive: Drive) -> MediaItem {
         drive_name: drive.name,
         online: drive.online,
         original_path,
+        has_thumb,
         row,
     }
 }
@@ -49,6 +51,7 @@ mod tests {
             lon: None,
             missing_at: None,
             organized_at: None,
+            source_id: None,
         }
     }
 
@@ -104,5 +107,28 @@ mod tests {
         let item = to_item(&store, row(), drive(None, false));
 
         assert_eq!(item.original_path, None);
+    }
+
+    #[test]
+    fn has_thumb_is_false_when_no_thumbnail_was_ever_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThumbStore::new(dir.path());
+
+        let item = to_item(&store, row(), drive(Some("/Volumes/Kodachrome"), true));
+
+        assert!(!item.has_thumb);
+    }
+
+    #[test]
+    fn has_thumb_is_true_when_a_400px_thumbnail_exists_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThumbStore::new(dir.path());
+        let thumb_path = store.path("abc123", 400);
+        std::fs::create_dir_all(thumb_path.parent().unwrap()).unwrap();
+        std::fs::write(&thumb_path, b"fake webp bytes").unwrap();
+
+        let item = to_item(&store, row(), drive(Some("/Volumes/Kodachrome"), true));
+
+        assert!(item.has_thumb);
     }
 }

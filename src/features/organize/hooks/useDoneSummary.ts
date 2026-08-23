@@ -22,7 +22,8 @@ const FOLDERS_SHOWN = 3;
  * `organize_jobs.id` that `list_job_items` expects — so there's no
  * direct way to go from "the job(s) this run started" to their rows.
  * Instead this lists recent jobs and, for each of `driveIds`, picks the
- * one with the highest id (i.e. the one this run just created).
+ * `organize` job with the highest id (i.e. the one this run just
+ * created) — `revert` rows share the list and would otherwise win on id.
  */
 export function useDoneSummary(driveIds: number[], enabled: boolean): UseDoneSummaryResult {
   const query = useQuery({
@@ -32,14 +33,19 @@ export function useDoneSummary(driveIds: number[], enabled: boolean): UseDoneSum
 
       const latestJobIdByDrive = new Map<number, number>();
       for (const job of jobs) {
+        // `list_jobs` returns revert jobs too, on the same drives and
+        // with higher ids than the organize job they undo — so without
+        // this filter, reverting a run and coming back would resolve
+        // the revert's own id as "the job this run created", and the
+        // Done overlay would offer to revert the revert.
+        if (job.kind !== "organize") continue;
         if (!driveIds.includes(job.drive_id)) continue;
         const existing = latestJobIdByDrive.get(job.drive_id);
         if (existing === undefined || job.id > existing) latestJobIdByDrive.set(job.drive_id, job.id);
       }
 
-      const itemLists = await Promise.all(
-        Array.from(latestJobIdByDrive.values()).map((jobId) => listJobItems(jobId, JOB_ITEMS_LIMIT)),
-      );
+      const jobIds = Array.from(latestJobIdByDrive.values());
+      const itemLists = await Promise.all(jobIds.map((jobId) => listJobItems(jobId, JOB_ITEMS_LIMIT)));
 
       const folders = new Set<string>();
       for (const items of itemLists) {
@@ -49,10 +55,19 @@ export function useDoneSummary(driveIds: number[], enabled: boolean): UseDoneSum
         }
       }
 
-      return Array.from(folders).sort().reverse().slice(0, FOLDERS_SHOWN);
+      return { folders: Array.from(folders).sort().reverse().slice(0, FOLDERS_SHOWN), jobIds };
     },
     enabled: enabled && driveIds.length > 0,
   });
 
-  return { folders: query.data ?? [], isLoading: query.isFetching };
+  return {
+    folders: query.data?.folders ?? [],
+    // The numeric `organize_jobs.id`s this run actually created — see
+    // the doc comment above for why they can only be resolved (not
+    // known up front) from `list_jobs`. Exposed so a caller (e.g. a
+    // "revert this run" action) can act on the same jobs this summary
+    // was itself derived from.
+    jobIds: query.data?.jobIds ?? [],
+    isLoading: query.isFetching,
+  };
 }

@@ -37,6 +37,13 @@ pub struct PlanInput<'a> {
     /// file could collide with one of them without the planner ever
     /// noticing.
     pub existing_paths: &'a HashSet<String>,
+    /// When set, a row with no [`MediaRow::source_id`] — scanned before
+    /// sources existed, or otherwise unattributed — is never planned for
+    /// a move: it's recorded `SkippedCollision` with reason "not covered
+    /// by a source" instead. This is the planner's half of organize
+    /// safety: only files scanned under a confirmed, user-visible source
+    /// are ever candidates for being moved.
+    pub require_source: bool,
     pub now: DateTime<Utc>,
 }
 
@@ -46,6 +53,17 @@ struct Candidate {
     folder: String,
     file: String,
     ext: String,
+}
+
+/// The per-row-independent context [`plan_unit`] and [`find_group_suffix`]
+/// need, bundled so `plan()` doesn't have to thread half of [`PlanInput`]
+/// through as separate arguments.
+struct PlanCtx<'a> {
+    rule: &'a OrganizeRule,
+    rows: &'a [MediaRow],
+    candidates: &'a [Candidate],
+    organized_hashes: &'a HashSet<String>,
+    require_source: bool,
 }
 
 /// Computes an organize plan for `input.rows`, in input order.
@@ -99,16 +117,16 @@ pub fn plan(
     let mut results: Vec<Option<OrganizePlanItem>> = (0..rows.len()).map(|_| None).collect();
     let mut taken: HashSet<String> = input.existing_paths.iter().map(|p| p.to_lowercase()).collect();
 
+    let ctx = PlanCtx {
+        rule,
+        rows,
+        candidates: &candidates,
+        organized_hashes: input.organized_hashes,
+        require_source: input.require_source,
+    };
+
     for unit in units {
-        plan_unit(
-            rule,
-            rows,
-            &candidates,
-            &unit,
-            input.organized_hashes,
-            &mut taken,
-            &mut results,
-        )?;
+        plan_unit(&ctx, &unit, &mut taken, &mut results)?;
     }
 
     results
@@ -125,18 +143,34 @@ pub fn plan(
 /// Plans one collision unit (a single row, or a keep_pairs group), and
 /// writes the resulting items into `results` at their original indices.
 fn plan_unit(
-    rule: &OrganizeRule,
-    rows: &[MediaRow],
-    candidates: &[Candidate],
+    ctx: &PlanCtx,
     unit: &[usize],
-    organized_hashes: &HashSet<String>,
     taken: &mut HashSet<String>,
     results: &mut [Option<OrganizePlanItem>],
 ) -> DpResult<()> {
+    let PlanCtx {
+        rule,
+        rows,
+        candidates,
+        organized_hashes,
+        require_source,
+    } = *ctx;
     let mut movable: Vec<usize> = Vec::new();
 
     for &idx in unit {
         let row = &rows[idx];
+
+        if require_source && row.source_id.is_none() {
+            results[idx] = Some(OrganizePlanItem {
+                media_id: row.id,
+                old_rel_path: row.rel_path.clone(),
+                new_rel_path: row.rel_path.clone(),
+                status: PlanStatus::SkippedCollision,
+                reason: Some("not covered by a source".into()),
+            });
+            taken.insert(row.rel_path.to_lowercase());
+            continue;
+        }
 
         if organized_hashes.contains(&row.hash) {
             results[idx] = Some(OrganizePlanItem {

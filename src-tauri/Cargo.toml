@@ -20,6 +20,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tokio-util = "0.7"
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

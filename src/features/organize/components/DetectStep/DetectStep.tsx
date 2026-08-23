@@ -8,9 +8,14 @@ export function DetectStep({
   onScan,
   organizedCount,
   scanningDriveId,
+  scanError,
 }: DetectStepProps) {
   const selectedSummaries = summaries.filter((s) => selected.includes(s.drive_id));
   const newPhotosFound = selectedSummaries.reduce((sum, s) => sum + s.count, 0);
+  // Deliberately across *every* drive, not just selected ones — a legacy
+  // row can't be organized regardless of selection, so the notice needs
+  // to surface it either way.
+  const legacyCount = summaries.reduce((sum, s) => sum + s.legacy, 0);
 
   return (
     <div className="flex flex-col">
@@ -29,6 +34,12 @@ export function DetectStep({
         </div>
       </div>
 
+      {legacyCount > 0 && (
+        <div className="border-b border-border px-6 py-3 font-mono text-[10px] text-faint">
+          {legacyCount} files from older scans aren&apos;t covered by a source — re-scan to include them.
+        </div>
+      )}
+
       <div className="px-6 pt-5 pb-2 font-mono text-[9px] tracking-[2px] text-faint">
         DRIVES — SELECT WHAT TO ORGANIZE
       </div>
@@ -43,6 +54,7 @@ export function DetectStep({
               onToggle={() => onToggle(s.drive_id)}
               onScan={() => onScan(s.drive_id)}
               scanning={scanningDriveId === s.drive_id}
+              scanError={scanError?.driveId === s.drive_id ? scanError.message : null}
             />
           ))}
         </ul>

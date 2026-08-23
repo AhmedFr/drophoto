@@ -62,12 +62,14 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
       lon: null,
       missing_at: null,
       organized_at: null,
+      source_id: null,
     },
     thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
     preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
     drive_name: "Kodachrome",
     online: true,
     original_path: null,
+    has_thumb: true,
     ...overrides,
   };
 }

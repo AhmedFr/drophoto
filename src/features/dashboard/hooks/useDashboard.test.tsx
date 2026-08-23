@@ -38,6 +38,9 @@ const job = {
   failed: 0,
   started_at: "2026-08-22T00:00:00Z",
   finished_at: "2026-08-22T00:05:00Z",
+  kind: "organize",
+  reverts_job_id: null,
+  reverted_by_job_id: null,
 };
 
 const summary = {

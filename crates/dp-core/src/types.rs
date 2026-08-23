@@ -39,6 +39,25 @@ pub struct NewDrive {
     pub free: u64,
 }
 
+/// A configured scan root within a drive: `mount_path/rel_path` (or the
+/// mount root itself, when `rel_path` is empty). A drive scan walks every
+/// *enabled* source rather than the whole mount, and every media row
+/// scanned from a source carries that source's `id` (see
+/// [`MediaRow::source_id`]).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Source {
+    pub id: i64,
+    pub drive_id: i64,
+    pub rel_path: String,
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NewSource {
+    pub drive_id: i64,
+    pub rel_path: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Copy, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
@@ -98,6 +117,10 @@ pub struct MediaRow {
     pub lon: Option<f64>,
     pub missing_at: Option<DateTime<Utc>>,
     pub organized_at: Option<DateTime<Utc>>,
+    /// The [`Source`] this row was scanned from, if any. `None` for rows
+    /// scanned before sources existed, or otherwise not attributable to a
+    /// configured source.
+    pub source_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -121,6 +144,7 @@ pub struct NewMedia {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub organized_at: Option<DateTime<Utc>>,
+    pub source_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -170,6 +194,16 @@ pub struct OrganizeJobRow {
     pub failed: u64,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// `organize` | `revert`
+    pub kind: String,
+    /// For a `revert` job: the `organize_jobs.id` it reverts. `None` for
+    /// an `organize` job.
+    pub reverts_job_id: Option<i64>,
+    /// For an `organize` job: the id of the newest `revert` job that
+    /// reverts it, if any. Computed by `Catalog::list_organize_jobs` via
+    /// a `LEFT JOIN` on `reverts_job_id` — never stored on the row
+    /// itself, and always `None` for a `revert` job.
+    pub reverted_by_job_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -214,6 +248,18 @@ pub struct UnorganizedSummary {
     pub videos: u64,
     pub earliest: Option<DateTime<Utc>>,
     pub latest: Option<DateTime<Utc>>,
+    /// This drive's legacy rows: still unorganized, outside the rule's
+    /// root, but never attributed to a source (see
+    /// [`MediaRow::source_id`]) — scanned before sources existed. These
+    /// can't be organized until then, and are deliberately excluded from
+    /// `count`; a re-scan is what attributes them to a source and makes
+    /// them organizable.
+    pub legacy: u64,
+    /// Whether this drive has at least one *enabled* source configured.
+    /// `false` means a scan would walk nothing at all, so the UI must
+    /// send the user to set sources up rather than offer a scan that
+    /// can only ever find zero photos.
+    pub has_sources: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
@@ -256,6 +302,24 @@ pub struct MediaItem {
     pub drive_name: String,
     pub online: bool,
     pub original_path: Option<String>,
+    /// Whether a 400px thumbnail exists on disk for this row. `false` for
+    /// older catalog rows scanned before thumbnailing existed, or whose
+    /// thumbnail was otherwise never generated — the frontend renders a
+    /// placeholder tile instead of requesting `thumb_path` in that case.
+    pub has_thumb: bool,
+}
+
+/// A folder discovered by `dp_jobs::detect::detect_folders` that directly
+/// (or, once rolled up, transitively) contains media files worth offering
+/// as an import source.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DetectedFolder {
+    pub rel_path: String,
+    pub media_count: u64,
+    /// Sum of on-disk sizes (`symlink_metadata().len()`) of every media
+    /// file counted toward `media_count`.
+    pub bytes: u64,
+    pub suggested: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]

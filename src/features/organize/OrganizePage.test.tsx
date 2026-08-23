@@ -315,6 +315,11 @@ it("the done summary's folders come from list_job_items (the real result), not t
     failed: 0,
     started_at: "2026-08-22T00:00:00Z",
     finished_at: "2026-08-22T00:01:00Z",
+    // `useDoneSummary` only ever resolves `organize` rows — a `revert`
+    // row on the same drive carries a higher id and would otherwise win.
+    kind: "organize",
+    reverts_job_id: null,
+    reverted_by_job_id: null,
   };
   const movedItem = {
     id: 1,

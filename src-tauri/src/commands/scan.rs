@@ -22,15 +22,26 @@ pub async fn start_scan(state: State<'_, AppState>, drive_id: i64) -> Result<Str
         });
     }
 
+    let sources = state.catalog.list_enabled_sources(drive_id).await?;
+    if sources.is_empty() {
+        return Err(DpError::Unsupported {
+            message: "no sources configured for this drive".into(),
+            path: None,
+        });
+    }
+
     let deps = ScanDeps {
         catalog: state.catalog.clone(),
         hasher: state.hasher.clone(),
         metadata: state.metadata.clone(),
         thumbs: state.thumbs.clone(),
         store: state.store.clone(),
+        home: state.home.clone(),
     };
 
-    state.start_scan(drive_id, |job_id| Arc::new(ScanJob::new(job_id, drive, deps)))
+    state.start_scan(drive_id, |job_id| {
+        Arc::new(ScanJob::new(job_id, drive, sources, deps))
+    })
 }
 
 #[tauri::command]

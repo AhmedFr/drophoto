@@ -62,21 +62,23 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
         lon: row.try_get("lon").map_err(db)?,
         missing_at: from_rfc3339(missing_at)?,
         organized_at: from_rfc3339(organized_at)?,
+        source_id: row.try_get("source_id").map_err(db)?,
     })
 }
 
 pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64> {
     sqlx::query(
         "INSERT INTO media (drive_id, rel_path, hash, size, kind, ext, width, height, duration_ms, \
-         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, organized_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, organized_at, source_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(drive_id, rel_path) DO UPDATE SET \
          hash=excluded.hash, size=excluded.size, kind=excluded.kind, ext=excluded.ext, \
          width=excluded.width, height=excluded.height, duration_ms=excluded.duration_ms, \
          taken_at=excluded.taken_at, camera=excluded.camera, lens=excluded.lens, \
          aperture=excluded.aperture, shutter=excluded.shutter, iso=excluded.iso, \
          focal_mm=excluded.focal_mm, lat=excluded.lat, lon=excluded.lon, missing_at=NULL, \
-         organized_at=COALESCE(media.organized_at, excluded.organized_at)",
+         organized_at=COALESCE(media.organized_at, excluded.organized_at), \
+         source_id=COALESCE(excluded.source_id, media.source_id)",
     )
     .bind(m.drive_id)
     .bind(&m.rel_path)
@@ -97,6 +99,7 @@ pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64
     .bind(m.lat)
     .bind(m.lon)
     .bind(to_rfc3339(m.organized_at))
+    .bind(m.source_id)
     .execute(pool)
     .await
     .map_err(db)?;
@@ -133,6 +136,39 @@ pub(crate) async fn count_media(pool: &SqlitePool, drive_id: Option<i64>) -> DpR
             .map_err(db)?,
     };
     Ok(count as u64)
+}
+
+/// Every media row on `drive_id` that was never attributed to a source
+/// (`source_id IS NULL` — scanned before sources existed). Ordered by
+/// id so callers see a stable sequence.
+pub(crate) async fn list_media_without_source(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+    let rows = sqlx::query("SELECT * FROM media WHERE drive_id = ? AND source_id IS NULL ORDER BY id")
+        .bind(drive_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+    rows.iter().map(row_to_media).collect()
+}
+
+/// Deletes media row `id`, but **only** when no `organize_items` row
+/// references it, returning whether it was actually deleted.
+///
+/// `organize_items.media_id` carries no foreign key, so nothing at the
+/// schema level stops a delete from stranding a finished job's history
+/// — and a stranded item is exactly what would make that job
+/// un-revertable (`RevertJob` looks the media row back up by id). The
+/// `NOT EXISTS` guard lives inside the statement rather than in a
+/// read-then-delete pair so the check and the delete can't race.
+pub(crate) async fn delete_media(pool: &SqlitePool, id: i64) -> DpResult<bool> {
+    let result = sqlx::query(
+        "DELETE FROM media WHERE id = ? \
+         AND NOT EXISTS (SELECT 1 FROM organize_items WHERE organize_items.media_id = media.id)",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub(crate) async fn media_hash_exists(pool: &SqlitePool, hash: &str) -> DpResult<bool> {

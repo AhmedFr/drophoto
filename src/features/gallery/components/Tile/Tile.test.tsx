@@ -32,12 +32,14 @@ function item(overrides: Partial<MediaItem> = {}): MediaItem {
       lon: null,
       missing_at: null,
       organized_at: null,
+      source_id: null,
     },
     thumb_path: "/tmp/thumbs/hash1/400.webp",
     preview_path: "/tmp/thumbs/hash1/2000.webp",
     drive_name: "Kodachrome",
     online: true,
     original_path: null,
+    has_thumb: true,
     ...overrides,
   };
 }
@@ -96,4 +98,13 @@ it("hides the image on load error", () => {
   const img = screen.getByRole("img");
   img.dispatchEvent(new Event("error", { bubbles: true }));
   expect(img).toHaveStyle({ opacity: "0" });
+});
+
+it("renders a placeholder with the uppercased extension instead of an img when has_thumb is false", () => {
+  const t = tile({ item: item({ has_thumb: false, row: { ...item().row, ext: "heic" } }) });
+  render(<Tile tile={t} onOpen={() => {}} />);
+
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("No preview")).toBeInTheDocument();
+  expect(screen.getByText("HEIC")).toBeInTheDocument();
 });

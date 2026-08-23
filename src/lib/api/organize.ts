@@ -40,6 +40,20 @@ export type UnorganizedSummary = {
   videos: number;
   earliest: string | null;
   latest: string | null;
+  /**
+   * Media rows on this drive never attributed to a source — scanned
+   * before sources existed. These can't be organized (the planner
+   * requires a source) and are already excluded from `count`; a re-scan
+   * is what attributes them to a source and makes them organizable.
+   */
+  legacy: number;
+  /**
+   * Whether this drive has at least one *enabled* source configured.
+   * `false` means a scan would walk nothing at all, so the UI must offer
+   * to set sources up instead of offering a scan that can only ever find
+   * zero photos.
+   */
+  has_sources: boolean;
 };
 
 export type OrganizeJobRow = {
@@ -54,6 +68,16 @@ export type OrganizeJobRow = {
   failed: number;
   started_at: string;
   finished_at: string | null;
+  /** `organize` | `revert` */
+  kind: string;
+  /** For a `revert` job: the `organize_jobs.id` it reverts. */
+  reverts_job_id: number | null;
+  /**
+   * For an `organize` job: the id of the newest `revert` job that
+   * reverts it, if any. `null` for a `revert` job, or an `organize` job
+   * never reverted.
+   */
+  reverted_by_job_id: number | null;
 };
 
 export type OrganizeItemRow = {
@@ -82,3 +106,5 @@ export const listJobs = (limit: number) => invokeApi<OrganizeJobRow[]>("list_job
 
 export const listJobItems = (jobId: number, limit: number) =>
   invokeApi<OrganizeItemRow[]>("list_job_items", { jobId, limit });
+
+export const revertOrganize = (jobId: number) => invokeApi<string>("revert_organize", { jobId });

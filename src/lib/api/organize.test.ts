@@ -7,6 +7,7 @@ import {
   startOrganize,
   listJobs,
   listJobItems,
+  revertOrganize,
 } from "./organize";
 import { ApiError } from "./client";
 import type { OrganizeRule, OrganizePlan, UnorganizedSummary, OrganizeJobRow, OrganizeItemRow } from "./organize";
@@ -43,6 +44,8 @@ const summary: UnorganizedSummary = {
   videos: 1,
   earliest: "2025-09-01T00:00:00Z",
   latest: "2025-09-12T00:00:00Z",
+  legacy: 0,
+  has_sources: true,
 };
 
 const jobRow: OrganizeJobRow = {
@@ -56,6 +59,9 @@ const jobRow: OrganizeJobRow = {
   failed: 0,
   started_at: "2026-08-22T00:00:00Z",
   finished_at: "2026-08-22T00:00:05Z",
+  kind: "organize",
+  reverts_job_id: null,
+  reverted_by_job_id: null,
 };
 
 const itemRow: OrganizeItemRow = {
@@ -156,4 +162,17 @@ it("lists job items with a limit", async () => {
   });
   await expect(listJobItems(1, 10)).resolves.toEqual([itemRow]);
   expect(received).toEqual({ jobId: 1, limit: 10 });
+});
+
+it("reverts an organize job", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "revert_organize") {
+      received = args;
+      return "revert-0";
+    }
+    return undefined;
+  });
+  await expect(revertOrganize(1)).resolves.toBe("revert-0");
+  expect(received).toEqual({ jobId: 1 });
 });

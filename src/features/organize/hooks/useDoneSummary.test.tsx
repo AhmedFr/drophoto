@@ -24,6 +24,9 @@ function job(overrides: Partial<OrganizeJobRow>): OrganizeJobRow {
     failed: 0,
     started_at: "2026-08-22T00:00:00Z",
     finished_at: "2026-08-22T00:01:00Z",
+    kind: "organize",
+    reverts_job_id: null,
+    reverted_by_job_id: null,
     ...overrides,
   };
 }
@@ -52,6 +55,7 @@ it("is disabled (no fetch, empty folders) until enabled", () => {
 
   const { result } = render([1], false);
   expect(result.current.folders).toEqual([]);
+  expect(result.current.jobIds).toEqual([]);
   expect(listJobsSpy).not.toHaveBeenCalled();
 });
 
@@ -77,6 +81,7 @@ it("resolves distinct destination folders of moved items for the run's drives, p
   const { result } = render([1, 2], true);
   await waitFor(() => expect(result.current.folders).toEqual(["archive/2024/Q3", "archive/2024/Q2"]));
   expect(result.current.isLoading).toBe(false);
+  expect(result.current.jobIds.sort()).toEqual([10, 20]);
 });
 
 it("excludes items that weren't actually moved", async () => {
@@ -112,4 +117,29 @@ it("caps the result at 3 folders", async () => {
 
   const { result } = render([1], true);
   await waitFor(() => expect(result.current.folders).toHaveLength(3));
+});
+
+// `list_jobs` returns revert rows too, on the same drive and with a
+// *higher* id than the organize job they undo. Picking the highest id
+// without filtering by kind resolved the revert's own id as "this
+// run's job", so the Done overlay offered to revert the revert.
+it("ignores revert jobs when resolving this run's job id", async () => {
+  mockIPC((cmd, args) => {
+    if (cmd === "list_jobs") {
+      return [
+        job({ id: 9, drive_id: 1, kind: "revert", reverts_job_id: 7 }),
+        job({ id: 7, drive_id: 1, kind: "organize" }),
+      ];
+    }
+    if (cmd === "list_job_items") {
+      const jobId = (args as { jobId: number }).jobId;
+      return jobId === 7 ? [item({ job_id: 7 })] : [];
+    }
+    return undefined;
+  });
+
+  const { result } = render([1], true);
+
+  await waitFor(() => expect(result.current.jobIds).toEqual([7]));
+  expect(result.current.folders).toEqual(["archive/2024/Q2"]);
 });

@@ -3,13 +3,15 @@ mod media;
 mod organize;
 mod organize_jobs;
 mod query;
+mod sources;
 mod sqlite;
 
 use async_trait::async_trait;
 use dp_core::{
-    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, OrganizeItemRow, OrganizeJobRow, OrganizeRule,
-    UnorganizedSummary,
+    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewSource, OrganizeItemRow, OrganizeJobRow,
+    OrganizeRule, Source, UnorganizedSummary,
 };
+pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
 use std::collections::HashSet;
 
@@ -25,6 +27,13 @@ pub trait Catalog: Send + Sync {
     async fn get_media_with_drive(&self, id: i64) -> DpResult<(MediaRow, Drive)>;
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64>;
     async fn media_hash_exists(&self, hash: &str) -> DpResult<bool>;
+    /// Every media row on `drive_id` never attributed to a source
+    /// (`source_id IS NULL`) — see [`dp_core::MediaRow::source_id`].
+    async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    /// Deletes media row `id` unless an `organize_items` row references
+    /// it; `Ok(false)` means it was left in place. See the `SqliteCatalog`
+    /// implementation for why the guard exists.
+    async fn delete_media(&self, id: i64) -> DpResult<bool>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule>;
     async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()>;
@@ -33,6 +42,9 @@ pub trait Catalog: Send + Sync {
     async fn organized_hashes(&self, hashes: &[String]) -> DpResult<HashSet<String>>;
     async fn list_rel_paths(&self, drive_id: i64) -> DpResult<Vec<String>>;
     async fn create_organize_job(&self, drive_id: i64, planned: u64) -> DpResult<i64>;
+    /// Creates a `revert` job row for `reverts_job_id`. See
+    /// [`OrganizeJobRow::reverts_job_id`]/[`OrganizeJobRow::reverted_by_job_id`].
+    async fn create_revert_job(&self, drive_id: i64, reverts_job_id: i64, planned: u64) -> DpResult<i64>;
     async fn finish_organize_job(
         &self,
         id: i64,
@@ -43,8 +55,25 @@ pub trait Catalog: Send + Sync {
     ) -> DpResult<()>;
     async fn insert_organize_item(&self, item: &OrganizeItemRow) -> DpResult<i64>;
     async fn mark_media_organized(&self, media_id: i64, new_rel_path: &str) -> DpResult<()>;
+    /// Reverts a single media row's organize move (see
+    /// [`Self::mark_media_organized`]): restores `rel_path` to
+    /// `old_rel_path` and clears `organized_at`.
+    async fn mark_media_reverted(&self, media_id: i64, old_rel_path: &str) -> DpResult<()>;
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>>;
+    /// A single `organize_jobs` row by id (`None` if it doesn't exist),
+    /// with the same `reverted_by_job_id` computation as
+    /// [`Self::list_organize_jobs`].
+    async fn get_organize_job(&self, id: i64) -> DpResult<Option<OrganizeJobRow>>;
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>>;
+    async fn list_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
+    async fn upsert_source(&self, s: NewSource) -> DpResult<Source>;
+    async fn set_source_enabled(&self, id: i64, enabled: bool) -> DpResult<()>;
+    async fn delete_source(&self, id: i64) -> DpResult<()>;
+    async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
+    /// Count of `drive_id`'s legacy rows — never attributed to a source,
+    /// still unorganized, and outside `root` — see
+    /// `dp_core::UnorganizedSummary::legacy`.
+    async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64>;
 }
 
 #[async_trait]
@@ -89,6 +118,14 @@ impl Catalog for SqliteCatalog {
         media::media_hash_exists(&self.pool, hash).await
     }
 
+    async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        media::list_media_without_source(&self.pool, drive_id).await
+    }
+
+    async fn delete_media(&self, id: i64) -> DpResult<bool> {
+        media::delete_media(&self.pool, id).await
+    }
+
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         media::record_scan_error(&self.pool, drive_id, path, code, message).await
     }
@@ -121,6 +158,10 @@ impl Catalog for SqliteCatalog {
         organize_jobs::create_organize_job(&self.pool, drive_id, planned).await
     }
 
+    async fn create_revert_job(&self, drive_id: i64, reverts_job_id: i64, planned: u64) -> DpResult<i64> {
+        organize_jobs::create_revert_job(&self.pool, drive_id, reverts_job_id, planned).await
+    }
+
     async fn finish_organize_job(
         &self,
         id: i64,
@@ -140,11 +181,43 @@ impl Catalog for SqliteCatalog {
         organize::mark_media_organized(&self.pool, media_id, new_rel_path).await
     }
 
+    async fn mark_media_reverted(&self, media_id: i64, old_rel_path: &str) -> DpResult<()> {
+        organize::mark_media_reverted(&self.pool, media_id, old_rel_path).await
+    }
+
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {
         organize_jobs::list_organize_jobs(&self.pool, limit).await
     }
 
+    async fn get_organize_job(&self, id: i64) -> DpResult<Option<OrganizeJobRow>> {
+        organize_jobs::get_organize_job(&self.pool, id).await
+    }
+
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>> {
         organize_jobs::list_organize_items(&self.pool, job_id, limit).await
+    }
+
+    async fn list_sources(&self, drive_id: i64) -> DpResult<Vec<Source>> {
+        sources::list_sources(&self.pool, drive_id).await
+    }
+
+    async fn upsert_source(&self, s: NewSource) -> DpResult<Source> {
+        sources::upsert_source(&self.pool, s).await
+    }
+
+    async fn set_source_enabled(&self, id: i64, enabled: bool) -> DpResult<()> {
+        sources::set_source_enabled(&self.pool, id, enabled).await
+    }
+
+    async fn delete_source(&self, id: i64) -> DpResult<()> {
+        sources::delete_source(&self.pool, id).await
+    }
+
+    async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<Source>> {
+        sources::list_enabled_sources(&self.pool, drive_id).await
+    }
+
+    async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {
+        organize::count_legacy_unorganized(&self.pool, drive_id, root).await
     }
 }

@@ -7,6 +7,7 @@ use dp_organize::{default_strategy, MoveStrategy};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use dp_volumes::{SysinfoVolumes, VolumeProvider};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
@@ -24,6 +25,13 @@ pub struct AppState {
     pub store: Arc<ThumbStore>,
     pub strategy: Arc<dyn MoveStrategy>,
     pub runner: JobRunner,
+    /// The current user's home directory (`$HOME`), resolved once at
+    /// startup and reused by every command that needs it (the scan and
+    /// source-detection walks, for the deny-list's `home/Library` rule —
+    /// see [`dp_core::denylist::is_denied_path`]). `None` when `$HOME`
+    /// isn't set, which is logged once here rather than on every command
+    /// invocation.
+    pub home: Option<PathBuf>,
     /// Job id of the in-flight job for each `(kind, drive_id)` pair,
     /// where `kind` is `"scan"` or `"organize"`. A drive may have at most
     /// one running job *of any kind* at a time — see [`job_admission`].
@@ -62,6 +70,11 @@ impl AppState {
 
         let hasher: Arc<dyn Hasher> = Arc::new(Blake3Hasher);
 
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if home.is_none() {
+            tracing::warn!("$HOME is not set; the home/Library deny-list rule will be skipped");
+        }
+
         Ok(Self {
             volumes: Arc::new(SysinfoVolumes),
             catalog: Arc::new(catalog),
@@ -71,6 +84,7 @@ impl AppState {
             thumbs: Arc::new(ThumbChain::default_chain()),
             store: Arc::new(ThumbStore::new(thumbs_root)),
             runner,
+            home,
             active_jobs: Mutex::new(HashMap::new()),
         })
     }
@@ -101,6 +115,26 @@ impl AppState {
         self.start_job("organize", drive_id, make_job)
     }
 
+    /// Starts a revert job for `drive_id`, admitted under the exact same
+    /// `"organize"` bucket as [`Self::start_organize`] — a scan, an
+    /// organize, and a revert are mutually exclusive on a drive. Unlike
+    /// `start_organize`/`start_scan`, this is `exclusive`: *any* other
+    /// job already running for this drive — whether it's a different
+    /// kind (blocked, same as always) or, critically, another job under
+    /// this very `"organize"` bucket (an organize job, or someone else's
+    /// revert) — refuses outright with a generic message, rather than
+    /// reusing that other job's id. Reverting job A must never silently
+    /// hand back the id of an in-flight revert of job B; the caller asked
+    /// to revert a *specific* job, and a job id for anything else is
+    /// simply wrong, not a helpful dedupe.
+    pub fn start_revert(
+        &self,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
+        self.start_job_as("organize", "revert", true, drive_id, make_job)
+    }
+
     /// Returns the running job id for `(kind, drive_id)`, if any, without
     /// starting anything. Lets a caller skip redundant work (e.g.
     /// re-planning an organize job) up front when it already knows the
@@ -126,18 +160,33 @@ impl AppState {
         drive_id: i64,
         make_job: impl FnOnce(String) -> Arc<dyn Job>,
     ) -> DpResult<String> {
-        let mut jobs = lock_active_jobs(&self.active_jobs);
+        self.start_job_as(kind, kind, false, drive_id, make_job)
+    }
 
-        match job_admission(&jobs, kind, drive_id, |id| self.runner.is_running(id)) {
-            Admission::Existing(job_id) => Ok(job_id),
-            Admission::Blocked { other_kind } => Err(DpError::Unsupported {
-                message: format!("a {other_kind} job is already running on this drive"),
-                path: None,
-            }),
-            Admission::Start => {
-                let job_id = self.runner.next_id(kind);
+    /// [`Self::start_job`], but with the freshly spawned job's id prefix
+    /// (`id_prefix`) decoupled from the admission bucket it's tracked
+    /// under (`admission_kind`), and `exclusive` controlling how
+    /// [`Admission::Existing`] is handled — see [`Self::start_revert`],
+    /// the only caller that needs either to differ from `start_job`'s
+    /// defaults.
+    fn start_job_as(
+        &self,
+        admission_kind: &str,
+        id_prefix: &str,
+        exclusive: bool,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
+        let mut jobs = lock_active_jobs(&self.active_jobs);
+        let decision = job_admission(&jobs, admission_kind, drive_id, |id| self.runner.is_running(id));
+
+        match resolve_admission(decision, id_prefix, exclusive) {
+            Resolution::Reuse(job_id) => Ok(job_id),
+            Resolution::Refuse(message) => Err(DpError::Unsupported { message, path: None }),
+            Resolution::Spawn => {
+                let job_id = self.runner.next_id(id_prefix);
                 self.runner.spawn(job_id.clone(), make_job(job_id.clone()));
-                jobs.insert((kind.to_string(), drive_id), job_id.clone());
+                jobs.insert((admission_kind.to_string(), drive_id), job_id.clone());
                 Ok(job_id)
             }
         }
@@ -185,6 +234,61 @@ fn job_admission(
     }
 
     Admission::Start
+}
+
+/// What [`AppState::start_job_as`] should actually do, given a
+/// [`job_admission`] decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Resolution {
+    /// Spawn a new job.
+    Spawn,
+    /// Reuse this already-running job's id rather than spawning.
+    Reuse(String),
+    /// Refuse with this message.
+    Refuse(String),
+}
+
+/// Turns a [`job_admission`] decision into a [`Resolution`], given the
+/// id prefix *this* caller would spawn under (`id_prefix`) and whether
+/// it wants [`Admission::Existing`] treated as a dedupe-and-reuse at all
+/// (`exclusive`).
+///
+/// `Admission::Existing` is only ever a `Reuse` when *both* hold: not
+/// `exclusive`, and the existing job's id actually starts with
+/// `id_prefix`. That second condition is what makes an in-flight revert
+/// block a *new* organize the same way any other job would: the
+/// `"organize"` admission bucket now holds both `"organize-N"` and
+/// `"revert-N"` ids (see [`AppState::start_revert`]), so an `Existing`
+/// hit there is only really "the same kind of thing, dedupe it" when the
+/// id itself agrees — an `"organize"` caller finding a `"revert-N"` job
+/// already running must refuse, not silently start organizing (or reuse
+/// a revert's id as if it were its own). `exclusive` (revert's own case)
+/// refuses `Existing` unconditionally, prefix match or not — see
+/// `start_revert`'s doc comment for why.
+///
+/// `exclusive` additionally changes the *message* on `Blocked` — a
+/// specific "a {kind} job is already running" everywhere else, or the
+/// generic message revert wants for either sub-case.
+fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> Resolution {
+    const GENERIC_CONFLICT: &str = "another job is running on this drive";
+
+    match decision {
+        Admission::Start => Resolution::Spawn,
+        Admission::Existing(job_id) => {
+            if !exclusive && job_id.starts_with(&format!("{id_prefix}-")) {
+                Resolution::Reuse(job_id)
+            } else {
+                Resolution::Refuse(GENERIC_CONFLICT.into())
+            }
+        }
+        Admission::Blocked { other_kind } => {
+            if exclusive {
+                Resolution::Refuse(GENERIC_CONFLICT.into())
+            } else {
+                Resolution::Refuse(format!("a {other_kind} job is already running on this drive"))
+            }
+        }
+    }
 }
 
 /// Locks `active_jobs`, recovering from mutex poisoning instead of
@@ -252,5 +356,104 @@ mod tests {
     fn a_stale_other_kind_entry_does_not_block() {
         let active = map(&[("scan", 1, "scan-0")]);
         assert_eq!(job_admission(&active, "organize", 1, |_| false), Admission::Start);
+    }
+
+    #[test]
+    fn resolve_admission_always_spawns_on_start_regardless_of_exclusive() {
+        assert_eq!(
+            resolve_admission(Admission::Start, "organize", false),
+            Resolution::Spawn
+        );
+        assert_eq!(
+            resolve_admission(Admission::Start, "revert", true),
+            Resolution::Spawn
+        );
+    }
+
+    #[test]
+    fn resolve_admission_reuses_an_existing_id_when_it_matches_the_prefix_and_not_exclusive() {
+        assert_eq!(
+            resolve_admission(Admission::Existing("organize-0".into()), "organize", false),
+            Resolution::Reuse("organize-0".into())
+        );
+    }
+
+    /// The core of the "a revert in flight must block organize" ruling:
+    /// `start_organize` still dedupes against *another organize job*,
+    /// but an `"organize"`-bucket hit that's actually a `"revert-N"` job
+    /// (someone else's in-flight revert) must refuse — never be reused
+    /// as if it were an organize job, and never silently let a second
+    /// organize start alongside it.
+    #[test]
+    fn resolve_admission_refuses_an_existing_id_from_a_different_prefix_even_when_not_exclusive() {
+        assert_eq!(
+            resolve_admission(Admission::Existing("revert-3".into()), "organize", false),
+            Resolution::Refuse("another job is running on this drive".into())
+        );
+    }
+
+    /// The mirror image: a revert job already running blocks a *new*
+    /// revert attempt the same way — an `"organize"`-bucket hit that's
+    /// actually another `"revert-N"` job must also refuse rather than
+    /// being reused, since `revert_organize` only ever wants to hear
+    /// back about the specific job it targeted.
+    #[test]
+    fn resolve_admission_refuses_an_existing_id_from_a_different_revert_even_when_not_exclusive() {
+        assert_eq!(
+            resolve_admission(Admission::Existing("organize-7".into()), "revert", false),
+            Resolution::Refuse("another job is running on this drive".into())
+        );
+    }
+
+    /// `start_scan`'s own bucket (`"scan"`) is never shared with any
+    /// other caller — every id tracked under it is always `"scan-N"` —
+    /// so a same-kind `Existing` hit there is unaffected by the prefix
+    /// check and still dedupes exactly as before.
+    #[test]
+    fn resolve_admission_leaves_scan_dedupe_unaffected_by_the_prefix_check() {
+        assert_eq!(
+            resolve_admission(Admission::Existing("scan-0".into()), "scan", false),
+            Resolution::Reuse("scan-0".into())
+        );
+    }
+
+    /// The core of finding #3: an exclusive caller (`start_revert`) must
+    /// never come back with some *other* job's id — only a refusal, with
+    /// a generic message that says nothing about which specific job is
+    /// in the way. True even when the prefix *would* have matched.
+    #[test]
+    fn resolve_admission_refuses_an_existing_id_when_exclusive_never_returning_it() {
+        assert_eq!(
+            resolve_admission(Admission::Existing("revert-0".into()), "revert", true),
+            Resolution::Refuse("another job is running on this drive".into())
+        );
+    }
+
+    #[test]
+    fn resolve_admission_names_the_blocking_kind_when_not_exclusive() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "scan".into()
+                },
+                "organize",
+                false
+            ),
+            Resolution::Refuse("a scan job is already running on this drive".into())
+        );
+    }
+
+    #[test]
+    fn resolve_admission_uses_a_generic_message_for_blocked_when_exclusive() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "scan".into()
+                },
+                "revert",
+                true
+            ),
+            Resolution::Refuse("another job is running on this drive".into())
+        );
     }
 }

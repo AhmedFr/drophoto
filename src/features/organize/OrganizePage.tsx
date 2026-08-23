@@ -5,6 +5,7 @@ import { usePlan } from "./hooks/usePlan";
 import { useRule } from "./hooks/useRule";
 import { useOrganizeRun } from "./hooks/useOrganizeRun";
 import { useDoneSummary } from "./hooks/useDoneSummary";
+import { useRevertRun } from "./hooks/useRevertRun";
 import { StepRail } from "./components/StepRail";
 import { WizardHeader } from "./components/WizardHeader";
 import { WizardFooter } from "./components/WizardFooter";
@@ -20,13 +21,14 @@ export function OrganizePage() {
   const next = useWizardStore((s) => s.next);
   const back = useWizardStore((s) => s.back);
 
-  const { rows, organizedCount, scan, scanningDriveId } = useUnorganized();
+  const { rows, organizedCount, scan, scanningDriveId, scanError } = useUnorganized();
   const drives = rows.map((r) => r.drive);
 
   const planQuery = usePlan(selectedDriveIds);
   const rule = useRule(selectedDriveIds);
   const run = useOrganizeRun(selectedDriveIds);
   const doneSummary = useDoneSummary(selectedDriveIds, run.done);
+  const revertRun = useRevertRun(doneSummary.jobIds);
 
   // The wizard is deliberately not persisted (see `wizardStore.ts`), but
   // nothing previously reset it back to step 0 with no selection once a
@@ -53,6 +55,17 @@ export function OrganizePage() {
   // a hint noting so) for the brief window before it's ready.
   const doneFolders = doneSummary.isLoading ? planGroups.map((g) => g.folder).slice(0, 3) : doneSummary.folders;
   const doneFoldersHint = doneSummary.isLoading ? "from the plan" : null;
+
+  // A revert only reads as "done" (success — hides the button, shows
+  // REVERTED) once every item was actually moved back; a run that
+  // finished with some items still failed must stay retryable, which is
+  // why `reverted` requires `failed === 0` rather than just `done`.
+  const revertSucceeded = revertRun.done && revertRun.failed === 0 && !revertRun.error;
+  const revertError =
+    revertRun.error ??
+    (revertRun.done && revertRun.failed > 0
+      ? `REVERT FAILED — ${revertRun.failed} file${revertRun.failed === 1 ? "" : "s"} could not be moved back`
+      : null);
 
   const primaryLabel =
     step === 0 ? "CONTINUE →" : rule.isDirty ? "SAVE RULE FIRST" : `ORGANIZE ${planned} →`;
@@ -81,6 +94,7 @@ export function OrganizePage() {
                 onScan={scan}
                 organizedCount={organizedCount}
                 scanningDriveId={scanningDriveId}
+                scanError={scanError}
               />
             </div>
           </>
@@ -126,6 +140,11 @@ export function OrganizePage() {
           folders={doneFolders}
           foldersHint={doneFoldersHint}
           cancelled={run.cancelled}
+          onRevert={doneSummary.jobIds.length > 0 ? revertRun.start : undefined}
+          reverting={revertRun.running}
+          revertProgress={revertRun.progress}
+          reverted={revertSucceeded}
+          revertError={revertError}
         />
       )}
     </div>

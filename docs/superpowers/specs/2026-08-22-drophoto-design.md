@@ -84,6 +84,13 @@ Shared: `src/components/ui/*` (shadcn, generated), `src/components/<Domain>/*` (
 
 Thumbnails: WebP at `~/Library/Application Support/drophoto/thumbs/<hash>/{400,2000}.webp`. Keyed by content hash → shared across duplicates. **The catalog + thumbnails are the product**: the 2000px lightbox preview is generated at index time so the library is fully browsable with every drive unplugged. Originals are only needed for full-res view, export, or re-ingest.
 
+### 5.0 Scan sources and the safety deny-list
+A drive is never scanned whole by default. Each drive has **sources** (folders) chosen by the user from an auto-detected candidate list: a shallow, hash-free detection pass (depth ≤ 4) counts media per folder and ranks them; external volumes propose their root when it is photo-dominant; the boot volume proposes `~/Pictures`, `~/Desktop`, `~/Downloads` and any folder with ≥ 20 media files. The user confirms; "Add folder…" is always available.
+
+**Deny-list (hard, not overridable in v1):** `/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/private`, `/opt`, `/cores`, `~/Library`, any `*.app`, `*.photoslibrary`, `*.aplibrary`, `*.lrcat`/`*.lrdata`, `node_modules`, `.git`, hidden dirs, `$RECYCLE.BIN`, `System Volume Information`, `.Trashes`, `.Spotlight-V100`, `.fseventsd`, `Caches`. Files are also rejected when they look like stubs (< 8 KB with an image extension that fails to decode). Nothing under the deny-list is ever indexed, and organize only ever touches rows that belong to a confirmed source — the catalog stores `media.source_id`.
+
+**Undo:** every organize job is revertible: `revert_organize(job_id)` moves each `moved` item back (`new → old`) with the same no-replace strategy and logs the revert as its own job. The Done screen and the Dashboard expose "Revert".
+
 ### 5.1 Drive presence
 `VolumeProvider::watch()` updates `drives.mount_path` / `last_seen_at` live. Every `media` row resolves to `online` / `offline` (drive not mounted) / `missing` (drive mounted, file gone → `missing_at`). UI shows the holding drive name everywhere (grid hover, lightbox "Drive" row) and an "Insert **Kodachrome** to view original" affordance when offline.
 
@@ -119,6 +126,7 @@ media_fts     FTS5(filename, tags, place, camera)   -- kept in sync by triggers
 | 0 Scaffold | Tauri+React+Tailwind+shadcn, tokens, Sidebar, app shell, empty routes, registry, Storybook, CI |
 | 1 Drives & scan | Volume list, register/name drive, scan job, metadata + 400/2000px thumbs, progress, drive presence tracking. **Starts with a thumbnail spike on the user's real formats.** |
 | 2 Gallery & lightbox | Virtualized masonry by month, type chips, sort, density, lightbox + EXIF panel, ←/→/Esc, video badge. Works fully offline from thumbs; online/offline drive indicator; "insert drive" prompt for originals |
+| 3.5 Sources & safety | Per-drive sources with auto-detect + confirm, deny-list, stub rejection, walk-phase progress (dot loader + step text), gallery placeholder for rows without thumbs, organize revert |
 | 3 Organize | Organize wizard: Detect (drives + unorganized counts) → Organize (rule editor, full plan preview, execute, done screen); job log; Dashboard: recent jobs, drive capacity, totals; SQLite pool 4 + busy_timeout |
 | 4 Tags, places, search | Bulk tag from selection, offline geocode + manual override, Places map (mapcn), FTS search screen |
 | 5 Settings & polish | Sidecar health check, cache location, templates defaults, rescan/rehash, missing-file detection |

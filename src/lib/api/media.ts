@@ -24,6 +24,7 @@ export type MediaRow = {
   lon: number | null;
   missing_at: string | null;
   organized_at: string | null;
+  source_id: number | null;
 };
 
 export type MediaItem = {
@@ -33,6 +34,7 @@ export type MediaItem = {
   drive_name: string;
   online: boolean;
   original_path: string | null;
+  has_thumb: boolean;
 };
 
 export type MediaSort = "taken_desc" | "taken_asc" | "added_desc";

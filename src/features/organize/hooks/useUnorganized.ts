@@ -24,6 +24,8 @@ function emptySummary(driveId: number): UnorganizedSummary {
     videos: 0,
     earliest: null,
     latest: null,
+    legacy: 0,
+    has_sources: false,
   };
 }
 
@@ -31,8 +33,8 @@ function emptySummary(driveId: number): UnorganizedSummary {
  * Joins online drives with their `list_unorganized_summaries` row (a drive
  * with no row yet — never scanned — gets a synthetic zero-count summary so
  * it still shows up with a "scan to index" prompt), and derives the count
- * of already-organized media (total minus unorganized, across all drives)
- * for the Detect step's stat strip.
+ * of already-organized media (total minus unorganized minus legacy, across
+ * all drives) for the Detect step's stat strip.
  */
 export function useUnorganized(): UseUnorganizedResult {
   const queryClient = useQueryClient();
@@ -65,7 +67,22 @@ export function useUnorganized(): UseUnorganizedResult {
     .map((d) => ({ ...(summariesByDrive.get(d.id) ?? emptySummary(d.id)), drive: d }));
 
   const totalUnorganized = summaries.reduce((sum, s) => sum + s.count, 0);
-  const organizedCount = Math.max(0, (totalQuery.data ?? 0) - totalUnorganized);
+  // Legacy rows are neither organized nor (yet) organizable — they must
+  // not fall out of `count` and land in `organizedCount` by default, or
+  // the strip would claim photos are "already organized" when what's
+  // really needed is a re-scan.
+  const totalLegacy = summaries.reduce((sum, s) => sum + s.legacy, 0);
+  const organizedCount = Math.max(0, (totalQuery.data ?? 0) - totalUnorganized - totalLegacy);
+
+  // A failed `start_scan` (no sources, a denied mount, another job
+  // already running, ...) used to be swallowed: the button simply
+  // stopped saying "SCANNING…" and nothing else happened. Carry the
+  // failure — and which drive it was for — out so the row can say so.
+  const failedDriveId = scanMutation.variables ?? null;
+  const scanError =
+    scanMutation.isError && failedDriveId != null
+      ? { driveId: failedDriveId, message: (scanMutation.error as Error).message }
+      : null;
 
   return {
     rows,
@@ -74,5 +91,6 @@ export function useUnorganized(): UseUnorganizedResult {
     isError: drivesQuery.isError || summariesQuery.isError,
     scan: (driveId) => scanMutation.mutate(driveId),
     scanningDriveId: scanMutation.isPending ? (scanMutation.variables ?? null) : null,
+    scanError,
   };
 }

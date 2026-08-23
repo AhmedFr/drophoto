@@ -27,6 +27,7 @@ fn row(id: i64, rel_path: &str, hash: &str, taken_at: Option<&str>) -> MediaRow 
         lon: None,
         missing_at: None,
         organized_at: None,
+        source_id: None,
     }
 }
 
@@ -49,6 +50,7 @@ fn plans_paths_from_taken_at() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -74,6 +76,7 @@ fn falls_back_to_mtime_then_now() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now,
     };
 
@@ -104,6 +107,7 @@ fn marks_duplicates() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -130,6 +134,7 @@ fn suffixes_collisions() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -156,6 +161,7 @@ fn collision_with_existing_paths() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -184,6 +190,7 @@ fn pairs_share_stem_and_folder() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -215,6 +222,7 @@ fn already_in_place_is_skipped() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -246,6 +254,7 @@ fn disambiguates_case_insensitive_collisions_within_a_pair() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -284,6 +293,7 @@ fn disambiguates_duplicate_rows_within_a_pair() {
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        require_source: false,
         now: "2026-01-01T00:00:00Z".parse().unwrap(),
     };
 
@@ -295,4 +305,58 @@ fn disambiguates_duplicate_rows_within_a_pair() {
     assert_ne!(items[0].new_rel_path, items[1].new_rel_path);
     assert_eq!(items[0].new_rel_path, "archive/2025/Q3/2025-09-12_DSCF1000.raf");
     assert_eq!(items[1].new_rel_path, "archive/2025/Q3/2025-09-12_DSCF1000_1.raf");
+}
+
+/// `require_source: true` is the safety gate for organizing only rows
+/// scanned under a confirmed source: a row with no `source_id` (scanned
+/// before sources existed, or otherwise unattributed) must never be
+/// planned for a move, regardless of how clean its candidate path is.
+#[test]
+fn require_source_skips_a_row_with_no_source_id() {
+    let rule = rule(1);
+    let mut r = row(1, "IMG_0001.jpg", "h1", Some("2025-09-12T14:03:21Z"));
+    r.source_id = None;
+    let rows = vec![r];
+    let organized_hashes = HashSet::new();
+    let existing_paths = HashSet::new();
+    let input = PlanInput {
+        rule: &rule,
+        rows: &rows,
+        organized_hashes: &organized_hashes,
+        existing_paths: &existing_paths,
+        require_source: true,
+        now: "2026-01-01T00:00:00Z".parse().unwrap(),
+    };
+
+    let items = plan(&input, &HandlebarsTemplate, &no_mtime).unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].status, PlanStatus::SkippedCollision);
+    assert_eq!(items[0].reason.as_deref(), Some("not covered by a source"));
+    assert_eq!(items[0].new_rel_path, items[0].old_rel_path);
+}
+
+/// The flip side: with a `source_id` present, `require_source: true`
+/// doesn't get in the way of an otherwise-normal plan.
+#[test]
+fn require_source_allows_a_row_with_a_source_id() {
+    let rule = rule(1);
+    let mut r = row(1, "IMG_0001.jpg", "h1", Some("2025-09-12T14:03:21Z"));
+    r.source_id = Some(7);
+    let rows = vec![r];
+    let organized_hashes = HashSet::new();
+    let existing_paths = HashSet::new();
+    let input = PlanInput {
+        rule: &rule,
+        rows: &rows,
+        organized_hashes: &organized_hashes,
+        existing_paths: &existing_paths,
+        require_source: true,
+        now: "2026-01-01T00:00:00Z".parse().unwrap(),
+    };
+
+    let items = plan(&input, &HandlebarsTemplate, &no_mtime).unwrap();
+
+    assert_eq!(items[0].status, PlanStatus::Planned);
+    assert_eq!(items[0].new_rel_path, "archive/2025/Q3/2025-09-12_IMG_0001.jpg");
 }
