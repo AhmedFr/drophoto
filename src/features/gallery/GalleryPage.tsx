@@ -30,6 +30,10 @@ export function GalleryPage() {
   // Opened by `SelectionBar`'s TAG button, for the current selection.
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
 
+  // Mirrors whether `Lightbox`'s `MetaPanel` currently has its own
+  // (single-id) `TagPanel` open — see the Escape handler below.
+  const [metaTagPanelOpen, setMetaTagPanelOpen] = useState(false);
+
   // `onToggle` from `Tile`/`VirtualGrid`: `shiftKey` false is a plain
   // (cmd/ctrl-click) toggle, `shiftKey` true is a shift-range select. Range
   // selection computes ids between the anchor and `index` (inclusive) over
@@ -81,10 +85,19 @@ export function GalleryPage() {
   // clears; with no selection, the event passes through untouched and
   // Escape closes the lightbox as before.
   //
+  // Either `TagPanel` (the selection one, or `MetaPanel`'s single-id one
+  // nested in the lightbox) being open takes priority over all of that: we
+  // yield immediately, without touching the selection, so the keystroke
+  // reaches that dialog's own Radix `DismissableLayer` and closes only the
+  // topmost (nested-most) open dialog — the `TagPanel` — leaving the
+  // background selection and, when applicable, the lightbox itself intact.
+  //
   // `selectedIds` is read via a ref (updated every render, no dependency
   // array of its own) rather than as an effect dependency, so the
   // `document` listener isn't torn down and re-added on every toggle —
-  // only when `clearSelection`'s identity would ever change.
+  // only when `clearSelection`'s identity would ever change. The two
+  // panel-open flags are cheap to flip (far less often than a selection
+  // toggle) so they're plain effect dependencies instead.
   const selectedIdsRef = useRef(selectedIds);
   useEffect(() => {
     selectedIdsRef.current = selectedIds;
@@ -92,13 +105,15 @@ export function GalleryPage() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key !== "Escape" || selectedIdsRef.current.length === 0) return;
+      if (e.key !== "Escape") return;
+      if (tagPanelOpen || metaTagPanelOpen) return;
+      if (selectedIdsRef.current.length === 0) return;
       e.stopImmediatePropagation();
       clearSelection();
     }
     document.addEventListener("keydown", handleKeyDown, { capture: true });
     return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
-  }, [clearSelection]);
+  }, [clearSelection, tagPanelOpen, metaTagPanelOpen]);
 
   // `items` can shrink out from under an open lightbox (e.g. a refetch after
   // a scan removes media) — clamp `openIndex` back into range, or close it
@@ -160,12 +175,21 @@ export function GalleryPage() {
         <Lightbox
           items={items}
           index={openIndex}
-          onClose={() => setOpenIndex(null)}
+          onClose={() => {
+            setOpenIndex(null);
+            // Guards against a stale `true` outliving the `MetaPanel` that
+            // set it (e.g. if the lightbox is ever closed by something
+            // other than its own Escape/CLOSE path while the nested panel
+            // was left open), which would otherwise permanently block the
+            // Escape-clears-selection behavior above.
+            setMetaTagPanelOpen(false);
+          }}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
           onNext={() => {
             if (openIndex < items.length - 1) setOpenIndex(openIndex + 1);
             else if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
           }}
+          onTagPanelOpenChange={setMetaTagPanelOpen}
         />
       )}
     </div>

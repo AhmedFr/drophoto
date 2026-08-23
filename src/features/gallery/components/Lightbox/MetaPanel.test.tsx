@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
@@ -181,4 +181,52 @@ it("the + button opens the TagPanel for this item", async () => {
   await user.click(screen.getByRole("button", { name: /add tag/i }));
 
   expect(await screen.findByRole("dialog")).toBeInTheDocument();
+});
+
+it("shows an inline error near the TAGS row when removing a chip fails", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_tags") return [{ id: 1, name: "Family" }];
+    if (cmd === "tags_for_media") return [[1, { id: 1, name: "Family" }]];
+    if (cmd === "tag_media") throw new Error("db locked");
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPanel(item());
+
+  await user.click(await screen.findByRole("button", { name: /remove family/i }));
+
+  expect(await screen.findByText("db locked")).toBeInTheDocument();
+});
+
+it("disables the chip remove and + buttons while a tag mutation is in flight", async () => {
+  let resolveTagMedia: (() => void) | undefined;
+  mockIPC((cmd) => {
+    if (cmd === "list_tags") return [{ id: 1, name: "Family" }];
+    if (cmd === "tags_for_media") return [[1, { id: 1, name: "Family" }]];
+    if (cmd === "tag_media") {
+      return new Promise((resolve) => {
+        resolveTagMedia = () => resolve(null);
+      });
+    }
+    if (cmd === "start_sidecar_sync_all") return [];
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPanel(item());
+
+  const removeButton = await screen.findByRole("button", { name: /remove family/i });
+  const addButton = screen.getByRole("button", { name: /add tag/i });
+  expect(removeButton).toBeEnabled();
+  expect(addButton).toBeEnabled();
+
+  await user.click(removeButton);
+
+  await waitFor(() => expect(removeButton).toBeDisabled());
+  expect(addButton).toBeDisabled();
+
+  await act(async () => {
+    resolveTagMedia?.();
+  });
+
+  await waitFor(() => expect(addButton).toBeEnabled());
 });

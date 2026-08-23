@@ -23,8 +23,15 @@ export function useTags(mediaIds: number[]) {
     queryFn: listTags,
   });
 
+  // Sorted only for the cache key, so selecting the same ids in a different
+  // order (e.g. a different shift-click direction) hits the same cache
+  // entry instead of firing a redundant query. `mediaIds` itself keeps
+  // insertion order everywhere else (the coverage derivation below, and the
+  // `tagMedia` call in `applyMutation`).
+  const mediaTagsKey = [...mediaIds].sort((a, b) => a - b);
+
   const mediaTagsQuery = useQuery({
-    queryKey: ["media-tags", mediaIds],
+    queryKey: ["media-tags", mediaTagsKey],
     queryFn: () => tagsForMedia(mediaIds),
     enabled: mediaIds.length > 0,
   });

@@ -18,19 +18,32 @@ import { useTags } from "../../hooks/useTags";
 import { MetaRow } from "./MetaRow";
 import { MetaSection } from "./MetaSection";
 
-export type MetaPanelProps = { item: MediaItem };
+export type MetaPanelProps = {
+  item: MediaItem;
+  /** See `LightboxProps.onTagPanelOpenChange` — forwarded through unchanged. */
+  onTagPanelOpenChange?: (open: boolean) => void;
+};
 
-export function MetaPanel({ item }: MetaPanelProps) {
+export function MetaPanel({ item, onTagPanelOpenChange }: MetaPanelProps) {
   const { row } = item;
   const coords = formatCoords(row.lat, row.lon);
   const canReveal = item.online && item.original_path != null;
   const [revealError, setRevealError] = useState<string | null>(null);
-  const [tagPanelOpen, setTagPanelOpen] = useState(false);
+  const [tagPanelOpen, setTagPanelOpenState] = useState(false);
+
+  // Wraps the local open flag so `GalleryPage` also learns about this
+  // nested `TagPanel`'s open state (its document-level Escape handler
+  // needs to yield to Radix while this dialog is open — see
+  // `Lightbox.types.ts`).
+  function setTagPanelOpen(next: boolean) {
+    setTagPanelOpenState(next);
+    onTagPanelOpenChange?.(next);
+  }
 
   // A single-id `states` map can only ever read "all" (has the tag) or be
   // absent (doesn't) — "some" needs more than one id — so this doubles as
   // the item's own tag list without a separate `tagsForMedia` call.
-  const { allTags, states, apply } = useTags([row.id]);
+  const { allTags, states, apply, isApplying, error } = useTags([row.id]);
   const tags = allTags.filter((tag) => states[tag.id] === "all");
 
   const handleReveal = async () => {
@@ -86,7 +99,8 @@ export function MetaPanel({ item }: MetaPanelProps) {
                   type="button"
                   aria-label={`Remove ${tag.name}`}
                   onClick={() => apply({ add: [], remove: [tag.id] })}
-                  className="text-dim hover:text-foreground"
+                  disabled={isApplying}
+                  className="text-dim hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
                 >
                   <XIcon size={10} />
                 </button>
@@ -96,11 +110,13 @@ export function MetaPanel({ item }: MetaPanelProps) {
               type="button"
               aria-label="Add tag"
               onClick={() => setTagPanelOpen(true)}
-              className="flex size-4 items-center justify-center rounded-full border border-border text-dim hover:text-foreground"
+              disabled={isApplying}
+              className="flex size-4 items-center justify-center rounded-full border border-border text-dim hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
               +
             </button>
           </div>
+          {error && <p className="font-mono text-[10px] text-red-400">{error}</p>}
         </MetaSection>
       </div>
 

@@ -110,6 +110,26 @@ it("clicking CREATE stages a new tag row and clears the input", async () => {
   expect(input).toHaveValue("");
 });
 
+it("clicking a staged create's checkbox unstages it", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_tags") return [];
+    if (cmd === "tags_for_media") return [];
+    return undefined;
+  });
+  renderPanel({ mediaIds: [1], open: true });
+
+  const input = await screen.findByPlaceholderText(/filter or create/i);
+  fireEvent.change(input, { target: { value: "Sunset" } });
+  fireEvent.click(screen.getByRole("button", { name: /create "sunset"/i }));
+
+  const stagedRow = screen.getByText("Sunset").closest("label") as HTMLElement;
+  fireEvent.click(within(stagedRow).getByRole("checkbox"));
+
+  expect(screen.queryByText("Sunset")).not.toBeInTheDocument();
+  expect(screen.queryByText("(new)")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /apply/i })).toBeDisabled();
+});
+
 it("cycles a tag's staged state none -> all -> none on repeated clicks", async () => {
   mockIPC((cmd) => {
     if (cmd === "list_tags") return [{ id: 1, name: "Family" }];

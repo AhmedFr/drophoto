@@ -394,6 +394,79 @@ it("TAG opens the TagPanel for the current selection", async () => {
   expect(await screen.findByRole("dialog", { name: /tags/i })).toBeInTheDocument();
 });
 
+it("Escape while the selection TagPanel is open closes only the panel and keeps the selection", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    if (cmd === "list_tags") return [];
+    if (cmd === "tags_for_media") return [];
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(screen.getByRole("button", { name: "TAG" }));
+  const tagDialog = await screen.findByRole("dialog", { name: /tags/i });
+
+  fireEvent.keyDown(tagDialog, { key: "Escape" });
+
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: /tags/i })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
+});
+
+it("Escape while MetaPanel's +-opened TagPanel is open keeps the background selection and the lightbox", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    if (cmd === "list_tags") return [];
+    if (cmd === "tags_for_media") return [];
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(tiles[1]);
+  const lightboxDialog = await screen.findByRole("dialog");
+
+  await user.click(within(lightboxDialog).getByRole("button", { name: /add tag/i }));
+  const tagDialog = await screen.findByRole("dialog", { name: /tags/i });
+
+  fireEvent.keyDown(tagDialog, { key: "Escape" });
+
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: /tags/i })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+it("Escape still clears the selection when no panel is open", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  fireEvent.keyDown(document.body, { key: "Escape" });
+
+  await waitFor(() => expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument());
+});
+
 it("clears the selection on unmount", async () => {
   mockIPC((cmd) => {
     if (cmd === "query_media") return [item(1), item(2)];
