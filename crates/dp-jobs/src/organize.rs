@@ -2,12 +2,13 @@
 //! `Planned` item into place, recording the outcome of every item in the
 //! catalog, and reporting progress along the way.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use dp_catalog::Catalog;
+use dp_core::denylist::is_denied_path;
 use dp_core::{DpError, DpResult, Drive, OrganizeItemRow, OrganizePlanItem, PlanStatus};
 use dp_organize::MoveStrategy;
 use futures::FutureExt;
@@ -26,6 +27,14 @@ const MOUNT_RECHECK_INTERVAL: usize = 50;
 pub struct OrganizeDeps {
     pub catalog: Arc<dyn Catalog>,
     pub strategy: Arc<dyn MoveStrategy>,
+    /// The current user's home directory (`$HOME`), used for the
+    /// deny-list's `home/Library` rule (see
+    /// [`dp_core::denylist::is_denied_path`]) when [`OrganizeJob::apply_move`]
+    /// double-checks each move's source and destination against it just
+    /// before touching the filesystem. `None` when it couldn't be
+    /// resolved, which simply skips that one rule rather than failing
+    /// every move.
+    pub home: Option<PathBuf>,
 }
 
 /// A [`Job`] that applies a pre-computed organize plan (`items`,
@@ -221,6 +230,14 @@ impl OrganizeJob {
     ///    so a *directory symlink* sitting inside the mount (say
     ///    `<mount>/archive` pointing at someone's home directory) would
     ///    sail past it and have the move write outside the drive.
+    /// 3. [`dp_core::denylist::is_denied_path`], applied to *both* `to`
+    ///    and `from` — the organize safety deny-list. Nothing upstream
+    ///    (the planner, `save_rule`/`validate_root`) re-checks a row's
+    ///    *source* path against the deny-list once it's already in the
+    ///    catalog, and a template could in principle render a destination
+    ///    under a denied name (e.g. a literal `root` of `Caches`); this is
+    ///    the last line of defense before either side of a move touches
+    ///    the filesystem.
     async fn apply_move(&self, ctx: &JobCtx, mount_path: &str, item: &OrganizePlanItem) -> bool {
         let mount = Path::new(mount_path);
         let to = mount.join(&item.new_rel_path);
@@ -228,6 +245,13 @@ impl OrganizeJob {
 
         if escapes_mount(&item.new_rel_path, &to, mount) || escapes_mount(&item.old_rel_path, &from, mount) {
             self.record_failed(ctx, item, "path", "path escapes the drive root".into())
+                .await;
+            return false;
+        }
+
+        let home = self.deps.home.as_deref();
+        if is_denied_path(&to, mount, home) || is_denied_path(&from, mount, home) {
+            self.record_failed(ctx, item, "denied", "path is on the safety deny-list".into())
                 .await;
             return false;
         }

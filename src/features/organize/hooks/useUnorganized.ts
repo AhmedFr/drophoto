@@ -24,6 +24,7 @@ function emptySummary(driveId: number): UnorganizedSummary {
     videos: 0,
     earliest: null,
     latest: null,
+    legacy: 0,
   };
 }
 

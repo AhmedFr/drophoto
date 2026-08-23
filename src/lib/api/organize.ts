@@ -23,6 +23,13 @@ export type OrganizePlan = {
   planned: number;
   skipped_dup: number;
   bytes: number;
+  /**
+   * Sum, across every planned drive, of media rows never attributed to a
+   * source — scanned before sources existed. These are never planned (the
+   * planner requires a source), so this is the only way the UI learns
+   * they exist and need a re-scan.
+   */
+  legacy_rows: number;
 };
 
 export type UnorganizedSummary = {
@@ -40,6 +47,13 @@ export type UnorganizedSummary = {
   videos: number;
   earliest: string | null;
   latest: string | null;
+  /**
+   * Media rows on this drive never attributed to a source — scanned
+   * before sources existed. These can't be organized (the planner
+   * requires a source) and are already excluded from `count`; a re-scan
+   * is what attributes them to a source and makes them organizable.
+   */
+  legacy: number;
 };
 
 export type OrganizeJobRow = {

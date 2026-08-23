@@ -12,6 +12,7 @@ const summary: UnorganizedRow = {
   videos: 1,
   earliest: "2025-09-01T00:00:00Z",
   latest: "2025-10-12T00:00:00Z",
+  legacy: 0,
   drive: {
     id: 1,
     name: "Kodachrome",
@@ -93,4 +94,14 @@ it("disables the SCAN NOW button while scanning", () => {
     <SourceRow summary={neverScanned} selected={false} onToggle={vi.fn()} onScan={vi.fn()} scanning />,
   );
   expect(screen.getByRole("button", { name: /scanning/i })).toBeDisabled();
+});
+
+it("shows a re-scan hint with the legacy count when some rows aren't covered by a source", () => {
+  render(<SourceRow summary={{ ...summary, legacy: 4 }} selected={false} onToggle={vi.fn()} onScan={vi.fn()} />);
+  expect(screen.getByText("4 not covered by a source — re-scan")).toBeInTheDocument();
+});
+
+it("does not show a re-scan hint when every row is covered by a source", () => {
+  render(<SourceRow summary={summary} selected={false} onToggle={vi.fn()} onScan={vi.fn()} />);
+  expect(screen.queryByText(/not covered by a source/)).not.toBeInTheDocument();
 });

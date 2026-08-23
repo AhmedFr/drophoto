@@ -74,11 +74,18 @@ pub(crate) async fn unorganized_summary(
     drive_id: i64,
     root: &str,
 ) -> DpResult<UnorganizedSummary> {
+    // `source_id IS NOT NULL`: a row scanned before sources existed can
+    // never actually be organized (the planner requires a source via
+    // `PlanInput::require_source`), so it must not inflate `count` —
+    // callers would otherwise offer to organize photos that immediately
+    // come back skipped. Such rows are surfaced separately, below, as
+    // `legacy`.
     let sql = format!(
         "SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes, \
          COALESCE(SUM(kind = 'photo'), 0) AS photos, COALESCE(SUM(kind = 'video'), 0) AS videos, \
          MIN(taken_at) AS earliest, MAX(taken_at) AS latest \
-         FROM media WHERE drive_id = ? AND organized_at IS NULL AND NOT ({UNDER_ROOT_PREDICATE})",
+         FROM media WHERE drive_id = ? AND organized_at IS NULL AND source_id IS NOT NULL \
+         AND NOT ({UNDER_ROOT_PREDICATE})",
     );
     let row = sqlx::query(&sql)
         .bind(drive_id)
@@ -105,6 +112,8 @@ pub(crate) async fn unorganized_summary(
         .map_err(db)?;
     let total: i64 = total_row.try_get("total").map_err(db)?;
 
+    let legacy = crate::sources::count_media_without_source(pool, drive_id).await?;
+
     Ok(UnorganizedSummary {
         drive_id,
         count: count as u64,
@@ -114,6 +123,7 @@ pub(crate) async fn unorganized_summary(
         videos: videos as u64,
         earliest: from_rfc3339(earliest)?,
         latest: from_rfc3339(latest)?,
+        legacy,
     })
 }
 

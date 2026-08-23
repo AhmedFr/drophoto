@@ -12,7 +12,7 @@ function dateRange(earliest: string | null, latest: string | null): string {
 }
 
 export function SourceRow({ summary, selected, onToggle, onScan, scanning }: SourceRowProps) {
-  const { drive, count, total, photos, videos, bytes, earliest, latest } = summary;
+  const { drive, count, total, photos, videos, bytes, earliest, latest, legacy } = summary;
   // A drive with no media rows at all has never been scanned. A drive
   // that *does* have rows but nothing left unorganized is simply done —
   // it used to be mislabelled "scan to index" and offered a pointless
@@ -54,6 +54,9 @@ export function SourceRow({ summary, selected, onToggle, onScan, scanning }: Sou
           <span className="font-mono text-[10px] text-muted-foreground">
             {photos} photos · {videos} videos · {dateRange(earliest, latest)} · {formatBytes(bytes)}
           </span>
+        )}
+        {legacy > 0 && (
+          <span className="font-mono text-[10px] text-faint">{legacy} not covered by a source — re-scan</span>
         )}
       </div>
       {neverScanned && (

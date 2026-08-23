@@ -31,7 +31,13 @@ const drives = [
 ];
 
 function plan(items: OrganizePlan["items"]): OrganizePlan {
-  return { items, planned: items.filter((i) => i.status === "planned").length, skipped_dup: 0, bytes: 0 };
+  return {
+    items,
+    planned: items.filter((i) => i.status === "planned").length,
+    skipped_dup: 0,
+    bytes: 0,
+    legacy_rows: 0,
+  };
 }
 
 it("shows a planning message while the plan is loading", () => {

@@ -35,6 +35,7 @@ const summary = {
   videos: 1,
   earliest: "2025-09-01T00:00:00Z",
   latest: "2025-09-12T00:00:00Z",
+  legacy: 0,
 };
 
 beforeEach(async () => {

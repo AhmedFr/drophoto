@@ -19,6 +19,13 @@ use crate::commands::organize::validate_root;
 pub(crate) struct DrivePlan {
     pub items: Vec<OrganizePlanItem>,
     pub bytes: u64,
+    /// Media rows on this drive never attributed to a source — see
+    /// [`dp_core::MediaRow::source_id`] and
+    /// [`dp_catalog::Catalog::count_media_without_source`]. These never
+    /// appear in `items` (the planner skips them via
+    /// `PlanInput::require_source`), so a caller that wants to know they
+    /// exist has to ask for this count separately.
+    pub legacy: u64,
 }
 
 /// Computes the organize plan for `drive`: fetches its rule and
@@ -60,6 +67,10 @@ pub(crate) async fn plan_for_drive(catalog: &Arc<dyn Catalog>, drive: &Drive) ->
         rows: &rows,
         organized_hashes: &organized_hashes,
         existing_paths: &existing_paths,
+        // Only rows scanned under a confirmed source are ever candidates
+        // for a move — see `PlanInput::require_source`'s own docs. A row
+        // with no source is instead counted below, as `legacy`.
+        require_source: true,
         now: Utc::now(),
     };
     let items = plan(&input, &HandlebarsTemplate, &mtime_fn)?;
@@ -70,7 +81,9 @@ pub(crate) async fn plan_for_drive(catalog: &Arc<dyn Catalog>, drive: &Drive) ->
         .filter_map(|i| sizes.get(&i.media_id))
         .sum();
 
-    Ok(DrivePlan { items, bytes })
+    let legacy = catalog.count_media_without_source(drive.id).await?;
+
+    Ok(DrivePlan { items, bytes, legacy })
 }
 
 /// Resolves each row's on-disk mtime (via `std::fs::metadata`, run on a
@@ -172,5 +185,52 @@ mod tests {
         let plan = plan_for_drive(&catalog, &drive).await.unwrap();
         assert!(plan.items.is_empty());
         assert_eq!(plan.bytes, 0);
+        assert_eq!(plan.legacy, 0);
+    }
+
+    /// A row scanned before sources existed (`source_id: None`) must
+    /// never be planned for a move — `plan_for_drive` sets
+    /// `PlanInput::require_source: true` precisely to enforce this — and
+    /// is instead counted as `legacy`.
+    #[tokio::test]
+    async fn skips_a_row_with_no_source_and_counts_it_as_legacy() {
+        use dp_core::{MediaKind, NewMedia};
+
+        let (catalog, drive) = catalog_with_drive().await;
+        catalog
+            .upsert_media(NewMedia {
+                drive_id: drive.id,
+                rel_path: "legacy.jpg".into(),
+                hash: "h-legacy".into(),
+                size: 100,
+                kind: MediaKind::Photo,
+                ext: "jpg".into(),
+                width: None,
+                height: None,
+                duration_ms: None,
+                taken_at: None,
+                camera: None,
+                lens: None,
+                aperture: None,
+                shutter: None,
+                iso: None,
+                focal_mm: None,
+                lat: None,
+                lon: None,
+                organized_at: None,
+                source_id: None,
+            })
+            .await
+            .unwrap();
+
+        let plan = plan_for_drive(&catalog, &drive).await.unwrap();
+        assert!(
+            plan.items
+                .iter()
+                .all(|i| i.status != dp_core::PlanStatus::Planned),
+            "a source-less row must never be planned: {:?}",
+            plan.items
+        );
+        assert_eq!(plan.legacy, 1);
     }
 }

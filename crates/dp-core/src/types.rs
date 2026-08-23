@@ -222,6 +222,11 @@ pub struct OrganizePlan {
     pub planned: u64,
     pub skipped_dup: u64,
     pub bytes: u64,
+    /// Sum, across every planned drive, of media rows never attributed to
+    /// a source (see [`MediaRow::source_id`]) — these are never planned
+    /// (the planner skips them via `PlanInput::require_source`), so this
+    /// is the only way the UI learns they exist and need a re-scan.
+    pub legacy_rows: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -238,6 +243,12 @@ pub struct UnorganizedSummary {
     pub videos: u64,
     pub earliest: Option<DateTime<Utc>>,
     pub latest: Option<DateTime<Utc>>,
+    /// Media rows on this drive never attributed to a source (see
+    /// [`MediaRow::source_id`]) — scanned before sources existed. These
+    /// can't be organized (the planner requires a source) and are
+    /// deliberately excluded from `count`; a re-scan is what attributes
+    /// them to a source and makes them organizable.
+    pub legacy: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]

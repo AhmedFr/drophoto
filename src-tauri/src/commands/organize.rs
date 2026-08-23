@@ -1,5 +1,6 @@
 use crate::commands::organize_plan::{plan_for_drive, DrivePlan};
 use crate::state::AppState;
+use dp_core::denylist::is_denied_name;
 use dp_core::{
     DpError, OrganizeItemRow, OrganizeJobRow, OrganizePlan, OrganizeRule, PlanStatus, UnorganizedSummary,
 };
@@ -50,6 +51,15 @@ pub(crate) fn validate_root(root: &str) -> Result<(), DpError> {
         if part == "." || part == ".." {
             return Err(unsupported(format!("root must not contain '{part}' components")));
         }
+        // Also refuse a root that would file every organized photo into a
+        // directory the safety deny-list would otherwise refuse to move
+        // *out of* (see `dp_core::denylist::is_denied_name`) — a rule
+        // named `Caches` or `Foo.app` would organize into a black hole.
+        if is_denied_name(part) {
+            return Err(unsupported(format!(
+                "root must not contain a denied directory name: '{part}'"
+            )));
+        }
     }
     Ok(())
 }
@@ -79,7 +89,7 @@ pub async fn plan_organize(state: State<'_, AppState>, drive_ids: Vec<i64>) -> R
             .ok_or_else(|| DpError::NotFound {
                 message: format!("drive {drive_id} not found"),
             })?;
-        let DrivePlan { items, bytes } = plan_for_drive(&state.catalog, drive).await?;
+        let DrivePlan { items, bytes, legacy } = plan_for_drive(&state.catalog, drive).await?;
 
         result.planned += planned_count(&items);
         result.skipped_dup += items
@@ -87,6 +97,7 @@ pub async fn plan_organize(state: State<'_, AppState>, drive_ids: Vec<i64>) -> R
             .filter(|i| i.status == PlanStatus::SkippedDup)
             .count() as u64;
         result.bytes += bytes;
+        result.legacy_rows += legacy;
         result.items.extend(items);
     }
 
@@ -142,6 +153,7 @@ pub async fn start_organize(state: State<'_, AppState>, drive_id: i64) -> Result
     let deps = OrganizeDeps {
         catalog: state.catalog.clone(),
         strategy: state.strategy.clone(),
+        home: state.home.clone(),
     };
 
     // `state.start_organize` may decide *not* to call `make_job` at all —
@@ -237,5 +249,29 @@ mod tests {
     fn accepts_a_plain_relative_root() {
         assert!(validate_root("archive").is_ok());
         assert!(validate_root("my/nested/archive").is_ok());
+    }
+
+    /// A root named after a denied directory (see
+    /// `dp_core::denylist::is_denied_name`) would file every organized
+    /// photo straight into a location the deny-list would otherwise
+    /// refuse to touch on the way *out*. Refuse it on the way in instead.
+    #[test]
+    fn rejects_a_root_that_is_a_denied_name() {
+        assert!(matches!(
+            validate_root("Caches"),
+            Err(DpError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            validate_root("Foo.app"),
+            Err(DpError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_a_nested_root_component_that_is_a_denied_name() {
+        assert!(matches!(
+            validate_root("archive/Caches"),
+            Err(DpError::Unsupported { .. })
+        ));
     }
 }

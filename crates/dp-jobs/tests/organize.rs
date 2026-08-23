@@ -59,6 +59,7 @@ fn deps(catalog: Arc<dyn Catalog>) -> OrganizeDeps {
     OrganizeDeps {
         catalog,
         strategy: default_strategy(Arc::new(Blake3Hasher)),
+        home: None,
     }
 }
 
@@ -630,6 +631,7 @@ async fn a_panic_partway_through_still_reports_the_items_already_applied() {
             inner: default_strategy(Arc::new(Blake3Hasher)),
             seen: AtomicU64::new(0),
         }),
+        home: None,
     };
     let job = OrganizeJob::new("organize-panic".into(), drive, job_row_id, items, job_deps);
 
@@ -818,6 +820,7 @@ async fn a_catalog_failure_after_a_successful_move_is_recorded_failed_not_moved(
     let job_deps = OrganizeDeps {
         catalog: failing_catalog,
         strategy: default_strategy(Arc::new(Blake3Hasher)),
+        home: None,
     };
 
     let (tx, mut rx) = mpsc::channel(64);
@@ -865,4 +868,135 @@ async fn a_catalog_failure_after_a_successful_move_is_recorded_failed_not_moved(
         "unexpected error message: {:?}",
         item_rows[0].error
     );
+}
+
+/// Safety-net guard: a plan can only ever have been produced by
+/// `dp_organize::plan` if the rule/root were themselves valid, but a
+/// row's *source* path is never re-validated against the deny-list once
+/// scanned — a package directory (`Foo.app`) planted or discovered after
+/// the fact must still stop the job cold rather than move something out
+/// of it.
+#[tokio::test]
+async fn a_source_under_a_denied_package_directory_is_failed_and_never_touched() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("Foo.app/Contents")).unwrap();
+    std::fs::write(drive_dir.path().join("Foo.app/Contents/x.jpg"), b"app-bundled").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let x_id = catalog
+        .upsert_media(nm(drive.id, "Foo.app/Contents/x.jpg", "h-x"))
+        .await
+        .unwrap();
+
+    let items = vec![planned(
+        x_id,
+        "Foo.app/Contents/x.jpg",
+        "archive/2025/Q3/2025-09-12_x.jpg",
+    )];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("organize");
+    let job = Arc::new(OrganizeJob::new(
+        job_id.clone(),
+        drive,
+        job_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 1, "events: {events:?}");
+
+    let saw_denied_error = events.iter().any(
+        |e| matches!(e, JobEvent::ItemError { code, message, .. } if code == "denied" && message == "path is on the safety deny-list"),
+    );
+    assert!(
+        saw_denied_error,
+        "expected a \"denied\" ItemError, got {events:?}"
+    );
+
+    // The bundled file must never have been touched, and nothing must
+    // have been created at the planned destination.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("Foo.app/Contents/x.jpg")).unwrap(),
+        b"app-bundled"
+    );
+    assert!(!drive_dir.path().join("archive/2025/Q3/2025-09-12_x.jpg").exists());
+
+    let (x_row, _) = catalog.get_media_with_drive(x_id).await.unwrap();
+    assert_eq!(x_row.rel_path, "Foo.app/Contents/x.jpg");
+    assert!(x_row.organized_at.is_none());
+
+    let item_rows = catalog.list_organize_items(job_row_id, 10).await.unwrap();
+    assert_eq!(item_rows[0].status, PlanStatus::Failed);
+}
+
+/// The same guard applies to the *destination* side: a rule/template
+/// combination that would land a file under a denied name (here, a
+/// literal root of `Caches`) must be refused by the job even though
+/// nothing about the move is otherwise unsafe.
+#[tokio::test]
+async fn a_destination_under_a_denied_name_is_failed_and_never_written() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "Caches/2025/Q3/2025-09-12_a.jpg")];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("organize");
+    let job = Arc::new(OrganizeJob::new(
+        job_id.clone(),
+        drive,
+        job_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 1, "events: {events:?}");
+
+    let saw_denied_error = events.iter().any(
+        |e| matches!(e, JobEvent::ItemError { code, message, .. } if code == "denied" && message == "path is on the safety deny-list"),
+    );
+    assert!(
+        saw_denied_error,
+        "expected a \"denied\" ItemError, got {events:?}"
+    );
+
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
+        b"content-a"
+    );
+    assert!(!drive_dir.path().join("Caches/2025/Q3/2025-09-12_a.jpg").exists());
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert_eq!(a_row.rel_path, "a.jpg");
+    assert!(a_row.organized_at.is_none());
 }

@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use dp_core::{DetectedFolder, Drive, DpError, DpResult, NewSource, Source};
+use dp_core::{DetectedFolder, DpError, DpResult, Drive, NewSource, Source};
 use dp_jobs::detect_folders;
 use std::collections::HashSet;
 use std::path::PathBuf;

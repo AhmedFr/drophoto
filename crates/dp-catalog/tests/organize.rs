@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, OrganizeItemRow, OrganizeRule, PlanStatus};
+use dp_core::{
+    DriveRole, MediaKind, NewDrive, NewMedia, NewSource, OrganizeItemRow, OrganizeRule, PlanStatus,
+};
 
 fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
     NewMedia {
@@ -27,6 +29,16 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
     }
 }
 
+/// [`nm`], but attributed to `source_id` — `unorganized_summary`'s
+/// aggregate counts (unlike `total`) only ever include rows with a
+/// source, so most of this file's fixtures need one.
+fn nm_with_source(drive_id: i64, rel_path: &str, hash: &str, source_id: i64) -> NewMedia {
+    NewMedia {
+        source_id: Some(source_id),
+        ..nm(drive_id, rel_path, hash)
+    }
+}
+
 async fn drive(c: &SqliteCatalog) -> i64 {
     c.register_drive(NewDrive {
         name: "A".into(),
@@ -34,6 +46,19 @@ async fn drive(c: &SqliteCatalog) -> i64 {
         role: DriveRole::Archive,
         capacity: 100,
         free: 40,
+    })
+    .await
+    .unwrap()
+    .id
+}
+
+/// Creates and returns the id of a freshly enabled [`Source`](dp_core::Source)
+/// for `drive_id`, so fixture media can be attributed to a real source row
+/// (the `source_id` foreign key is enforced).
+async fn source(c: &SqliteCatalog, drive_id: i64) -> i64 {
+    c.upsert_source(NewSource {
+        drive_id,
+        rel_path: "".into(),
     })
     .await
     .unwrap()
@@ -88,15 +113,16 @@ async fn list_unorganized_excludes_organized_and_root_prefixed() {
 async fn unorganized_summary_counts_bytes_kinds_and_range() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
     let earlier: DateTime<Utc> = "2024-01-01T00:00:00Z".parse().unwrap();
     let later: DateTime<Utc> = "2024-06-01T00:00:00Z".parse().unwrap();
 
-    let mut photo = nm(drive_id, "a.jpg", "h-a");
+    let mut photo = nm_with_source(drive_id, "a.jpg", "h-a", source_id);
     photo.size = 100;
     photo.taken_at = Some(earlier);
     c.upsert_media(photo).await.unwrap();
 
-    let mut video = nm(drive_id, "b.mp4", "h-b");
+    let mut video = nm_with_source(drive_id, "b.mp4", "h-b", source_id);
     video.size = 200;
     video.kind = MediaKind::Video;
     video.ext = "mp4".into();
@@ -104,7 +130,10 @@ async fn unorganized_summary_counts_bytes_kinds_and_range() {
     c.upsert_media(video).await.unwrap();
 
     // Already organized — excluded from the summary.
-    let organized_id = c.upsert_media(nm(drive_id, "c.jpg", "h-c")).await.unwrap();
+    let organized_id = c
+        .upsert_media(nm_with_source(drive_id, "c.jpg", "h-c", source_id))
+        .await
+        .unwrap();
     c.mark_media_organized(organized_id, "archive/c.jpg")
         .await
         .unwrap();
@@ -117,19 +146,21 @@ async fn unorganized_summary_counts_bytes_kinds_and_range() {
     assert_eq!(summary.videos, 1);
     assert_eq!(summary.earliest, Some(earlier));
     assert_eq!(summary.latest, Some(later));
+    assert_eq!(summary.legacy, 0, "every row here has a source");
 }
 
 #[tokio::test]
 async fn root_prefix_check_is_immune_to_like_underscore_wildcard() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
 
     // `_` is a single-character LIKE wildcard — "my_archive/%" would also
     // match "myXarchive/...". The prefix check must treat it literally.
-    c.upsert_media(nm(drive_id, "my_archive/x.jpg", "h-under"))
+    c.upsert_media(nm_with_source(drive_id, "my_archive/x.jpg", "h-under", source_id))
         .await
         .unwrap();
-    c.upsert_media(nm(drive_id, "myXarchive/y.jpg", "h-x"))
+    c.upsert_media(nm_with_source(drive_id, "myXarchive/y.jpg", "h-x", source_id))
         .await
         .unwrap();
 
@@ -147,13 +178,14 @@ async fn root_prefix_check_is_immune_to_like_underscore_wildcard() {
 async fn root_prefix_check_is_immune_to_like_percent_wildcard() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
 
     // `%` is a multi-character LIKE wildcard — "100%/%" would also match
     // "100abc/...". The prefix check must treat it literally.
-    c.upsert_media(nm(drive_id, "100%/z.jpg", "h-percent"))
+    c.upsert_media(nm_with_source(drive_id, "100%/z.jpg", "h-percent", source_id))
         .await
         .unwrap();
-    c.upsert_media(nm(drive_id, "100abc/w.jpg", "h-abc"))
+    c.upsert_media(nm_with_source(drive_id, "100abc/w.jpg", "h-abc", source_id))
         .await
         .unwrap();
 
@@ -296,9 +328,15 @@ async fn mark_media_organized_sets_path_and_timestamp() {
 async fn unorganized_summary_reports_the_drive_total_alongside_the_unorganized_count() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
 
-    c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
-    let organized_id = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    c.upsert_media(nm_with_source(drive_id, "a.jpg", "h-a", source_id))
+        .await
+        .unwrap();
+    let organized_id = c
+        .upsert_media(nm_with_source(drive_id, "b.jpg", "h-b", source_id))
+        .await
+        .unwrap();
     c.mark_media_organized(organized_id, "archive/b.jpg")
         .await
         .unwrap();
@@ -306,6 +344,57 @@ async fn unorganized_summary_reports_the_drive_total_alongside_the_unorganized_c
     let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
     assert_eq!(summary.count, 1, "only the unorganized row counts here");
     assert_eq!(summary.total, 2, "total counts every row on the drive");
+}
+
+/// A row scanned before sources existed (`source_id IS NULL`) can never be
+/// organized — the planner refuses it via `PlanInput::require_source` — so
+/// it must not inflate `count`, even though it's still unorganized and
+/// outside the root. `total` is unaffected: it counts every row on the
+/// drive regardless of source attribution.
+#[tokio::test]
+async fn unorganized_summary_excludes_legacy_rows_from_count_but_not_total() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
+
+    c.upsert_media(nm_with_source(drive_id, "a.jpg", "h-a", source_id))
+        .await
+        .unwrap();
+    // Legacy: unorganized, outside the root, but no source attribution.
+    c.upsert_media(nm(drive_id, "legacy.jpg", "h-legacy"))
+        .await
+        .unwrap();
+
+    let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
+    assert_eq!(summary.count, 1, "the legacy row must not count as organizable");
+    assert_eq!(summary.total, 2, "total still counts every row on the drive");
+}
+
+/// `legacy` surfaces the same count as `count_media_without_source`, so a
+/// caller doesn't need a second round-trip to know how many rows on this
+/// drive need a re-scan before they can ever be organized.
+#[tokio::test]
+async fn unorganized_summary_reports_the_legacy_count() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let source_id = source(&c, drive_id).await;
+
+    c.upsert_media(nm_with_source(drive_id, "a.jpg", "h-a", source_id))
+        .await
+        .unwrap();
+    c.upsert_media(nm(drive_id, "legacy-1.jpg", "h-legacy-1"))
+        .await
+        .unwrap();
+    c.upsert_media(nm(drive_id, "legacy-2.jpg", "h-legacy-2"))
+        .await
+        .unwrap();
+
+    let summary = c.unorganized_summary(drive_id, "archive").await.unwrap();
+    assert_eq!(summary.legacy, 2);
+    assert_eq!(
+        summary.legacy,
+        c.count_media_without_source(drive_id).await.unwrap()
+    );
 }
 
 #[tokio::test]

@@ -27,6 +27,7 @@ const summaries: UnorganizedRow[] = [
     videos: 2,
     earliest: "2025-09-01T00:00:00Z",
     latest: "2025-09-12T00:00:00Z",
+    legacy: 0,
     drive: drive(1, "Kodachrome"),
   },
   {
@@ -38,6 +39,7 @@ const summaries: UnorganizedRow[] = [
     videos: 0,
     earliest: "2025-08-01T00:00:00Z",
     latest: "2025-08-12T00:00:00Z",
+    legacy: 0,
     drive: drive(2, "Ektachrome"),
   },
 ];
@@ -123,6 +125,7 @@ it("calls onScan with the drive id for a never-scanned drive", () => {
     videos: 0,
     earliest: null,
     latest: null,
+    legacy: 0,
     drive: drive(3, "New Drive"),
   };
   render(
@@ -143,4 +146,24 @@ it("renders a fallback message when there are no online drives", () => {
     <DetectStep summaries={[]} selected={[]} onToggle={vi.fn()} onScan={vi.fn()} organizedCount={0} />,
   );
   expect(screen.getByText("No drives online.")).toBeInTheDocument();
+});
+
+it("shows a legacy-rows notice summing legacy across every drive when any are present", () => {
+  const withLegacy: UnorganizedRow[] = [
+    { ...summaries[0], legacy: 3 },
+    { ...summaries[1], legacy: 4 },
+  ];
+  render(
+    <DetectStep summaries={withLegacy} selected={[]} onToggle={vi.fn()} onScan={vi.fn()} organizedCount={0} />,
+  );
+  expect(
+    screen.getByText("7 files from older scans aren't covered by a source — re-scan to include them."),
+  ).toBeInTheDocument();
+});
+
+it("does not show a legacy-rows notice when no drive has legacy rows", () => {
+  render(
+    <DetectStep summaries={summaries} selected={[]} onToggle={vi.fn()} onScan={vi.fn()} organizedCount={0} />,
+  );
+  expect(screen.queryByText(/older scans/)).not.toBeInTheDocument();
 });
