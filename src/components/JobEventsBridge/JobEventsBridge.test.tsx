@@ -103,13 +103,13 @@ it("shows an error toast when finished with failures", async () => {
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Scan finished with 2 errors"));
 });
 
-it("shows a neutral toast on cancelled", async () => {
+it("shows a neutral toast with the ok tally on cancelled", async () => {
   const { emit } = await mockListen();
   renderBridge();
 
-  await emit({ kind: "cancelled", job_id: "scan-0" });
+  await emit({ kind: "cancelled", job_id: "scan-0", ok: 3, failed: 0, skipped: 0 });
 
-  await waitFor(() => expect(toast).toHaveBeenCalledWith("Scan cancelled"));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("Scan cancelled — 3 files done"));
 });
 
 it("uses the recorded drive label in the toast when one was set", async () => {

@@ -95,7 +95,7 @@ it("re-enables the Scan button once the scan has finished", () => {
 });
 
 it("re-enables the Scan button once the scan has been cancelled", () => {
-  const scanEvent: JobEvent = { kind: "cancelled", job_id: "scan-0" };
+  const scanEvent: JobEvent = { kind: "cancelled", job_id: "scan-0", ok: 0, failed: 0, skipped: 0 };
   render(
     <DriveCard
       drive={baseDrive}

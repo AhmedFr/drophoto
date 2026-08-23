@@ -79,7 +79,7 @@ describe("activeJobs", () => {
     const state = {
       events: {
         "scan-0": { kind: "finished", job_id: "scan-0", ok: 1, failed: 0, skipped: 0 },
-        "scan-1": { kind: "cancelled", job_id: "scan-1" },
+        "scan-1": { kind: "cancelled", job_id: "scan-1", ok: 0, failed: 0, skipped: 0 },
       } as Record<string, JobEvent>,
       labels: {},
     };

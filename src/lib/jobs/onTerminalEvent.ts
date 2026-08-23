@@ -26,7 +26,7 @@ export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label
   }
 
   if (event.kind === "cancelled") {
-    toast(`${label} cancelled`);
+    toast(`${label} cancelled — ${event.ok} file${event.ok === 1 ? "" : "s"} done`);
     return;
   }
 

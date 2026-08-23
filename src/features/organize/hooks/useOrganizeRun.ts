@@ -102,7 +102,7 @@ export function useOrganizeRun(driveIds: number[], driveNames?: Record<number, s
   // updates take.
   const advanceQueue = useCallback(
     (event: JobEvent, currentIndex: number, currentQueue: number[]) => {
-      if (event.kind === "finished") {
+      if (event.kind === "finished" || event.kind === "cancelled") {
         setTotals((t) => ({
           moved: t.moved + event.ok,
           skipped: t.skipped + event.skipped,

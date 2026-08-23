@@ -49,7 +49,7 @@ it("invalidates media, media-count, jobs, unorganized, and drives on finished", 
 
 it("invalidates the same queries on cancelled", () => {
   const { queryClient, invalidateSpy } = client();
-  onTerminalEvent({ kind: "cancelled", job_id: "scan-0" }, queryClient, "Scan");
+  onTerminalEvent({ kind: "cancelled", job_id: "scan-0", ok: 0, failed: 0, skipped: 0 }, queryClient, "Scan");
 
   for (const key of ["media", "media-count", "jobs", "unorganized", "drives"]) {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key] });
@@ -92,11 +92,22 @@ it("uses singular 'error' for a single failure", () => {
   expect(toast.error).toHaveBeenCalledWith("Scan finished with 1 error");
 });
 
-it("shows a neutral toast on cancelled", () => {
+it("shows a neutral toast with the ok tally on cancelled", () => {
   const { queryClient } = client();
-  onTerminalEvent({ kind: "cancelled", job_id: "scan-0" }, queryClient, "Organize Kodachrome");
+  onTerminalEvent(
+    { kind: "cancelled", job_id: "scan-0", ok: 4, failed: 0, skipped: 0 },
+    queryClient,
+    "Organize Kodachrome",
+  );
 
-  expect(toast).toHaveBeenCalledWith("Organize Kodachrome cancelled");
+  expect(toast).toHaveBeenCalledWith("Organize Kodachrome cancelled — 4 files done");
   expect(toast.success).not.toHaveBeenCalled();
   expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("uses singular 'file' when cancelled after exactly one file", () => {
+  const { queryClient } = client();
+  onTerminalEvent({ kind: "cancelled", job_id: "scan-0", ok: 1, failed: 0, skipped: 0 }, queryClient, "Scan");
+
+  expect(toast).toHaveBeenCalledWith("Scan cancelled — 1 file done");
 });

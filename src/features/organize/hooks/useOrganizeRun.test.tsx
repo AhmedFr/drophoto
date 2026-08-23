@@ -78,7 +78,7 @@ it("starts the next drive's job only after the current one finishes", async () =
   expect(result.current.totals).toEqual({ moved: 7, skipped: 1, failed: 1 });
 });
 
-it("marks done and cancelled without incrementing totals when the job is cancelled", async () => {
+it("marks done and cancelled, accumulating the real tallies reported before the cancel", async () => {
   mockIPC((cmd) => (cmd === "start_organize" ? "job-1" : undefined));
   const { emit } = await mockListen();
 
@@ -86,10 +86,10 @@ it("marks done and cancelled without incrementing totals when the job is cancell
   act(() => result.current.start());
   await waitFor(() => expect(result.current.currentJobId).toBe("job-1"));
 
-  emit({ kind: "cancelled", job_id: "job-1" });
+  emit({ kind: "cancelled", job_id: "job-1", ok: 2, failed: 0, skipped: 1 });
   await waitFor(() => expect(result.current.done).toBe(true));
   expect(result.current.cancelled).toBe(true);
-  expect(result.current.totals).toEqual({ moved: 0, skipped: 0, failed: 0 });
+  expect(result.current.totals).toEqual({ moved: 2, skipped: 1, failed: 0 });
 });
 
 it("does not mark a normally-completed run as cancelled", async () => {
@@ -123,7 +123,7 @@ it("CANCEL during a multi-drive run stops the whole queue: the next drive is nev
   await waitFor(() => expect(cancelJobSpy).toHaveBeenCalled());
 
   // The runner reports `cancelled` for job-1 only after `cancel()` was called.
-  emit({ kind: "cancelled", job_id: "job-1" });
+  emit({ kind: "cancelled", job_id: "job-1", ok: 0, failed: 0, skipped: 0 });
 
   await waitFor(() => expect(result.current.done).toBe(true));
   expect(result.current.cancelled).toBe(true);

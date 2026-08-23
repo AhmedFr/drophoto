@@ -287,10 +287,18 @@ async fn cancelling_via_runner_emits_cancelled() {
     runner.cancel(&job_id);
 
     let (_events, terminal) = drain_until_terminal(&mut rx).await;
-    assert!(
-        matches!(terminal, JobEvent::Cancelled { .. }),
-        "expected Cancelled, got {terminal:?}"
-    );
+    match terminal {
+        JobEvent::Cancelled {
+            ok, failed, skipped, ..
+        } => {
+            assert_eq!(
+                (ok, failed, skipped),
+                (0, 0, 0),
+                "no item was processed before the cancel landed, so the tallies should be zero"
+            );
+        }
+        other => panic!("expected Cancelled, got {other:?}"),
+    }
 }
 
 #[tokio::test]

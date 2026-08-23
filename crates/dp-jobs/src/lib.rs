@@ -49,6 +49,9 @@ pub enum JobEvent {
     },
     Cancelled {
         job_id: String,
+        ok: u64,
+        failed: u64,
+        skipped: u64,
     },
 }
 
