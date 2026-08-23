@@ -194,6 +194,16 @@ pub struct OrganizeJobRow {
     pub failed: u64,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// `organize` | `revert`
+    pub kind: String,
+    /// For a `revert` job: the `organize_jobs.id` it reverts. `None` for
+    /// an `organize` job.
+    pub reverts_job_id: Option<i64>,
+    /// For an `organize` job: the id of the newest `revert` job that
+    /// reverts it, if any. Computed by `Catalog::list_organize_jobs` via
+    /// a `LEFT JOIN` on `reverts_job_id` — never stored on the row
+    /// itself, and always `None` for a `revert` job.
+    pub reverted_by_job_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -34,6 +34,9 @@ pub trait Catalog: Send + Sync {
     async fn organized_hashes(&self, hashes: &[String]) -> DpResult<HashSet<String>>;
     async fn list_rel_paths(&self, drive_id: i64) -> DpResult<Vec<String>>;
     async fn create_organize_job(&self, drive_id: i64, planned: u64) -> DpResult<i64>;
+    /// Creates a `revert` job row for `reverts_job_id`. See
+    /// [`OrganizeJobRow::reverts_job_id`]/[`OrganizeJobRow::reverted_by_job_id`].
+    async fn create_revert_job(&self, drive_id: i64, reverts_job_id: i64, planned: u64) -> DpResult<i64>;
     async fn finish_organize_job(
         &self,
         id: i64,
@@ -44,6 +47,10 @@ pub trait Catalog: Send + Sync {
     ) -> DpResult<()>;
     async fn insert_organize_item(&self, item: &OrganizeItemRow) -> DpResult<i64>;
     async fn mark_media_organized(&self, media_id: i64, new_rel_path: &str) -> DpResult<()>;
+    /// Reverts a single media row's organize move (see
+    /// [`Self::mark_media_organized`]): restores `rel_path` to
+    /// `old_rel_path` and clears `organized_at`.
+    async fn mark_media_reverted(&self, media_id: i64, old_rel_path: &str) -> DpResult<()>;
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>>;
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>>;
     async fn list_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
@@ -132,6 +139,10 @@ impl Catalog for SqliteCatalog {
         organize_jobs::create_organize_job(&self.pool, drive_id, planned).await
     }
 
+    async fn create_revert_job(&self, drive_id: i64, reverts_job_id: i64, planned: u64) -> DpResult<i64> {
+        organize_jobs::create_revert_job(&self.pool, drive_id, reverts_job_id, planned).await
+    }
+
     async fn finish_organize_job(
         &self,
         id: i64,
@@ -149,6 +160,10 @@ impl Catalog for SqliteCatalog {
 
     async fn mark_media_organized(&self, media_id: i64, new_rel_path: &str) -> DpResult<()> {
         organize::mark_media_organized(&self.pool, media_id, new_rel_path).await
+    }
+
+    async fn mark_media_reverted(&self, media_id: i64, old_rel_path: &str) -> DpResult<()> {
+        organize::mark_media_reverted(&self.pool, media_id, old_rel_path).await
     }
 
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {

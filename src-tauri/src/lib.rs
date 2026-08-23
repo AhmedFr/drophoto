@@ -39,6 +39,7 @@ pub fn run() {
             commands::organize::start_organize,
             commands::organize::list_jobs,
             commands::organize::list_job_items,
+            commands::organize::revert_organize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

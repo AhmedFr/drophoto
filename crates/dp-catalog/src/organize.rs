@@ -182,6 +182,23 @@ pub(crate) async fn mark_media_organized(
     Ok(())
 }
 
+/// Reverts a single media row's organize move: restores `rel_path` to
+/// `old_rel_path` and clears `organized_at`, so the row once again looks
+/// exactly as it did before it was ever organized.
+pub(crate) async fn mark_media_reverted(
+    pool: &SqlitePool,
+    media_id: i64,
+    old_rel_path: &str,
+) -> DpResult<()> {
+    sqlx::query("UPDATE media SET rel_path = ?, organized_at = NULL WHERE id = ?")
+        .bind(old_rel_path)
+        .bind(media_id)
+        .execute(pool)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+
 /// Count of media rows on `drive_id` that are `legacy`: never attributed
 /// to a source (`source_id IS NULL` — scanned before sources existed),
 /// still unorganized, and outside `root`. This is deliberately the exact

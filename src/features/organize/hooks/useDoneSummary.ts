@@ -37,9 +37,8 @@ export function useDoneSummary(driveIds: number[], enabled: boolean): UseDoneSum
         if (existing === undefined || job.id > existing) latestJobIdByDrive.set(job.drive_id, job.id);
       }
 
-      const itemLists = await Promise.all(
-        Array.from(latestJobIdByDrive.values()).map((jobId) => listJobItems(jobId, JOB_ITEMS_LIMIT)),
-      );
+      const jobIds = Array.from(latestJobIdByDrive.values());
+      const itemLists = await Promise.all(jobIds.map((jobId) => listJobItems(jobId, JOB_ITEMS_LIMIT)));
 
       const folders = new Set<string>();
       for (const items of itemLists) {
@@ -49,10 +48,19 @@ export function useDoneSummary(driveIds: number[], enabled: boolean): UseDoneSum
         }
       }
 
-      return Array.from(folders).sort().reverse().slice(0, FOLDERS_SHOWN);
+      return { folders: Array.from(folders).sort().reverse().slice(0, FOLDERS_SHOWN), jobIds };
     },
     enabled: enabled && driveIds.length > 0,
   });
 
-  return { folders: query.data ?? [], isLoading: query.isFetching };
+  return {
+    folders: query.data?.folders ?? [],
+    // The numeric `organize_jobs.id`s this run actually created — see
+    // the doc comment above for why they can only be resolved (not
+    // known up front) from `list_jobs`. Exposed so a caller (e.g. a
+    // "revert this run" action) can act on the same jobs this summary
+    // was itself derived from.
+    jobIds: query.data?.jobIds ?? [],
+    isLoading: query.isFetching,
+  };
 }

@@ -24,6 +24,9 @@ function job(overrides: Partial<OrganizeJobRow>): OrganizeJobRow {
     failed: 0,
     started_at: "2026-08-22T00:00:00Z",
     finished_at: "2026-08-22T00:01:00Z",
+    kind: "organize",
+    reverts_job_id: null,
+    reverted_by_job_id: null,
     ...overrides,
   };
 }
@@ -52,6 +55,7 @@ it("is disabled (no fetch, empty folders) until enabled", () => {
 
   const { result } = render([1], false);
   expect(result.current.folders).toEqual([]);
+  expect(result.current.jobIds).toEqual([]);
   expect(listJobsSpy).not.toHaveBeenCalled();
 });
 
@@ -77,6 +81,7 @@ it("resolves distinct destination folders of moved items for the run's drives, p
   const { result } = render([1, 2], true);
   await waitFor(() => expect(result.current.folders).toEqual(["archive/2024/Q3", "archive/2024/Q2"]));
   expect(result.current.isLoading).toBe(false);
+  expect(result.current.jobIds.sort()).toEqual([10, 20]);
 });
 
 it("excludes items that weren't actually moved", async () => {

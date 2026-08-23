@@ -5,6 +5,7 @@ import { usePlan } from "./hooks/usePlan";
 import { useRule } from "./hooks/useRule";
 import { useOrganizeRun } from "./hooks/useOrganizeRun";
 import { useDoneSummary } from "./hooks/useDoneSummary";
+import { useRevertRun } from "./hooks/useRevertRun";
 import { StepRail } from "./components/StepRail";
 import { WizardHeader } from "./components/WizardHeader";
 import { WizardFooter } from "./components/WizardFooter";
@@ -27,6 +28,7 @@ export function OrganizePage() {
   const rule = useRule(selectedDriveIds);
   const run = useOrganizeRun(selectedDriveIds);
   const doneSummary = useDoneSummary(selectedDriveIds, run.done);
+  const revertRun = useRevertRun(doneSummary.jobIds);
 
   // The wizard is deliberately not persisted (see `wizardStore.ts`), but
   // nothing previously reset it back to step 0 with no selection once a
@@ -126,6 +128,10 @@ export function OrganizePage() {
           folders={doneFolders}
           foldersHint={doneFoldersHint}
           cancelled={run.cancelled}
+          onRevert={doneSummary.jobIds.length > 0 ? revertRun.start : undefined}
+          reverting={revertRun.running}
+          revertProgress={revertRun.progress}
+          reverted={revertRun.done}
         />
       )}
     </div>

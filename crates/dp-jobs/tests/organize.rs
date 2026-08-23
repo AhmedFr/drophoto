@@ -742,6 +742,10 @@ impl Catalog for FailingCatalog {
         self.0.create_organize_job(drive_id, planned).await
     }
 
+    async fn create_revert_job(&self, drive_id: i64, reverts_job_id: i64, planned: u64) -> DpResult<i64> {
+        self.0.create_revert_job(drive_id, reverts_job_id, planned).await
+    }
+
     async fn finish_organize_job(
         &self,
         id: i64,
@@ -763,6 +767,10 @@ impl Catalog for FailingCatalog {
         Err(DpError::Db {
             message: "simulated catalog failure".into(),
         })
+    }
+
+    async fn mark_media_reverted(&self, media_id: i64, old_rel_path: &str) -> DpResult<()> {
+        self.0.mark_media_reverted(media_id, old_rel_path).await
     }
 
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {

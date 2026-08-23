@@ -2,12 +2,15 @@
 //! `ScanJob` (drive scanning with progress events).
 
 pub mod detect;
+mod move_guards;
 mod organize;
+mod revert;
 mod runner;
 mod scan;
 
 pub use detect::{detect_folders, detect_folders_with_progress};
 pub use organize::{OrganizeDeps, OrganizeJob};
+pub use revert::RevertJob;
 pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};
 

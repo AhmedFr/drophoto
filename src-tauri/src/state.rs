@@ -115,6 +115,23 @@ impl AppState {
         self.start_job("organize", drive_id, make_job)
     }
 
+    /// Starts a revert job for `drive_id`, admitted under the exact same
+    /// `"organize"` bucket as [`Self::start_organize`] — a scan, an
+    /// organize, and a revert are mutually exclusive on a drive, so a
+    /// revert must block (and be blocked by) an organize job the same
+    /// way two organize jobs would dedupe against each other. The only
+    /// difference from `start_organize` is the id prefix a freshly
+    /// spawned job gets (`"revert-N"` rather than `"organize-N"`), purely
+    /// so the id itself tells the caller which kind of job it's watching
+    /// events for.
+    pub fn start_revert(
+        &self,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
+        self.start_job_as("organize", "revert", drive_id, make_job)
+    }
+
     /// Returns the running job id for `(kind, drive_id)`, if any, without
     /// starting anything. Lets a caller skip redundant work (e.g.
     /// re-planning an organize job) up front when it already knows the
@@ -140,18 +157,32 @@ impl AppState {
         drive_id: i64,
         make_job: impl FnOnce(String) -> Arc<dyn Job>,
     ) -> DpResult<String> {
+        self.start_job_as(kind, kind, drive_id, make_job)
+    }
+
+    /// [`Self::start_job`], but with the freshly spawned job's id prefix
+    /// (`id_prefix`) decoupled from the admission bucket it's tracked
+    /// under (`admission_kind`) — see [`Self::start_revert`], the only
+    /// caller that needs the two to differ.
+    fn start_job_as(
+        &self,
+        admission_kind: &str,
+        id_prefix: &str,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
         let mut jobs = lock_active_jobs(&self.active_jobs);
 
-        match job_admission(&jobs, kind, drive_id, |id| self.runner.is_running(id)) {
+        match job_admission(&jobs, admission_kind, drive_id, |id| self.runner.is_running(id)) {
             Admission::Existing(job_id) => Ok(job_id),
             Admission::Blocked { other_kind } => Err(DpError::Unsupported {
                 message: format!("a {other_kind} job is already running on this drive"),
                 path: None,
             }),
             Admission::Start => {
-                let job_id = self.runner.next_id(kind);
+                let job_id = self.runner.next_id(id_prefix);
                 self.runner.spawn(job_id.clone(), make_job(job_id.clone()));
-                jobs.insert((kind.to_string(), drive_id), job_id.clone());
+                jobs.insert((admission_kind.to_string(), drive_id), job_id.clone());
                 Ok(job_id)
             }
         }

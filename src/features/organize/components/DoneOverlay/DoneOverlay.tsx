@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Ban, Check } from "lucide-react";
 import type { router } from "@/app/router";
 import { Button } from "@/components/ui/button";
+import { RevertConfirmDialog } from "@/components/RevertConfirmDialog";
 import { useWizardStore } from "../../store/wizardStore";
 import type { DoneOverlayProps } from "./DoneOverlay.types";
 
@@ -25,8 +27,14 @@ export function DoneOverlay({
   folders,
   foldersHint,
   cancelled = false,
+  onRevert,
+  reverting = false,
+  revertProgress = null,
+  reverted = false,
 }: DoneOverlayProps) {
   const title = cancelled ? "Cancelled" : "Organized";
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const showRevert = moved > 0 && !cancelled && onRevert != null;
 
   return (
     <div
@@ -64,7 +72,32 @@ export function DoneOverlay({
             DASHBOARD
           </Link>
         </Button>
+        {showRevert &&
+          (reverted ? (
+            <span className="font-mono text-[10.5px] tracking-[1.5px] text-faint">REVERTED</span>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="font-mono text-[10.5px] tracking-[1.5px]"
+              disabled={reverting}
+              onClick={() => setConfirmOpen(true)}
+            >
+              {reverting ? `REVERTING… ${revertProgress?.done ?? 0}/${revertProgress?.total ?? 0}` : "REVERT"}
+            </Button>
+          ))}
       </div>
+      {showRevert && onRevert && (
+        <RevertConfirmDialog
+          open={confirmOpen}
+          moved={moved}
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => {
+            setConfirmOpen(false);
+            onRevert();
+          }}
+        />
+      )}
     </div>
   );
 }

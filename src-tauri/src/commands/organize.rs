@@ -4,7 +4,7 @@ use dp_core::denylist::is_denied_name;
 use dp_core::{
     DpError, OrganizeItemRow, OrganizeJobRow, OrganizePlan, OrganizeRule, PlanStatus, UnorganizedSummary,
 };
-use dp_jobs::{Job, OrganizeDeps, OrganizeJob};
+use dp_jobs::{Job, OrganizeDeps, OrganizeJob, RevertJob};
 use dp_organize::validate_template;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -183,6 +183,121 @@ pub async fn start_organize(state: State<'_, AppState>, drive_id: i64) -> Result
     result
 }
 
+/// Pure refusal logic behind [`revert_organize`]: whether `job` is a
+/// valid target for a revert at all. Kept separate from the command body
+/// so it's unit-testable without a running `AppState`/Tauri app — see
+/// the `tests` module below.
+fn check_revertable(job: &OrganizeJobRow) -> Result<(), DpError> {
+    let unsupported = |message: &str| DpError::Unsupported {
+        message: message.into(),
+        path: None,
+    };
+
+    if job.status == "running" {
+        return Err(unsupported("the job is still running"));
+    }
+    if job.kind != "organize" {
+        return Err(unsupported("only an organize job can be reverted"));
+    }
+    if job.reverted_by_job_id.is_some() {
+        return Err(unsupported("this job has already been reverted"));
+    }
+    Ok(())
+}
+
+/// Reverts a finished organize job: moves every item it actually moved
+/// back to its original location, in reverse order (see
+/// [`dp_jobs::RevertJob`]).
+///
+/// Refuses with [`DpError::Unsupported`] when the job is still running
+/// (there's nothing finished to undo yet), when it isn't an `"organize"`
+/// job in the first place (reverting a revert isn't supported), or when
+/// it's already been reverted (`reverted_by_job_id` is set) — the second
+/// revert's items would just fail one-by-one against paths the first
+/// revert already restored, so refusing up front gives a clearer error
+/// than a job that "succeeds" having reverted nothing.
+#[tauri::command]
+pub async fn revert_organize(state: State<'_, AppState>, job_id: i64) -> Result<String, DpError> {
+    let job = state
+        .catalog
+        .list_organize_jobs(u32::MAX)
+        .await?
+        .into_iter()
+        .find(|j| j.id == job_id)
+        .ok_or_else(|| DpError::NotFound {
+            message: format!("organize job {job_id} not found"),
+        })?;
+
+    check_revertable(&job)?;
+
+    let drive = state
+        .catalog
+        .list_drives()
+        .await?
+        .into_iter()
+        .find(|d| d.id == job.drive_id)
+        .ok_or_else(|| DpError::NotFound {
+            message: format!("drive {} not found", job.drive_id),
+        })?;
+
+    if drive.mount_path.is_none() {
+        return Err(DpError::NotFound {
+            message: "drive is offline".into(),
+        });
+    }
+
+    // Same up-front dedup/exclusivity check `start_organize` makes: skip
+    // the work below entirely when a job is already running on this
+    // drive, rather than leaving an orphaned `organize_jobs` row for a
+    // revert that will just be thrown away.
+    if let Some(existing_job_id) = state.active_job("organize", job.drive_id) {
+        return Ok(existing_job_id);
+    }
+    if state.active_job("scan", job.drive_id).is_some() {
+        return Err(DpError::Unsupported {
+            message: "a scan job is already running on this drive".into(),
+            path: None,
+        });
+    }
+
+    let items = state.catalog.list_organize_items(job_id, u32::MAX).await?;
+    let planned = items.iter().filter(|i| i.status == PlanStatus::Moved).count() as u64;
+
+    let revert_row_id = state
+        .catalog
+        .create_revert_job(job.drive_id, job_id, planned)
+        .await?;
+
+    let deps = OrganizeDeps {
+        catalog: state.catalog.clone(),
+        strategy: state.strategy.clone(),
+        home: state.home.clone(),
+    };
+
+    // See `start_organize`'s identical comment: `state.start_revert` may
+    // decide not to call `make_job` at all, which would otherwise leave
+    // the row just created above stuck `"running"` forever.
+    let spawned = Arc::new(AtomicBool::new(false));
+    let spawned_flag = spawned.clone();
+    let drive_id = job.drive_id;
+    let result = state.start_revert(drive_id, move |revert_id| {
+        spawned_flag.store(true, Ordering::SeqCst);
+        Arc::new(RevertJob::new(revert_id, drive, revert_row_id, items, deps)) as Arc<dyn Job>
+    });
+
+    if !spawned.load(Ordering::SeqCst) {
+        if let Err(e) = state
+            .catalog
+            .finish_organize_job(revert_row_id, "cancelled", 0, 0, 0)
+            .await
+        {
+            tracing::warn!(error = %e, revert_row_id, "failed to close out an orphaned revert job row");
+        }
+    }
+
+    result
+}
+
 /// Count of `Planned` items — matches [`OrganizePlan::planned`], and is
 /// what `organize_jobs.planned` should reflect too (skipped items were
 /// never going to be moved in the first place).
@@ -206,8 +321,66 @@ pub async fn list_job_items(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_root;
-    use dp_core::DpError;
+    use super::{check_revertable, validate_root};
+    use chrono::Utc;
+    use dp_core::{DpError, OrganizeJobRow};
+
+    fn job(status: &str, kind: &str, reverted_by_job_id: Option<i64>) -> OrganizeJobRow {
+        OrganizeJobRow {
+            id: 1,
+            drive_id: 1,
+            drive_name: "Drive".into(),
+            status: status.into(),
+            planned: 1,
+            moved: 1,
+            skipped: 0,
+            failed: 0,
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            kind: kind.into(),
+            reverts_job_id: None,
+            reverted_by_job_id,
+        }
+    }
+
+    #[test]
+    fn refuses_a_still_running_job() {
+        assert!(matches!(
+            check_revertable(&job("running", "organize", None)),
+            Err(DpError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn refuses_a_job_that_is_not_an_organize_job() {
+        assert!(matches!(
+            check_revertable(&job("done", "revert", None)),
+            Err(DpError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn refuses_a_job_already_reverted() {
+        assert!(matches!(
+            check_revertable(&job("done", "organize", Some(2))),
+            Err(DpError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn accepts_a_finished_never_reverted_organize_job() {
+        assert!(check_revertable(&job("done", "organize", None)).is_ok());
+    }
+
+    #[test]
+    fn accepts_a_cancelled_organize_job() {
+        assert!(check_revertable(&job("cancelled", "organize", None)).is_ok());
+    }
+
+    #[test]
+    fn accepts_a_failed_organize_job() {
+        assert!(check_revertable(&job("failed", "organize", None)).is_ok());
+    }
 
     #[test]
     fn rejects_absolute_root() {

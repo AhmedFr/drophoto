@@ -47,6 +47,9 @@ fn row_to_job(row: &SqliteRow) -> DpResult<OrganizeJobRow> {
             .map_err(db)?
             .with_timezone(&Utc),
         finished_at: from_rfc3339(finished_at)?,
+        kind: row.try_get("kind").map_err(db)?,
+        reverts_job_id: row.try_get("reverts_job_id").map_err(db)?,
+        reverted_by_job_id: row.try_get("reverted_by_job_id").map_err(db)?,
     })
 }
 
@@ -71,6 +74,32 @@ pub(crate) async fn create_organize_job(pool: &SqlitePool, drive_id: i64, planne
     .bind(drive_id)
     .bind(planned as i64)
     .bind(&now)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    Ok(result.last_insert_rowid())
+}
+
+/// Creates a `revert` job row for `reverts_job_id`, mirroring
+/// [`create_organize_job`] but stamping `kind = 'revert'` and recording
+/// which organize job it reverts. `list_organize_jobs` surfaces the
+/// reverse direction (`reverted_by_job_id`) on the reverted row via a
+/// `LEFT JOIN` over this column.
+pub(crate) async fn create_revert_job(
+    pool: &SqlitePool,
+    drive_id: i64,
+    reverts_job_id: i64,
+    planned: u64,
+) -> DpResult<i64> {
+    let now = Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "INSERT INTO organize_jobs (drive_id, status, planned, started_at, kind, reverts_job_id) \
+         VALUES (?, 'running', ?, ?, 'revert', ?)",
+    )
+    .bind(drive_id)
+    .bind(planned as i64)
+    .bind(&now)
+    .bind(reverts_job_id)
     .execute(pool)
     .await
     .map_err(db)?;
@@ -136,8 +165,19 @@ pub(crate) async fn insert_organize_item(pool: &SqlitePool, item: &OrganizeItemR
 }
 
 pub(crate) async fn list_organize_jobs(pool: &SqlitePool, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {
+    // The `reverted_by` subquery picks, per organize job, the *newest*
+    // revert job that references it (`MAX(id)` grouped by
+    // `reverts_job_id`) — a job can in principle have more than one
+    // revert row (a failed/cancelled revert doesn't block a retry), and
+    // only the latest is what `reverted_by_job_id` should report.
     let rows = sqlx::query(
-        "SELECT j.*, d.name AS drive_name FROM organize_jobs j JOIN drives d ON d.id = j.drive_id \
+        "SELECT j.*, d.name AS drive_name, r.id AS reverted_by_job_id \
+         FROM organize_jobs j \
+         JOIN drives d ON d.id = j.drive_id \
+         LEFT JOIN ( \
+             SELECT reverts_job_id, MAX(id) AS id FROM organize_jobs \
+             WHERE kind = 'revert' GROUP BY reverts_job_id \
+         ) r ON r.reverts_job_id = j.id \
          ORDER BY j.id DESC LIMIT ?",
     )
     .bind(limit)
