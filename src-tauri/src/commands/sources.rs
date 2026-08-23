@@ -43,6 +43,39 @@ async fn find_online_drive(state: &AppState, drive_id: i64) -> DpResult<(Drive, 
     Ok((drive, mount))
 }
 
+/// The mount to run the source deny-list against for `drive_id`.
+///
+/// Online: the real mount, canonicalized to match the scan walk's own
+/// view of it (see `ScanJob::run`) so the deny-list's mount-relative
+/// rules line up with what a scan would actually do; a mount that can't
+/// be canonicalized (racing an eject, ...) falls back to its literal path.
+///
+/// Offline: saving sources is pure catalog work and must keep working
+/// with the drive unplugged, so the deny-list runs against a synthetic
+/// mount instead. Every mount-relative rule still applies (they only
+/// look at the path *under* the mount); only the `home/Library` rule
+/// can't match, which is fine — an unplugged drive is never the boot
+/// drive that `home` lives on.
+async fn deny_check_mount(state: &AppState, drive_id: i64) -> DpResult<PathBuf> {
+    let drive = state
+        .catalog
+        .list_drives()
+        .await?
+        .into_iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| DpError::NotFound {
+            message: format!("drive {drive_id} not found"),
+        })?;
+
+    Ok(match drive.mount_path {
+        Some(mount) => {
+            let mount = PathBuf::from(mount);
+            std::fs::canonicalize(&mount).unwrap_or(mount)
+        }
+        None => PathBuf::from(format!("/.drophoto-offline/{drive_id}")),
+    })
+}
+
 /// Walks `drive_id`'s mount looking for folders worth offering as import
 /// sources. Bounded to [`DETECT_MAX_DEPTH`] levels deep and
 /// [`DETECT_TIMEOUT`] wall-clock time — see [`detect_with_timeout`].
@@ -149,13 +182,7 @@ pub async fn save_sources(
         .map(|p| normalize_source_rel_path(p))
         .collect::<DpResult<_>>()?;
 
-    let (_drive, mount) = find_online_drive(&state, drive_id).await?;
-    // Canonicalized to match the scan walk's own view of the mount (see
-    // `ScanJob::run`), so `abs` and `mount` agree and the deny-list's
-    // mount-relative rules line up with what a scan would actually do.
-    // A mount that can't be canonicalized (racing an eject, ...) falls
-    // back to its literal path rather than blocking the save outright.
-    let mount = std::fs::canonicalize(&mount).unwrap_or(mount);
+    let mount = deny_check_mount(&state, drive_id).await?;
     reject_denied_sources(&mount, state.home.as_deref(), &normalized)?;
 
     let mut checked_ids: HashSet<i64> = HashSet::new();
@@ -189,6 +216,20 @@ pub async fn set_source_enabled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An offline drive is checked against a synthetic mount that doesn't
+    /// exist on disk — the deny-list is purely lexical under the mount,
+    /// so it must still refuse app/system locations and allow the rest.
+    #[test]
+    fn reject_denied_sources_works_against_a_nonexistent_synthetic_mount() {
+        let mount = std::path::PathBuf::from("/.drophoto-offline/42");
+        let ok = reject_denied_sources(&mount, None, &["Pictures".to_string()]);
+        assert!(ok.is_ok());
+        let err = reject_denied_sources(&mount, None, &["Foo.app/Contents".to_string()]);
+        assert!(matches!(err, Err(DpError::Unsupported { .. })));
+        let err = reject_denied_sources(&mount, None, &["Applications".to_string()]);
+        assert!(matches!(err, Err(DpError::Unsupported { .. })));
+    }
     use std::time::Instant;
 
     fn rels(paths: &[&str]) -> Vec<String> {
