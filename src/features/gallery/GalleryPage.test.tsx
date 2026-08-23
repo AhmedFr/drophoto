@@ -374,6 +374,26 @@ it("Escape clears a non-empty selection without closing the open lightbox", asyn
   expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
 
+it("TAG opens the TagPanel for the current selection", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    if (cmd === "list_tags") return [];
+    if (cmd === "tags_for_media") return [];
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(screen.getByRole("button", { name: "TAG" }));
+
+  expect(await screen.findByRole("dialog", { name: /tags/i })).toBeInTheDocument();
+});
+
 it("clears the selection on unmount", async () => {
   mockIPC((cmd) => {
     if (cmd === "query_media") return [item(1), item(2)];

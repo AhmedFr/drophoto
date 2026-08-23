@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { GalleryToolbar } from "./components/GalleryToolbar";
 import { Lightbox } from "./components/Lightbox";
 import { SelectionBar } from "./components/SelectionBar";
+import { TagPanel } from "./components/TagPanel";
 import { VirtualGrid } from "./components/VirtualGrid";
 import { useMediaCount } from "./hooks/useMediaCount";
 import { useMediaInfinite } from "./hooks/useMediaInfinite";
@@ -25,6 +26,9 @@ export function GalleryPage() {
 
   // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s `onClose`).
   const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  // Opened by `SelectionBar`'s TAG button, for the current selection.
+  const [tagPanelOpen, setTagPanelOpen] = useState(false);
 
   // `onToggle` from `Tile`/`VirtualGrid`: `shiftKey` false is a plain
   // (cmd/ctrl-click) toggle, `shiftKey` true is a shift-range select. Range
@@ -150,8 +154,8 @@ export function GalleryPage() {
           />
         )}
       </div>
-      {/* TAG is a no-op placeholder here — wired to the TagPanel in a follow-up task. */}
-      <SelectionBar count={selectedIds.length} onTag={() => {}} onClear={clearSelection} />
+      <SelectionBar count={selectedIds.length} onTag={() => setTagPanelOpen(true)} onClear={clearSelection} />
+      <TagPanel mediaIds={selectedIds} open={tagPanelOpen} onClose={() => setTagPanelOpen(false)} />
       {openIndex !== null && (
         <Lightbox
           items={items}
