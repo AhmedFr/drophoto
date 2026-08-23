@@ -121,6 +121,16 @@ pub(crate) async fn unorganized_summary(
 
     let legacy = count_legacy_unorganized(pool, drive_id, root).await?;
 
+    // Cheaper than listing them: the caller only ever asks "is there
+    // anything for a scan to walk?", and `EXISTS` short-circuits on the
+    // first enabled row.
+    let has_sources: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources WHERE drive_id = ? AND enabled = 1)")
+            .bind(drive_id)
+            .fetch_one(pool)
+            .await
+            .map_err(db)?;
+
     Ok(UnorganizedSummary {
         drive_id,
         count: count as u64,
@@ -131,6 +141,7 @@ pub(crate) async fn unorganized_summary(
         earliest: from_rfc3339(earliest)?,
         latest: from_rfc3339(latest)?,
         legacy,
+        has_sources: has_sources != 0,
     })
 }
 

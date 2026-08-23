@@ -7,6 +7,7 @@ import type { DriveCardProps } from "./DriveCard.types";
 export function DriveCard({
   drive,
   sources = [],
+  sourcesLoading = false,
   onScan,
   onCancelScan,
   onOpenSources,
@@ -14,7 +15,11 @@ export function DriveCard({
 }: DriveCardProps) {
   const scanInProgress = scanEvent != null && scanEvent.kind !== "finished" && scanEvent.kind !== "cancelled";
   const enabledSources = sources.filter((s) => s.enabled).length;
-  const noEnabledSources = enabledSources === 0;
+  // `sources` defaults to `[]` while the caller's query is still in
+  // flight, which is indistinguishable from "none configured" — so a
+  // card used to flash a red "No sources" on every mount. Treat the
+  // loading window as its own state instead of guessing.
+  const noEnabledSources = !sourcesLoading && enabledSources === 0;
 
   return (
     <li className="flex flex-col border-b border-border">
@@ -26,7 +31,11 @@ export function DriveCard({
           {formatBytes(drive.free)} free / {formatBytes(drive.capacity)}
         </span>
         <span className={`font-mono text-[10px] ${noEnabledSources ? "text-red-400" : "text-faint"}`}>
-          {noEnabledSources ? "No sources" : `${enabledSources} source${enabledSources === 1 ? "" : "s"}`}
+          {sourcesLoading
+            ? "…"
+            : noEnabledSources
+              ? "No sources"
+              : `${enabledSources} source${enabledSources === 1 ? "" : "s"}`}
         </span>
         {onOpenSources && (
           <Button variant="outline" size="xs" onClick={onOpenSources}>
@@ -37,7 +46,7 @@ export function DriveCard({
           <Button
             variant="outline"
             size="xs"
-            disabled={!drive.online || scanInProgress || noEnabledSources}
+            disabled={!drive.online || scanInProgress || sourcesLoading || noEnabledSources}
             title={noEnabledSources ? "Choose sources first" : undefined}
             onClick={onScan}
           >

@@ -22,7 +22,7 @@ export function DrivesPage() {
   const [sourcesDrive, setSourcesDrive] = useState<Drive | null>(null);
   const [scanJobs, setScanJobs] = useState<Record<number, string>>({});
   const jobEvents = useJobEvents();
-  const sourcesByDrive = useSources((drives.data ?? []).map((d) => d.id));
+  const { sourcesByDrive, isLoading: sourcesLoading } = useSources((drives.data ?? []).map((d) => d.id));
 
   useTauriEvent("drives:changed", () => {
     queryClient.invalidateQueries({ queryKey: ["drives"] });
@@ -75,6 +75,7 @@ export function DrivesPage() {
                   key={d.id}
                   drive={d}
                   sources={sourcesByDrive[d.id]}
+                  sourcesLoading={sourcesLoading}
                   onScan={() => scanMutation.mutate(d.id)}
                   scanEvent={jobId ? jobEvents[jobId] : undefined}
                   onCancelScan={jobId ? () => cancelJob(jobId) : undefined}

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{Drive, DriveRole, NewDrive, NewSource, Source};
+use dp_core::{Drive, DriveRole, MediaKind, NewDrive, NewMedia, NewSource, Source};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
 use dp_metadata::ExiftoolProvider;
@@ -92,6 +92,33 @@ async fn root_source(catalog: &Arc<dyn Catalog>, drive_id: i64) -> Source {
     source(catalog, drive_id, "").await
 }
 
+/// A media row as it would have been written before sources existed:
+/// `source_id: None`. There's no file behind it — the point is the row.
+fn legacy_media(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
+    NewMedia {
+        drive_id,
+        rel_path: rel_path.into(),
+        hash: hash.into(),
+        size: 1024,
+        kind: MediaKind::Photo,
+        ext: "jpg".into(),
+        width: None,
+        height: None,
+        duration_ms: None,
+        taken_at: None,
+        camera: None,
+        lens: None,
+        aperture: None,
+        shutter: None,
+        iso: None,
+        focal_mm: None,
+        lat: None,
+        lon: None,
+        organized_at: None,
+        source_id: None,
+    }
+}
+
 #[tokio::test]
 async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     if !has_exiftool() {
@@ -158,6 +185,59 @@ async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     assert_eq!(png_before.len(), png_after.len());
     assert_eq!(jpg_before.modified().unwrap(), jpg_after.modified().unwrap());
     assert_eq!(png_before.modified().unwrap(), png_after.modified().unwrap());
+}
+
+/// A media row scanned before sources existed (`source_id: NULL`) that
+/// points somewhere today's deny-list refuses can never be re-created
+/// *or* resolved by a scan — the walk skips exactly those paths — so a
+/// scan prunes it instead of leaving it stuck in the UI's "re-scan to
+/// include these" count forever. Legacy rows under ordinary folders are
+/// untouched: those *are* still resolvable by a re-scan.
+#[tokio::test]
+async fn a_scan_prunes_legacy_rows_under_denied_paths_and_keeps_the_rest() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("Pictures")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Legacy Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    // Both rows predate sources: `source_id: None`.
+    let denied_id = catalog
+        .upsert_media(legacy_media(drive.id, "Foo.app/Contents/old.jpg", "h-denied"))
+        .await
+        .unwrap();
+    let kept_id = catalog
+        .upsert_media(legacy_media(drive.id, "Pictures/old.jpg", "h-kept"))
+        .await
+        .unwrap();
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive.clone(), vec![src], deps));
+    runner.spawn(job_id, job);
+    drain_until_terminal(&mut rx).await;
+
+    let remaining: Vec<i64> = catalog
+        .list_media_without_source(drive.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    assert!(
+        !remaining.contains(&denied_id),
+        "the legacy row under Foo.app should have been pruned, got {remaining:?}"
+    );
+    assert!(
+        remaining.contains(&kept_id),
+        "the legacy row under Pictures/ must survive, got {remaining:?}"
+    );
 }
 
 #[tokio::test]

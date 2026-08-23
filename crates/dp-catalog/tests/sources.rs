@@ -153,26 +153,6 @@ async fn delete_source_removes_it() {
 }
 
 #[tokio::test]
-async fn count_media_without_source_counts_only_null_source_id_rows() {
-    let c = SqliteCatalog::open_in_memory().await.unwrap();
-    let drive_id = drive(&c).await;
-    let source = c
-        .upsert_source(NewSource {
-            drive_id,
-            rel_path: "DCIM".into(),
-        })
-        .await
-        .unwrap();
-
-    c.upsert_media(nm(drive_id, "a.jpg", "h-a", None)).await.unwrap();
-    c.upsert_media(nm(drive_id, "b.jpg", "h-b", Some(source.id)))
-        .await
-        .unwrap();
-
-    assert_eq!(c.count_media_without_source(drive_id).await.unwrap(), 1);
-}
-
-#[tokio::test]
 async fn upsert_source_rejects_a_parent_dir_component() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;

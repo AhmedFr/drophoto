@@ -1,8 +1,10 @@
 use crate::state::AppState;
+use dp_catalog::normalize_source_rel_path;
+use dp_core::denylist::is_denied_path;
 use dp_core::{DetectedFolder, DpError, DpResult, Drive, NewSource, Source};
 use dp_jobs::detect_folders;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::State;
 use tokio_util::sync::CancellationToken;
@@ -97,21 +99,67 @@ pub async fn list_sources(state: State<'_, AppState>, drive_id: i64) -> Result<V
     state.catalog.list_sources(drive_id).await
 }
 
+/// Refuses any of `rel_paths` that the safety deny-list would refuse to
+/// walk anyway ([`is_denied_path`], checked mount-relative against
+/// `mount` exactly as the scan does — same `mount`/`home` arguments).
+///
+/// Saving such a source would otherwise "succeed" and then quietly scan
+/// nothing, since `collect_media_files` filters the very same paths back
+/// out. Refusing at save time says so, and names the folder.
+///
+/// Pure (no catalog, no `AppState`) so it can be unit-tested directly.
+/// `rel_paths` are expected to already be normalized — see
+/// [`dp_catalog::normalize_source_rel_path`] — and `mount` to be
+/// canonical, since `abs` is built from it.
+pub(crate) fn reject_denied_sources(mount: &Path, home: Option<&Path>, rel_paths: &[String]) -> DpResult<()> {
+    for rel in rel_paths {
+        let abs = if rel.is_empty() {
+            mount.to_path_buf()
+        } else {
+            mount.join(rel)
+        };
+        if is_denied_path(&abs, mount, home) {
+            return Err(DpError::Unsupported {
+                message: format!("'{rel}' is a system or app location and can't be a source"),
+                path: Some(abs.display().to_string()),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Reconciles `drive_id`'s configured sources with exactly `rel_paths`:
 /// each path is upserted (inserted, or re-enabled if it already existed
 /// but was disabled), and any existing, currently-enabled source *not*
-/// in `rel_paths` is **disabled** — never deleted. A path that fails
-/// validation (absolute, contains `..`, ...) fails the whole call with
-/// `Unsupported`, naming the offending path; nothing already upserted or
-/// disabled in this call is rolled back.
+/// in `rel_paths` is **disabled** — never deleted.
+///
+/// Every path is validated *before* anything is written: one that fails
+/// normalization (absolute, contains `..`, ...) or that the safety
+/// deny-list refuses ([`reject_denied_sources`]) fails the whole call
+/// with `Unsupported`, naming the offending path, and **nothing is
+/// saved** — no upsert, no disable.
 #[tauri::command]
 pub async fn save_sources(
     state: State<'_, AppState>,
     drive_id: i64,
     rel_paths: Vec<String>,
 ) -> Result<(), DpError> {
+    let normalized: Vec<String> = rel_paths
+        .iter()
+        .map(|p| normalize_source_rel_path(p))
+        .collect::<DpResult<_>>()?;
+
+    let (_drive, mount) = find_online_drive(&state, drive_id).await?;
+    // Canonicalized to match the scan walk's own view of the mount (see
+    // `ScanJob::run`), so `abs` and `mount` agree and the deny-list's
+    // mount-relative rules line up with what a scan would actually do.
+    // A mount that can't be canonicalized (racing an eject, ...) falls
+    // back to its literal path rather than blocking the save outright.
+    let mount = std::fs::canonicalize(&mount).unwrap_or(mount);
+    reject_denied_sources(&mount, state.home.as_deref(), &normalized)?;
+
     let mut checked_ids: HashSet<i64> = HashSet::new();
-    for rel_path in rel_paths {
+    for rel_path in normalized {
         let source = state
             .catalog
             .upsert_source(NewSource { drive_id, rel_path })
@@ -142,6 +190,62 @@ pub async fn set_source_enabled(
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    fn rels(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn accepts_ordinary_photo_folders_and_the_mount_root() {
+        let mount = Path::new("/Volumes/Backup");
+        assert!(reject_denied_sources(mount, None, &rels(&["", "DCIM", "Pictures/2024"])).is_ok());
+    }
+
+    #[test]
+    fn refuses_a_system_location_naming_the_folder() {
+        let mount = Path::new("/Volumes/Backup");
+        let err = reject_denied_sources(mount, None, &rels(&["Applications"])).unwrap_err();
+        match err {
+            DpError::Unsupported { message, .. } => {
+                assert_eq!(
+                    message,
+                    "'Applications' is a system or app location and can't be a source"
+                );
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refuses_a_package_bundle_and_a_nested_users_library() {
+        let mount = Path::new("/Volumes/Backup");
+        for rel in [
+            "Trip.photoslibrary",
+            "Backups/2024/Users/bob/Library",
+            "Work/node_modules",
+        ] {
+            assert!(
+                reject_denied_sources(mount, None, &rels(&[rel])).is_err(),
+                "expected {rel} refused"
+            );
+        }
+    }
+
+    /// The whole batch is rejected on the *first* denied path, so a
+    /// caller mixing a good folder with a bad one saves neither.
+    #[test]
+    fn refuses_the_whole_batch_when_any_path_is_denied() {
+        let mount = Path::new("/Volumes/Backup");
+        assert!(reject_denied_sources(mount, None, &rels(&["DCIM", "System"])).is_err());
+    }
+
+    #[test]
+    fn refuses_the_current_users_library_via_home() {
+        let mount = Path::new("/");
+        let home = PathBuf::from("/Users/ahmed");
+        assert!(reject_denied_sources(mount, Some(&home), &rels(&["Users/ahmed/Library/Photos"])).is_err());
+        assert!(reject_denied_sources(mount, Some(&home), &rels(&["Users/ahmed/Pictures"])).is_ok());
+    }
 
     #[tokio::test]
     async fn detect_with_timeout_returns_ok_with_partial_results_when_the_walk_outlasts_the_budget() {

@@ -153,3 +153,17 @@ it("does not render the Sources… button when onOpenSources is not given", () =
   render(<DriveCard drive={baseDrive} />);
   expect(screen.queryByRole("button", { name: /sources/i })).not.toBeInTheDocument();
 });
+
+// `sources` defaults to `[]` while the caller's query is in flight,
+// which used to be rendered as a red "No sources" for a beat on every
+// mount before the real count arrived.
+it("shows neither 'No sources' nor a count while sources are still loading", () => {
+  render(<DriveCard drive={baseDrive} sourcesLoading />);
+  expect(screen.queryByText("No sources")).not.toBeInTheDocument();
+  expect(screen.queryByText(/source(s)?$/)).not.toBeInTheDocument();
+});
+
+it("keeps Scan disabled while sources are still loading", () => {
+  render(<DriveCard drive={baseDrive} sourcesLoading onScan={vi.fn()} />);
+  expect(screen.getByRole("button", { name: "Scan" })).toBeDisabled();
+});

@@ -118,3 +118,28 @@ it("caps the result at 3 folders", async () => {
   const { result } = render([1], true);
   await waitFor(() => expect(result.current.folders).toHaveLength(3));
 });
+
+// `list_jobs` returns revert rows too, on the same drive and with a
+// *higher* id than the organize job they undo. Picking the highest id
+// without filtering by kind resolved the revert's own id as "this
+// run's job", so the Done overlay offered to revert the revert.
+it("ignores revert jobs when resolving this run's job id", async () => {
+  mockIPC((cmd, args) => {
+    if (cmd === "list_jobs") {
+      return [
+        job({ id: 9, drive_id: 1, kind: "revert", reverts_job_id: 7 }),
+        job({ id: 7, drive_id: 1, kind: "organize" }),
+      ];
+    }
+    if (cmd === "list_job_items") {
+      const jobId = (args as { jobId: number }).jobId;
+      return jobId === 7 ? [item({ job_id: 7 })] : [];
+    }
+    return undefined;
+  });
+
+  const { result } = render([1], true);
+
+  await waitFor(() => expect(result.current.jobIds).toEqual([7]));
+  expect(result.current.folders).toEqual(["archive/2024/Q2"]);
+});

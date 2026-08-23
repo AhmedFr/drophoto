@@ -138,6 +138,39 @@ pub(crate) async fn count_media(pool: &SqlitePool, drive_id: Option<i64>) -> DpR
     Ok(count as u64)
 }
 
+/// Every media row on `drive_id` that was never attributed to a source
+/// (`source_id IS NULL` — scanned before sources existed). Ordered by
+/// id so callers see a stable sequence.
+pub(crate) async fn list_media_without_source(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+    let rows = sqlx::query("SELECT * FROM media WHERE drive_id = ? AND source_id IS NULL ORDER BY id")
+        .bind(drive_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+    rows.iter().map(row_to_media).collect()
+}
+
+/// Deletes media row `id`, but **only** when no `organize_items` row
+/// references it, returning whether it was actually deleted.
+///
+/// `organize_items.media_id` carries no foreign key, so nothing at the
+/// schema level stops a delete from stranding a finished job's history
+/// — and a stranded item is exactly what would make that job
+/// un-revertable (`RevertJob` looks the media row back up by id). The
+/// `NOT EXISTS` guard lives inside the statement rather than in a
+/// read-then-delete pair so the check and the delete can't race.
+pub(crate) async fn delete_media(pool: &SqlitePool, id: i64) -> DpResult<bool> {
+    let result = sqlx::query(
+        "DELETE FROM media WHERE id = ? \
+         AND NOT EXISTS (SELECT 1 FROM organize_items WHERE organize_items.media_id = media.id)",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub(crate) async fn media_hash_exists(pool: &SqlitePool, hash: &str) -> DpResult<bool> {
     let exists: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE hash = ?)")
         .bind(hash)

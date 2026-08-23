@@ -8,6 +8,7 @@ export function DetectStep({
   onScan,
   organizedCount,
   scanningDriveId,
+  scanError,
 }: DetectStepProps) {
   const selectedSummaries = summaries.filter((s) => selected.includes(s.drive_id));
   const newPhotosFound = selectedSummaries.reduce((sum, s) => sum + s.count, 0);
@@ -53,6 +54,7 @@ export function DetectStep({
               onToggle={() => onToggle(s.drive_id)}
               onScan={() => onScan(s.drive_id)}
               scanning={scanningDriveId === s.drive_id}
+              scanError={scanError?.driveId === s.drive_id ? scanError.message : null}
             />
           ))}
         </ul>

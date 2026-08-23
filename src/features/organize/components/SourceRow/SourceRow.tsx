@@ -1,3 +1,5 @@
+import { Link } from "@tanstack/react-router";
+import type { router } from "@/app/router";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { formatBytes } from "@/lib/format/bytes";
@@ -11,8 +13,8 @@ function dateRange(earliest: string | null, latest: string | null): string {
   return from === to ? from : `${from} – ${to}`;
 }
 
-export function SourceRow({ summary, selected, onToggle, onScan, scanning }: SourceRowProps) {
-  const { drive, count, total, photos, videos, bytes, earliest, latest, legacy } = summary;
+export function SourceRow({ summary, selected, onToggle, onScan, scanning, scanError }: SourceRowProps) {
+  const { drive, count, total, photos, videos, bytes, earliest, latest, legacy, has_sources } = summary;
   // A drive with no media rows at all has never been scanned. A drive
   // that *does* have rows but nothing left unorganized is simply done —
   // it used to be mislabelled "scan to index" and offered a pointless
@@ -25,7 +27,12 @@ export function SourceRow({ summary, selected, onToggle, onScan, scanning }: Sou
   const legacyOnly = !neverScanned && count === 0 && legacy > 0;
   const allOrganized = !neverScanned && count === 0 && legacy === 0;
   const selectable = !neverScanned && !allOrganized && !legacyOnly;
-  const showScanNow = neverScanned || legacyOnly;
+  const needsScan = neverScanned || legacyOnly;
+  // With no enabled source, a scan walks nothing: it would "succeed"
+  // having found zero photos and leave the row saying exactly what it
+  // said before. Send the user to Drives to pick folders instead.
+  const showSetUpSources = needsScan && !has_sources;
+  const showScanNow = needsScan && has_sources;
 
   return (
     <li
@@ -65,10 +72,23 @@ export function SourceRow({ summary, selected, onToggle, onScan, scanning }: Sou
           <span className="font-mono text-[10px] text-faint">{legacy} not covered by a source — re-scan</span>
         )}
       </div>
-      {showScanNow && (
-        <Button variant="outline" size="xs" disabled={scanning} onClick={onScan}>
-          {scanning ? "SCANNING…" : "SCAN NOW"}
-        </Button>
+      {(showScanNow || showSetUpSources) && (
+        <div className="flex flex-none flex-col items-end gap-1">
+          {showSetUpSources ? (
+            <Button variant="outline" size="xs" asChild>
+              <Link<typeof router, string, string> to="/drives">SET UP SOURCES…</Link>
+            </Button>
+          ) : (
+            <Button variant="outline" size="xs" disabled={scanning} onClick={onScan}>
+              {scanning ? "SCANNING…" : "SCAN NOW"}
+            </Button>
+          )}
+          {scanError && (
+            <span role="alert" className="max-w-52 text-right font-mono text-[10px] text-red-400">
+              {scanError}
+            </span>
+          )}
+        </div>
       )}
     </li>
   );

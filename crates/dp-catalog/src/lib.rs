@@ -11,6 +11,7 @@ use dp_core::{
     DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewSource, OrganizeItemRow, OrganizeJobRow,
     OrganizeRule, Source, UnorganizedSummary,
 };
+pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
 use std::collections::HashSet;
 
@@ -26,6 +27,13 @@ pub trait Catalog: Send + Sync {
     async fn get_media_with_drive(&self, id: i64) -> DpResult<(MediaRow, Drive)>;
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64>;
     async fn media_hash_exists(&self, hash: &str) -> DpResult<bool>;
+    /// Every media row on `drive_id` never attributed to a source
+    /// (`source_id IS NULL`) — see [`dp_core::MediaRow::source_id`].
+    async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    /// Deletes media row `id` unless an `organize_items` row references
+    /// it; `Ok(false)` means it was left in place. See the `SqliteCatalog`
+    /// implementation for why the guard exists.
+    async fn delete_media(&self, id: i64) -> DpResult<bool>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule>;
     async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()>;
@@ -62,7 +70,6 @@ pub trait Catalog: Send + Sync {
     async fn set_source_enabled(&self, id: i64, enabled: bool) -> DpResult<()>;
     async fn delete_source(&self, id: i64) -> DpResult<()>;
     async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
-    async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64>;
     /// Count of `drive_id`'s legacy rows — never attributed to a source,
     /// still unorganized, and outside `root` — see
     /// `dp_core::UnorganizedSummary::legacy`.
@@ -109,6 +116,14 @@ impl Catalog for SqliteCatalog {
 
     async fn media_hash_exists(&self, hash: &str) -> DpResult<bool> {
         media::media_hash_exists(&self.pool, hash).await
+    }
+
+    async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        media::list_media_without_source(&self.pool, drive_id).await
+    }
+
+    async fn delete_media(&self, id: i64) -> DpResult<bool> {
+        media::delete_media(&self.pool, id).await
     }
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
@@ -200,10 +215,6 @@ impl Catalog for SqliteCatalog {
 
     async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<Source>> {
         sources::list_enabled_sources(&self.pool, drive_id).await
-    }
-
-    async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64> {
-        sources::count_media_without_source(&self.pool, drive_id).await
     }
 
     async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {

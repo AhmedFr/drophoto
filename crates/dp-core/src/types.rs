@@ -232,12 +232,6 @@ pub struct OrganizePlan {
     pub planned: u64,
     pub skipped_dup: u64,
     pub bytes: u64,
-    /// Sum, across every planned drive, of that drive's legacy rows:
-    /// media never attributed to a source (see [`MediaRow::source_id`]),
-    /// still unorganized, and outside that drive's rule root. Excluded
-    /// from `items` outright (never even planned), so this is the only
-    /// way the UI learns they exist and need a re-scan.
-    pub legacy_rows: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -261,6 +255,11 @@ pub struct UnorganizedSummary {
     /// `count`; a re-scan is what attributes them to a source and makes
     /// them organizable.
     pub legacy: u64,
+    /// Whether this drive has at least one *enabled* source configured.
+    /// `false` means a scan would walk nothing at all, so the UI must
+    /// send the user to set sources up rather than offer a scan that
+    /// can only ever find zero photos.
+    pub has_sources: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]

@@ -33,7 +33,6 @@ const plan: OrganizePlan = {
   planned: 1,
   skipped_dup: 0,
   bytes: 1234,
-  legacy_rows: 0,
 };
 
 const summary: UnorganizedSummary = {
@@ -46,6 +45,7 @@ const summary: UnorganizedSummary = {
   earliest: "2025-09-01T00:00:00Z",
   latest: "2025-09-12T00:00:00Z",
   legacy: 0,
+  has_sources: true,
 };
 
 const jobRow: OrganizeJobRow = {

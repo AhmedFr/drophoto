@@ -530,3 +530,36 @@ async fn reopening_a_file_catalog_leaves_finished_jobs_alone() {
     assert_eq!(row.status, "done");
     assert_eq!(row.moved, 3);
 }
+
+/// `has_sources` is what tells the UI a scan would walk anything at all:
+/// with no enabled source, "SCAN NOW" can only ever find zero photos, so
+/// the user has to be sent to set sources up instead.
+#[tokio::test]
+async fn unorganized_summary_reports_whether_the_drive_has_an_enabled_source() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    assert!(
+        !c.unorganized_summary(drive_id, "archive")
+            .await
+            .unwrap()
+            .has_sources
+    );
+
+    let source_id = source(&c, drive_id).await;
+    assert!(
+        c.unorganized_summary(drive_id, "archive")
+            .await
+            .unwrap()
+            .has_sources
+    );
+
+    // A source that exists but is switched off is no source at all.
+    c.set_source_enabled(source_id, false).await.unwrap();
+    assert!(
+        !c.unorganized_summary(drive_id, "archive")
+            .await
+            .unwrap()
+            .has_sources
+    );
+}

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia};
+use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, NewSource, OrganizeItemRow, PlanStatus};
 
 fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
     nm_taken(drive_id, rel_path, hash, None)
@@ -108,4 +108,66 @@ async fn record_scan_error_does_not_error() {
     c.record_scan_error(drive_id, "a.jpg", "io", "boom")
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn list_media_without_source_returns_only_unattributed_rows() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let source = c
+        .upsert_source(NewSource {
+            drive_id,
+            rel_path: "DCIM".into(),
+        })
+        .await
+        .unwrap();
+
+    let legacy_id = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    c.upsert_media(NewMedia {
+        source_id: Some(source.id),
+        ..nm(drive_id, "DCIM/b.jpg", "h-b")
+    })
+    .await
+    .unwrap();
+
+    let rows = c.list_media_without_source(drive_id).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, legacy_id);
+    assert_eq!(rows[0].rel_path, "a.jpg");
+}
+
+#[tokio::test]
+async fn delete_media_removes_an_unreferenced_row() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let id = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+
+    assert!(c.delete_media(id).await.unwrap());
+    assert_eq!(c.count_media(Some(drive_id)).await.unwrap(), 0);
+}
+
+/// A row an `organize_items` row still points at is deliberately left in
+/// place: deleting it would strand that job's history and make the job
+/// un-revertable. `organize_items.media_id` carries no foreign key, so
+/// the guard has to live in the statement itself.
+#[tokio::test]
+async fn delete_media_keeps_a_row_an_organize_item_references() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let id = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let job_id = c.create_organize_job(drive_id, 1).await.unwrap();
+    c.insert_organize_item(&OrganizeItemRow {
+        id: 0,
+        job_id,
+        media_id: id,
+        old_rel_path: "a.jpg".into(),
+        new_rel_path: "archive/a.jpg".into(),
+        status: PlanStatus::Moved,
+        error: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(!c.delete_media(id).await.unwrap());
+    assert_eq!(c.count_media(Some(drive_id)).await.unwrap(), 1);
 }

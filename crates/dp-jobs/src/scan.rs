@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
+use crate::prune::prune_denied_legacy_rows;
 use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
 
 /// Number of files hashed/thumbnailed/read concurrently during a scan.
@@ -112,6 +113,34 @@ impl Job for ScanJob {
             message: format!("scan walk task failed: {e}"),
             path: None,
         })??;
+
+        // Legacy rows (scanned before sources existed) pointing at paths
+        // today's deny-list refuses can never be re-created — or
+        // resolved — by a scan, since the walk above skips those very
+        // paths. Clear them here, now that the canonical `mount` the
+        // walk used is in hand, so they stop being reported as "re-scan
+        // to include these". A failure here must not fail the scan
+        // itself: the files were still indexed.
+        match prune_denied_legacy_rows(
+            &self.deps.catalog,
+            self.drive.id,
+            &mount,
+            self.deps.home.as_deref(),
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(pruned) => tracing::info!(
+                drive_id = self.drive.id,
+                pruned,
+                "pruned legacy media rows under paths the deny-list now refuses"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                drive_id = self.drive.id,
+                "failed to prune legacy media rows under denied paths"
+            ),
+        }
 
         let done = AtomicU64::new(0);
         let ok = AtomicU64::new(0);

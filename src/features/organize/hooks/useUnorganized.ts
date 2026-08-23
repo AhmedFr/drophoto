@@ -25,6 +25,7 @@ function emptySummary(driveId: number): UnorganizedSummary {
     earliest: null,
     latest: null,
     legacy: 0,
+    has_sources: false,
   };
 }
 
@@ -73,6 +74,16 @@ export function useUnorganized(): UseUnorganizedResult {
   const totalLegacy = summaries.reduce((sum, s) => sum + s.legacy, 0);
   const organizedCount = Math.max(0, (totalQuery.data ?? 0) - totalUnorganized - totalLegacy);
 
+  // A failed `start_scan` (no sources, a denied mount, another job
+  // already running, ...) used to be swallowed: the button simply
+  // stopped saying "SCANNING…" and nothing else happened. Carry the
+  // failure — and which drive it was for — out so the row can say so.
+  const failedDriveId = scanMutation.variables ?? null;
+  const scanError =
+    scanMutation.isError && failedDriveId != null
+      ? { driveId: failedDriveId, message: (scanMutation.error as Error).message }
+      : null;
+
   return {
     rows,
     organizedCount,
@@ -80,5 +91,6 @@ export function useUnorganized(): UseUnorganizedResult {
     isError: drivesQuery.isError || summariesQuery.isError,
     scan: (driveId) => scanMutation.mutate(driveId),
     scanningDriveId: scanMutation.isPending ? (scanMutation.variables ?? null) : null,
+    scanError,
   };
 }

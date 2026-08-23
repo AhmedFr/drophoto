@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { vi } from "vitest";
+import { renderWithRouter } from "@/test/renderWithRouter";
 import type { UnorganizedRow } from "../../hooks/useUnorganized.types";
 import { SourceRow } from "./SourceRow";
 
@@ -13,6 +14,7 @@ const summary: UnorganizedRow = {
   earliest: "2025-09-01T00:00:00Z",
   latest: "2025-10-12T00:00:00Z",
   legacy: 0,
+  has_sources: true,
   drive: {
     id: 1,
     name: "Kodachrome",
@@ -117,6 +119,7 @@ it("shows the re-scan notice and SCAN NOW (not All organized) when everything le
     earliest: null,
     latest: null,
     legacy: 4,
+    has_sources: true,
   };
   const onScan = vi.fn();
   render(<SourceRow summary={legacyOnly} selected={false} onToggle={vi.fn()} onScan={onScan} />);
@@ -138,7 +141,71 @@ it("disables SCAN NOW while scanning in the legacy-only state", () => {
     earliest: null,
     latest: null,
     legacy: 4,
+    has_sources: true,
   };
   render(<SourceRow summary={legacyOnly} selected={false} onToggle={vi.fn()} onScan={vi.fn()} scanning />);
   expect(screen.getByRole("button", { name: /scanning/i })).toBeDisabled();
+});
+
+const neverScannedRow: UnorganizedRow = { ...summary, count: 0, total: 0, photos: 0, videos: 0, bytes: 0 };
+
+it("shows the scan error under the button after a failed scan", () => {
+  render(
+    <SourceRow
+      summary={neverScannedRow}
+      selected={false}
+      onToggle={vi.fn()}
+      onScan={vi.fn()}
+      scanError="a scan job is already running on this drive"
+    />,
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("a scan job is already running on this drive");
+  // The button stays: the failure is retryable, not terminal.
+  expect(screen.getByRole("button", { name: /scan now/i })).toBeInTheDocument();
+});
+
+it("shows no alert when the last scan did not fail", () => {
+  render(<SourceRow summary={neverScannedRow} selected={false} onToggle={vi.fn()} onScan={vi.fn()} />);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+// With no enabled source a scan walks nothing, so SCAN NOW could only
+// ever "succeed" having found zero photos. Send the user to Drives.
+it("replaces SCAN NOW with a link to /drives when the drive has no sources", async () => {
+  renderWithRouter(
+    <SourceRow
+      summary={{ ...neverScannedRow, has_sources: false }}
+      selected={false}
+      onToggle={vi.fn()}
+      onScan={vi.fn()}
+    />,
+  );
+  expect(await screen.findByRole("link", { name: /set up sources/i })).toHaveAttribute("href", "/drives");
+  expect(screen.queryByRole("button", { name: /scan now/i })).not.toBeInTheDocument();
+});
+
+it("offers SCAN NOW, not the sources link, once the drive has sources", async () => {
+  renderWithRouter(
+    <SourceRow
+      summary={{ ...neverScannedRow, has_sources: true }}
+      selected={false}
+      onToggle={vi.fn()}
+      onScan={vi.fn()}
+    />,
+  );
+  expect(await screen.findByRole("button", { name: /scan now/i })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /set up sources/i })).not.toBeInTheDocument();
+});
+
+it("offers the sources link over a re-scan in the legacy-only state with no sources", async () => {
+  renderWithRouter(
+    <SourceRow
+      summary={{ ...summary, count: 0, total: 5, legacy: 4, has_sources: false }}
+      selected={false}
+      onToggle={vi.fn()}
+      onScan={vi.fn()}
+    />,
+  );
+  expect(await screen.findByRole("link", { name: /set up sources/i })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /scan now/i })).not.toBeInTheDocument();
 });

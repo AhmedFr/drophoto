@@ -76,11 +76,22 @@ fn rel_first_component_is_denied_prefix(rel: &Path) -> bool {
     }
 }
 
-/// Whether `rel` (a path relative to some mount) starts with
-/// `Users/<any-name>/Library` — for *any* user, not just the
-/// caller-supplied `home`, since a scan can stumble onto another
+/// Whether `rel` (a path relative to some mount) contains
+/// `Users/<any-name>/Library` at *any* depth — for *any* user, not just
+/// the caller-supplied `home`, since a scan can stumble onto another
 /// account's home directory just as easily as the current user's.
-fn rel_starts_with_any_users_library(rel: &Path) -> bool {
+///
+/// Deliberately not anchored at the first component: a backup drive
+/// holds exactly this shape nested arbitrarily deep
+/// (`Backups/2024/Users/bob/Library/...`), and a copy of someone's
+/// `~/Library` is no more scannable for being a copy.
+///
+/// Only the `users`/`library` pair matters; the `<name>` in between is
+/// any single component. A directory literally named `Library` that
+/// isn't the grandchild of a `Users` directory (`Pictures/Library`,
+/// `Users/bob/Pictures/Library`) stays allowed — the rule is about the
+/// macOS home-directory layout, not the word.
+fn rel_contains_any_users_library(rel: &Path) -> bool {
     let names: Vec<String> = rel
         .components()
         .filter_map(|c| match c {
@@ -88,7 +99,7 @@ fn rel_starts_with_any_users_library(rel: &Path) -> bool {
             _ => None,
         })
         .collect();
-    names.len() >= 3 && names[0] == "users" && names[2] == "library"
+    names.windows(3).any(|w| w[0] == "users" && w[2] == "library")
 }
 
 /// Whether `abs` is `home/Library` or something under it. Checked against
@@ -144,7 +155,7 @@ pub fn is_denied_path(abs: &Path, mount: &Path, home: Option<&Path>) -> bool {
     if rel_first_component_is_denied_prefix(rel) {
         return true;
     }
-    if rel_starts_with_any_users_library(rel) {
+    if rel_contains_any_users_library(rel) {
         return true;
     }
     if let Some(home) = home {
@@ -420,6 +431,41 @@ mod tests {
             Path::new("/"),
             None
         ));
+    }
+
+    /// A backup drive routinely holds a whole copy of someone's home
+    /// directory nested under a dated folder. `Users/<name>/Library` is
+    /// no more scannable for sitting several levels down, so the rule
+    /// matches at any depth rather than only as the first component.
+    #[test]
+    fn a_nested_users_library_is_denied_at_any_depth() {
+        let mount = Path::new("/Volumes/X");
+        for rel in [
+            "Backups/2024/Users/bob/Library/Mail/x",
+            "Backups/2024/Users/bob/Library",
+            "a/b/c/d/Users/ann/LIBRARY/Caches",
+        ] {
+            let abs = mount.join(rel);
+            assert!(is_denied_path(&abs, mount, None), "expected {abs:?} denied");
+        }
+    }
+
+    /// The nested rule keys off the `Users/<name>/Library` *shape*, not
+    /// the word "Library": a user's own `Pictures` (at any depth), and a
+    /// folder someone happened to name `Library` that isn't a `Users`
+    /// grandchild, both stay scannable.
+    #[test]
+    fn a_nested_users_non_library_dir_and_a_plain_library_folder_stay_allowed() {
+        let mount = Path::new("/Volumes/X");
+        for rel in [
+            "Backups/2024/Users/bob/Pictures/x.jpg",
+            "Users/bob/Pictures/x.jpg",
+            "Pictures/Library/x.jpg",
+            "Users/bob/Pictures/Library/x.jpg",
+        ] {
+            let abs = mount.join(rel);
+            assert!(!is_denied_path(&abs, mount, None), "expected {abs:?} allowed");
+        }
     }
 
     #[test]

@@ -22,7 +22,8 @@ const FOLDERS_SHOWN = 3;
  * `organize_jobs.id` that `list_job_items` expects — so there's no
  * direct way to go from "the job(s) this run started" to their rows.
  * Instead this lists recent jobs and, for each of `driveIds`, picks the
- * one with the highest id (i.e. the one this run just created).
+ * `organize` job with the highest id (i.e. the one this run just
+ * created) — `revert` rows share the list and would otherwise win on id.
  */
 export function useDoneSummary(driveIds: number[], enabled: boolean): UseDoneSummaryResult {
   const query = useQuery({
@@ -32,6 +33,12 @@ export function useDoneSummary(driveIds: number[], enabled: boolean): UseDoneSum
 
       const latestJobIdByDrive = new Map<number, number>();
       for (const job of jobs) {
+        // `list_jobs` returns revert jobs too, on the same drives and
+        // with higher ids than the organize job they undo — so without
+        // this filter, reverting a run and coming back would resolve
+        // the revert's own id as "the job this run created", and the
+        // Done overlay would offer to revert the revert.
+        if (job.kind !== "organize") continue;
         if (!driveIds.includes(job.drive_id)) continue;
         const existing = latestJobIdByDrive.get(job.drive_id);
         if (existing === undefined || job.id > existing) latestJobIdByDrive.set(job.drive_id, job.id);

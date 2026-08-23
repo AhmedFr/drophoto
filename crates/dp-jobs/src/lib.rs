@@ -4,12 +4,14 @@
 pub mod detect;
 mod move_guards;
 mod organize;
+mod prune;
 mod revert;
 mod runner;
 mod scan;
 
 pub use detect::{detect_folders, detect_folders_with_progress};
 pub use organize::{OrganizeDeps, OrganizeJob};
+pub use prune::prune_denied_legacy_rows;
 pub use revert::RevertJob;
 pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};

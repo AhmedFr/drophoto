@@ -36,6 +36,7 @@ const summary = {
   earliest: "2025-09-01T00:00:00Z",
   latest: "2025-09-12T00:00:00Z",
   legacy: 0,
+  has_sources: true,
 };
 
 beforeEach(async () => {
@@ -159,4 +160,57 @@ it("invalidates unorganized and media-count queries when a job finishes", async 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["unorganized"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["media-count"] });
   });
+});
+
+// A failed `start_scan` used to vanish: the button stopped saying
+// "SCANNING…" and nothing else changed on screen.
+it("surfaces a failed scan with the drive it was for", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_unorganized_summaries") return [summary];
+    if (cmd === "count_media") return 10;
+    if (cmd === "start_scan") throw new Error("a scan job is already running on this drive");
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useUnorganized(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+  result.current.scan(onlineDrive.id);
+
+  await waitFor(() =>
+    expect(result.current.scanError).toEqual({
+      driveId: onlineDrive.id,
+      message: "a scan job is already running on this drive",
+    }),
+  );
+});
+
+it("reports no scan error before any scan is attempted", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_unorganized_summaries") return [summary];
+    if (cmd === "count_media") return 10;
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useUnorganized(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  expect(result.current.scanError).toBeNull();
+});
+
+// `has_sources` comes straight from the summary; a drive with no summary
+// row at all gets the synthetic zero-summary, which must not claim to
+// have sources it was never asked about.
+it("defaults has_sources to false for a drive with no summary row", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_unorganized_summaries") return [];
+    if (cmd === "count_media") return 0;
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useUnorganized(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  expect(result.current.rows[0].has_sources).toBe(false);
 });

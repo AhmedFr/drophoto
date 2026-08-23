@@ -36,7 +36,6 @@ function plan(items: OrganizePlan["items"]): OrganizePlan {
     planned: items.filter((i) => i.status === "planned").length,
     skipped_dup: 0,
     bytes: 0,
-    legacy_rows: 0,
   };
 }
 

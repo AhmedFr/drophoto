@@ -247,3 +247,46 @@ it("shows a distinct error when picking the boot volume's own root as a folder",
 
   expect(result.current.addError).toBe("The whole boot volume can't be a source");
 });
+
+// `save_sources` now refuses a folder the safety deny-list would skip
+// anyway (a system location, an app bundle, someone's ~/Library). The
+// dialog has to say so — and stay open — rather than close as if the
+// save had worked.
+it("surfaces the backend's refusal message when saving a denied source", async () => {
+  const onClose = vi.fn();
+  mockIPC((cmd) => {
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "Applications", enabled: true }];
+    if (cmd === "detect_sources") return [];
+    if (cmd === "save_sources") {
+      throw new Error("'Applications' is a system or app location and can't be a source");
+    }
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useSourcesDialog(drive, onClose), { wrapper: wrapper() });
+  await waitFor(() => expect(result.current.isDetecting).toBe(false));
+
+  act(() => result.current.save());
+
+  await waitFor(() =>
+    expect(result.current.saveError).toBe("'Applications' is a system or app location and can't be a source"),
+  );
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it("reports no save error and closes after a successful save", async () => {
+  const onClose = vi.fn();
+  mockIPC((cmd) => {
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
+    if (cmd === "detect_sources") return [];
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useSourcesDialog(drive, onClose), { wrapper: wrapper() });
+  await waitFor(() => expect(result.current.isDetecting).toBe(false));
+
+  act(() => result.current.save());
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  expect(result.current.saveError).toBeNull();
+});

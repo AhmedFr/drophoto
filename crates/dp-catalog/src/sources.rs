@@ -1,6 +1,5 @@
-//! Per-drive scan sources: the `sources` table, listing/upserting/enabling
-//! them, and the `media.source_id IS NULL` count used to flag rows scanned
-//! before sources existed.
+//! Per-drive scan sources: the `sources` table, and listing/upserting/
+//! enabling/deleting them.
 
 use crate::sqlite::db;
 use dp_core::{DpError, DpResult, NewSource, Source};
@@ -12,7 +11,7 @@ use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 /// components and empty components (i.e. leading `./`, trailing `/`, and
 /// collapsed `//`) are dropped. `""` (the mount root) is always allowed
 /// and normalizes to itself.
-fn normalize_rel_path(raw: &str) -> DpResult<String> {
+pub fn normalize_rel_path(raw: &str) -> DpResult<String> {
     if raw.contains('\0') {
         return Err(DpError::Unsupported {
             message: "source path must not contain a NUL byte".into(),
@@ -115,18 +114,6 @@ pub(crate) async fn delete_source(pool: &SqlitePool, id: i64) -> DpResult<()> {
         .await
         .map_err(db)?;
     Ok(())
-}
-
-/// Count of media rows for `drive_id` that were never attributed to a
-/// source (scanned before sources existed, or otherwise unattributed).
-pub(crate) async fn count_media_without_source(pool: &SqlitePool, drive_id: i64) -> DpResult<u64> {
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE drive_id = ? AND source_id IS NULL")
-            .bind(drive_id)
-            .fetch_one(pool)
-            .await
-            .map_err(db)?;
-    Ok(count as u64)
 }
 
 #[cfg(test)]

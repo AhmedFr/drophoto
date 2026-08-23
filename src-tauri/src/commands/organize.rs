@@ -89,7 +89,7 @@ pub async fn plan_organize(state: State<'_, AppState>, drive_ids: Vec<i64>) -> R
             .ok_or_else(|| DpError::NotFound {
                 message: format!("drive {drive_id} not found"),
             })?;
-        let DrivePlan { items, bytes, legacy } = plan_for_drive(&state.catalog, drive).await?;
+        let DrivePlan { items, bytes } = plan_for_drive(&state.catalog, drive).await?;
 
         result.planned += planned_count(&items);
         result.skipped_dup += items
@@ -97,21 +97,46 @@ pub async fn plan_organize(state: State<'_, AppState>, drive_ids: Vec<i64>) -> R
             .filter(|i| i.status == PlanStatus::SkippedDup)
             .count() as u64;
         result.bytes += bytes;
-        result.legacy_rows += legacy;
         result.items.extend(items);
     }
 
     Ok(result)
 }
 
+/// Whether an already-running job tracked under some admission bucket
+/// may be *adopted* by a caller that spawns ids prefixed `id_prefix`.
+///
+/// `AppState::active_job` is keyed by admission *bucket*, and the
+/// `"organize"` bucket holds both `"organize-N"` and `"revert-N"` ids
+/// (see `AppState::start_revert`). So a hit there is only this caller's
+/// own in-flight job — safe to hand back as a dedupe — when the id
+/// itself agrees; a `"revert-N"` id means someone else's revert is
+/// running on the drive, and returning it would have `start_organize`
+/// report a revert's job id as if it were the organize run the caller
+/// asked for. Refuse instead, with the same generic message
+/// `resolve_admission` uses for the equivalent conflict.
+///
+/// `None` in means nothing is running: `Ok(None)` out, spawn normally.
+fn adopt_existing(active: Option<String>, id_prefix: &str) -> Result<Option<String>, DpError> {
+    match active {
+        None => Ok(None),
+        Some(job_id) if job_id.starts_with(&format!("{id_prefix}-")) => Ok(Some(job_id)),
+        Some(_) => Err(DpError::Unsupported {
+            message: "another job is running on this drive".into(),
+            path: None,
+        }),
+    }
+}
+
 #[tauri::command]
 pub async fn start_organize(state: State<'_, AppState>, drive_id: i64) -> Result<String, DpError> {
-    // Skip the (re-)planning and job-row creation below entirely when a
-    // job is already running for this drive — `state.start_organize`
+    // Skip the (re-)planning and job-row creation below entirely when an
+    // organize job is already running for this drive — `state.start_organize`
     // dedupes the actual spawn either way, but there's no point doing
     // the work (or leaving an orphaned `organize_jobs` row) for a plan
-    // that will just be thrown away.
-    if let Some(job_id) = state.active_job("organize", drive_id) {
+    // that will just be thrown away. A *revert* tracked under the same
+    // `"organize"` bucket is not ours to adopt — see [`adopt_existing`].
+    if let Some(job_id) = adopt_existing(state.active_job("organize", drive_id), "organize")? {
         return Ok(job_id);
     }
 
@@ -325,7 +350,7 @@ pub async fn list_job_items(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_revertable, validate_root};
+    use super::{adopt_existing, check_revertable, validate_root};
     use chrono::Utc;
     use dp_core::{DpError, OrganizeJobRow};
 
@@ -384,6 +409,39 @@ mod tests {
     #[test]
     fn accepts_a_failed_organize_job() {
         assert!(check_revertable(&job("failed", "organize", None)).is_ok());
+    }
+
+    #[test]
+    fn adopt_existing_spawns_when_nothing_is_running() {
+        assert_eq!(adopt_existing(None, "organize").unwrap(), None);
+    }
+
+    #[test]
+    fn adopt_existing_reuses_an_organize_id() {
+        assert_eq!(
+            adopt_existing(Some("organize-4".into()), "organize").unwrap(),
+            Some("organize-4".into())
+        );
+    }
+
+    /// The bug: `active_job("organize", ..)` also sees `"revert-N"` ids
+    /// (both share the `"organize"` admission bucket), and returning one
+    /// made `start_organize` hand a revert's job id back as if the
+    /// organize run the caller asked for had started.
+    #[test]
+    fn adopt_existing_refuses_a_revert_id() {
+        let err = adopt_existing(Some("revert-9".into()), "organize").unwrap_err();
+        assert!(
+            matches!(&err, DpError::Unsupported { message, .. } if message == "another job is running on this drive"),
+            "got {err:?}"
+        );
+    }
+
+    /// A prefix that merely *starts the same way* isn't a match: only a
+    /// full `"{prefix}-"` boundary counts.
+    #[test]
+    fn adopt_existing_refuses_an_id_that_only_shares_a_prefix_substring() {
+        assert!(adopt_existing(Some("organizer-1".into()), "organize").is_err());
     }
 
     #[test]

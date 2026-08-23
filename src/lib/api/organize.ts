@@ -23,13 +23,6 @@ export type OrganizePlan = {
   planned: number;
   skipped_dup: number;
   bytes: number;
-  /**
-   * Sum, across every planned drive, of media rows never attributed to a
-   * source — scanned before sources existed. These are never planned (the
-   * planner requires a source), so this is the only way the UI learns
-   * they exist and need a re-scan.
-   */
-  legacy_rows: number;
 };
 
 export type UnorganizedSummary = {
@@ -54,6 +47,13 @@ export type UnorganizedSummary = {
    * is what attributes them to a source and makes them organizable.
    */
   legacy: number;
+  /**
+   * Whether this drive has at least one *enabled* source configured.
+   * `false` means a scan would walk nothing at all, so the UI must offer
+   * to set sources up instead of offering a scan that can only ever find
+   * zero photos.
+   */
+  has_sources: boolean;
 };
 
 export type OrganizeJobRow = {

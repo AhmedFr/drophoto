@@ -13,7 +13,23 @@ function wrapper() {
 it("returns an empty array for each drive before the query resolves", () => {
   mockIPC(() => undefined);
   const { result } = renderHook(() => useSources([1, 2]), { wrapper: wrapper() });
-  expect(result.current).toEqual({ 1: [], 2: [] });
+  expect(result.current.sourcesByDrive).toEqual({ 1: [], 2: [] });
+});
+
+// The `[]` fallback above is indistinguishable from "this drive has no
+// sources", which is why `isLoading` has to be reported separately —
+// `DriveCard` would otherwise flash a red "No sources" on every mount.
+it("reports isLoading while a drive's sources are still in flight, then false", async () => {
+  mockIPC((cmd) => (cmd === "list_sources" ? [] : undefined));
+  const { result } = renderHook(() => useSources([1]), { wrapper: wrapper() });
+  expect(result.current.isLoading).toBe(true);
+  await waitFor(() => expect(result.current.isLoading).toBe(false));
+});
+
+it("is not loading when there are no drives to fetch sources for", () => {
+  mockIPC(() => undefined);
+  const { result } = renderHook(() => useSources([]), { wrapper: wrapper() });
+  expect(result.current.isLoading).toBe(false);
 });
 
 it("keys resolved sources by drive id", async () => {
@@ -27,13 +43,13 @@ it("keys resolved sources by drive id", async () => {
 
   const { result } = renderHook(() => useSources([1, 2]), { wrapper: wrapper() });
 
-  await waitFor(() => expect(result.current[1]).toHaveLength(1));
-  expect(result.current[1][0]).toMatchObject({ rel_path: "DCIM" });
-  expect(result.current[2]).toEqual([]);
+  await waitFor(() => expect(result.current.sourcesByDrive[1]).toHaveLength(1));
+  expect(result.current.sourcesByDrive[1][0]).toMatchObject({ rel_path: "DCIM" });
+  expect(result.current.sourcesByDrive[2]).toEqual([]);
 });
 
 it("returns an empty object for an empty drive id list", () => {
   mockIPC(() => undefined);
   const { result } = renderHook(() => useSources([]), { wrapper: wrapper() });
-  expect(result.current).toEqual({});
+  expect(result.current.sourcesByDrive).toEqual({});
 });

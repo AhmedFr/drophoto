@@ -710,6 +710,14 @@ impl Catalog for FailingCatalog {
         self.0.media_hash_exists(hash).await
     }
 
+    async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<dp_core::MediaRow>> {
+        self.0.list_media_without_source(drive_id).await
+    }
+
+    async fn delete_media(&self, id: i64) -> DpResult<bool> {
+        self.0.delete_media(id).await
+    }
+
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         self.0.record_scan_error(drive_id, path, code, message).await
     }
@@ -803,10 +811,6 @@ impl Catalog for FailingCatalog {
 
     async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<dp_core::Source>> {
         self.0.list_enabled_sources(drive_id).await
-    }
-
-    async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64> {
-        self.0.count_media_without_source(drive_id).await
     }
 
     async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {

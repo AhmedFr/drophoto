@@ -21,7 +21,7 @@ export function OrganizePage() {
   const next = useWizardStore((s) => s.next);
   const back = useWizardStore((s) => s.back);
 
-  const { rows, organizedCount, scan, scanningDriveId } = useUnorganized();
+  const { rows, organizedCount, scan, scanningDriveId, scanError } = useUnorganized();
   const drives = rows.map((r) => r.drive);
 
   const planQuery = usePlan(selectedDriveIds);
@@ -94,6 +94,7 @@ export function OrganizePage() {
                 onScan={scan}
                 organizedCount={organizedCount}
                 scanningDriveId={scanningDriveId}
+                scanError={scanError}
               />
             </div>
           </>
