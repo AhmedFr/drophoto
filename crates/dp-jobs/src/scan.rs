@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::prune::prune_denied_legacy_rows;
-use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
+use crate::{error_code, tag_sets_match, Job, JobCtx, JobEvent, JobOutcome};
 
 /// Number of files hashed/thumbnailed/read concurrently during a scan.
 const SCAN_CONCURRENCY: usize = 4;
@@ -667,7 +667,7 @@ async fn import_sidecar_tags(
 
     match deps.catalog.tag_names_for_media(media_id).await {
         Ok(catalog_names) => {
-            if tag_sets_match_case_insensitive(&catalog_names, &subjects) {
+            if tag_sets_match(&catalog_names, &subjects) {
                 if let Err(e) = deps.catalog.clear_sidecar_pending(media_id).await {
                     report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
                 }
@@ -677,16 +677,6 @@ async fn import_sidecar_tags(
             report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
         }
     }
-}
-
-/// Whether `a` and `b` contain the same names, ignoring order, duplicates,
-/// and case — used to decide whether a row's full catalog tag set now
-/// exactly mirrors what was just imported from its sidecar (see
-/// [`import_sidecar_tags`]).
-fn tag_sets_match_case_insensitive(a: &[String], b: &[String]) -> bool {
-    let a: std::collections::HashSet<String> = a.iter().map(|s| s.to_lowercase()).collect();
-    let b: std::collections::HashSet<String> = b.iter().map(|s| s.to_lowercase()).collect();
-    a == b
 }
 
 async fn advance_progress(ctx: &JobCtx, job_id: &str, done: &AtomicU64, total: u64, current: &str) {

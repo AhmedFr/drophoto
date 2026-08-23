@@ -15,7 +15,7 @@ use dp_metadata::{sidecar_path, Sidecars};
 use futures::FutureExt;
 
 use crate::move_guards::destination_stays_on_drive;
-use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
+use crate::{error_code, tag_sets_match, Job, JobCtx, JobEvent, JobOutcome};
 
 /// External dependencies a [`SidecarSyncJob`] needs, injected so tests can
 /// swap in fakes/in-memory implementations.
@@ -214,7 +214,7 @@ impl SidecarSyncJob {
             }
         };
 
-        if !same_tag_set(&fresh, written) {
+        if !tag_sets_match(&fresh, written) {
             // Lost-update: something changed this row's tags after
             // `write_subjects` read them. Leave `sidecar_pending` set so
             // the next sweep picks up the now-current tag set.
@@ -245,14 +245,4 @@ impl SidecarSyncJob {
             })
             .await;
     }
-}
-
-/// Whether `a` and `b` contain the same names, ignoring order, duplicates,
-/// and case — used by [`SidecarSyncJob::finish_row`] to detect a lost
-/// update (the row's tags changed between `tag_names_for_media` and the
-/// sidecar write completing).
-fn same_tag_set(a: &[String], b: &[String]) -> bool {
-    let a: std::collections::HashSet<String> = a.iter().map(|s| s.to_lowercase()).collect();
-    let b: std::collections::HashSet<String> = b.iter().map(|s| s.to_lowercase()).collect();
-    a == b
 }

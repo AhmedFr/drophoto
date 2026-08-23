@@ -941,3 +941,174 @@ async fn only_moved_items_are_ever_reverted() {
     };
     assert_eq!((ok, failed, skipped), (0, 0, 0));
 }
+
+/// A media move's `.xmp` sidecar must travel with it on the way back,
+/// too: organize moves `a.jpg` + `a.jpg.xmp` under `archive/...`
+/// (Task 4a.6 also wires the sidecar into `OrganizeJob`), and reverting
+/// must land both back at their original locations.
+#[tokio::test]
+async fn revert_moves_the_sidecar_back() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+    write(&drive_dir.path().join("a.jpg.xmp"), b"<xmp/>");
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg")];
+    let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
+
+    // Sanity: the organize setup really did move both the file and its
+    // sidecar.
+    assert!(drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg").exists());
+    assert!(drive_dir
+        .path()
+        .join("archive/2025/Q3/2025-09-12_a.jpg.xmp")
+        .exists());
+    assert!(!drive_dir.path().join("a.jpg").exists());
+    assert!(!drive_dir.path().join("a.jpg.xmp").exists());
+
+    let revert_row_id = catalog
+        .create_revert_job(drive.id, organize_job_id, 1)
+        .await
+        .unwrap();
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 1, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert!(
+        events.iter().all(|e| !matches!(e, JobEvent::ItemError { .. })),
+        "unexpected ItemError: {events:?}"
+    );
+
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
+        b"content-a"
+    );
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg.xmp")).unwrap(),
+        b"<xmp/>"
+    );
+    assert!(!drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg").exists());
+    assert!(!drive_dir
+        .path()
+        .join("archive/2025/Q3/2025-09-12_a.jpg.xmp")
+        .exists());
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert!(!a_row.sidecar_pending);
+}
+
+/// A media item with no `.xmp` sidecar must produce no sidecar-related
+/// events during a revert either.
+#[tokio::test]
+async fn revert_without_a_sidecar_emits_no_sidecar_events() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg")];
+    let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
+
+    let revert_row_id = catalog
+        .create_revert_job(drive.id, organize_job_id, 1)
+        .await
+        .unwrap();
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 1, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert!(
+        events.iter().all(|e| !matches!(e, JobEvent::ItemError { .. })),
+        "unexpected ItemError: {events:?}"
+    );
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert!(!a_row.sidecar_pending);
+}
+
+/// If the sidecar's own move back fails — here, because something else
+/// already occupies its original location — the media item itself must
+/// still read `Moved` (the media move already succeeded), the job's own
+/// tallies must be unaffected, and the row must be left
+/// `sidecar_pending` so a later sync job recreates the sidecar.
+#[tokio::test]
+async fn revert_sidecar_move_failure_marks_pending_not_failed() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+    write(&drive_dir.path().join("a.jpg.xmp"), b"<xmp/>");
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg")];
+    let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
+    assert!(drive_dir
+        .path()
+        .join("archive/2025/Q3/2025-09-12_a.jpg.xmp")
+        .exists());
+
+    // Pre-create a *directory* at the sidecar's revert destination
+    // (`a.jpg.xmp`) so the sidecar's own move back fails, while `a.jpg`
+    // itself is left free.
+    std::fs::create_dir_all(drive_dir.path().join("a.jpg.xmp")).unwrap();
+
+    let revert_row_id = catalog
+        .create_revert_job(drive.id, organize_job_id, 1)
+        .await
+        .unwrap();
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 1, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+
+    let saw_sidecar_error = events
+        .iter()
+        .any(|e| matches!(e, JobEvent::ItemError { code, .. } if code == "sidecar"));
+    assert!(
+        saw_sidecar_error,
+        "expected a \"sidecar\" ItemError, got {events:?}"
+    );
+
+    // The media file itself moved back.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
+        b"content-a"
+    );
+    // The sidecar was left behind under archive/..., since the move
+    // back failed.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg.xmp")).unwrap(),
+        b"<xmp/>"
+    );
+
+    let revert_items = catalog.list_organize_items(revert_row_id, 10).await.unwrap();
+    assert_eq!(revert_items.len(), 1);
+    assert_eq!(revert_items[0].status, PlanStatus::Moved);
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert!(a_row.sidecar_pending);
+}
