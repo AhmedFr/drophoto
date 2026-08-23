@@ -79,34 +79,39 @@ impl Job for ScanJob {
         let mount_path = self.drive.mount_path.clone().ok_or_else(|| DpError::NotFound {
             message: "drive is offline".into(),
         })?;
-        let mount = std::fs::canonicalize(&mount_path).map_err(|e| DpError::Io {
-            message: format!("failed to canonicalize mount path: {e}"),
-            path: Some(mount_path.clone()),
-        })?;
 
         let sources: Vec<Source> = self.sources.iter().filter(|s| s.enabled).cloned().collect();
 
+        // Canonicalizing the mount is blocking I/O, so it — along with the
+        // nested-source dedup that depends on it and the walk itself —
+        // runs entirely inside `spawn_blocking` rather than on the async
+        // worker thread.
         let walk_cancel = ctx.cancel.clone();
         let walk_home = self.deps.home.clone();
         let walk_events = ctx.events.clone();
         let walk_job_id = self.id.clone();
-        let walk_mount = mount.clone();
-        let walk_sources = sources.clone();
-        let walk = tokio::task::spawn_blocking(move || {
-            collect_media_files(
-                &walk_mount,
-                &walk_sources,
+        let walk_mount_path = mount_path.clone();
+        let (mount, walk) = tokio::task::spawn_blocking(move || -> DpResult<(PathBuf, WalkResult)> {
+            let mount = std::fs::canonicalize(&walk_mount_path).map_err(|e| DpError::Io {
+                message: format!("failed to canonicalize mount path: {e}"),
+                path: Some(walk_mount_path.clone()),
+            })?;
+            let sources = dedup_nested_sources(&mount, sources);
+            let result = collect_media_files(
+                &mount,
+                &sources,
                 walk_home.as_deref(),
                 &walk_cancel,
                 &walk_job_id,
                 &walk_events,
-            )
+            );
+            Ok((mount, result))
         })
         .await
         .map_err(|e| DpError::Io {
             message: format!("scan walk task failed: {e}"),
             path: None,
-        })?;
+        })??;
 
         let done = AtomicU64::new(0);
         let ok = AtomicU64::new(0);
@@ -193,14 +198,49 @@ fn source_root(mount: &Path, rel_path: &str) -> PathBuf {
     }
 }
 
-/// `rel_path` for display in a walk-progress message, `"/"` standing in
-/// for the mount root.
-fn source_display(rel_path: &str) -> &str {
-    if rel_path.is_empty() {
-        "/"
+/// `path` (a directory) for display in a walk-progress message, relative
+/// to `mount` — `"/"` standing in for the mount root itself.
+fn dir_label(path: &Path, mount: &Path) -> String {
+    let rel = rel_path(path, mount).unwrap_or_default();
+    if rel.is_empty() {
+        "/".to_string()
     } else {
-        rel_path
+        rel
     }
+}
+
+/// Drops any enabled source whose root (`mount.join(rel_path)`) is a
+/// descendant of, or identical to, another enabled source's root —
+/// keeping the shallowest survivor of each overlapping group. Without
+/// this, e.g. a drive configured with both `""` (the whole mount) and
+/// `"DCIM"` as sources would walk (and re-upsert) every file under
+/// `DCIM` twice: once as part of the root walk, once as its own source.
+///
+/// Ties (equal depth) can't nest each other and are all kept. Every
+/// dropped source is logged via `tracing::info!` along with the source
+/// that covers it.
+fn dedup_nested_sources(mount: &Path, mut sources: Vec<Source>) -> Vec<Source> {
+    // Shallowest (fewest path components) first, so a shallower source is
+    // always considered — and can cover a deeper one — before that
+    // deeper source is checked.
+    sources.sort_by_key(|s| source_root(mount, &s.rel_path).components().count());
+
+    let mut kept: Vec<(Source, PathBuf)> = Vec::with_capacity(sources.len());
+    for s in sources {
+        let root = source_root(mount, &s.rel_path);
+        if let Some((covering, _)) = kept.iter().find(|(_, kept_root)| root.starts_with(kept_root)) {
+            tracing::info!(
+                skipped_source_id = s.id,
+                skipped_rel_path = %s.rel_path,
+                covering_source_id = covering.id,
+                covering_rel_path = %covering.rel_path,
+                "skipping nested/overlapping scan source"
+            );
+            continue;
+        }
+        kept.push((s, root));
+    }
+    kept.into_iter().map(|(s, _)| s).collect()
 }
 
 /// Sends a `Progress` event with `done: 0, total: 0` and a `current`
@@ -244,11 +284,7 @@ fn collect_media_files(
 
     'sources: for source in sources {
         let root = source_root(mount, &source.rel_path);
-        emit_walk_progress(
-            job_id,
-            events,
-            &format!("Scanning {}", source_display(&source.rel_path)),
-        );
+        emit_walk_progress(job_id, events, &format!("Scanning {}", dir_label(&root, mount)));
 
         let walker = WalkDir::new(&root)
             .into_iter()
@@ -273,7 +309,12 @@ fn collect_media_files(
             entries_since_progress += 1;
             if entries_since_progress >= WALK_PROGRESS_INTERVAL {
                 entries_since_progress = 0;
-                let label = rel_path(entry.path(), mount).unwrap_or_default();
+                let dir_path = if entry.file_type().is_dir() {
+                    entry.path()
+                } else {
+                    entry.path().parent().unwrap_or(mount)
+                };
+                let label = dir_label(dir_path, mount);
                 emit_walk_progress(job_id, events, &format!("Scanning {label}"));
             }
 
@@ -372,28 +413,47 @@ async fn process_file(
     // isn't a real photo/video at all (a corrupt copy, an OS-generated
     // placeholder, ...) rather than a real-but-broken media file worth
     // cataloging with a thumb error. Those are rejected outright instead
-    // of being upserted — see `STUB_MAX_BYTES`.
-    let mut is_stub = false;
+    // of being upserted — see `STUB_MAX_BYTES`. A file only counts as a
+    // stub if *no* size ever rendered successfully: every size is still
+    // attempted (no early `break`), so a small file that fails at 400px
+    // but succeeds at 2000px is accepted like any other real file, with
+    // the 400px failure reported below like a normal thumb error.
+    let mut any_thumb_ok = false;
+    let mut had_thumb_failure = false;
+    let mut small_file_failures: Vec<DpError> = Vec::new();
     for size_px in THUMB_SIZES {
         if deps.store.exists(&hash, size_px) {
+            any_thumb_ok = true;
             continue;
         }
         let render_result = deps.thumbs.render(&file.path, file.ext, size_px).await;
         match render_result {
             Ok(img) => {
+                any_thumb_ok = true;
                 if let Err(e) = deps.store.write(&hash, size_px, &img).await {
                     had_error = true;
                     report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
                 }
             }
             Err(e) => {
-                if size < STUB_MAX_BYTES {
-                    is_stub = true;
-                    break;
+                had_thumb_failure = true;
+                if size >= STUB_MAX_BYTES {
+                    had_error = true;
+                    report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                } else {
+                    // Deferred: only actually reported below if this file
+                    // turns out not to be a stub after all.
+                    small_file_failures.push(e);
                 }
-                had_error = true;
-                report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
             }
+        }
+    }
+    let is_stub = size < STUB_MAX_BYTES && had_thumb_failure && !any_thumb_ok;
+
+    if !is_stub {
+        for e in small_file_failures {
+            had_error = true;
+            report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
         }
     }
 

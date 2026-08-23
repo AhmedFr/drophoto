@@ -373,17 +373,17 @@ async fn scan_with_two_sources_only_indexes_those_trees() {
     assert_eq!(catalog.count_media(None).await.unwrap(), 2);
 
     let rows = catalog.list_media(10, 0).await.unwrap();
-    let mut rel_paths: Vec<&str> = rows.iter().map(|r| r.rel_path.as_str()).collect();
-    rel_paths.sort();
-    assert_eq!(rel_paths, ["DCIM/a.jpg", "Pictures/b.png"]);
-
-    for row in &rows {
-        assert!(
-            row.source_id == Some(dcim.id) || row.source_id == Some(pictures.id),
-            "expected a source_id from one of the two configured sources, got {:?}",
-            row.source_id
-        );
-    }
+    let mut by_rel_path: Vec<(&str, Option<i64>)> =
+        rows.iter().map(|r| (r.rel_path.as_str(), r.source_id)).collect();
+    by_rel_path.sort();
+    assert_eq!(
+        by_rel_path,
+        [
+            ("DCIM/a.jpg", Some(dcim.id)),
+            ("Pictures/b.png", Some(pictures.id))
+        ],
+        "each row must be attributed to the specific source that indexed it"
+    );
 }
 
 #[tokio::test]
@@ -423,6 +423,72 @@ async fn denied_subdir_inside_a_source_is_skipped() {
     assert_eq!(catalog.count_media(None).await.unwrap(), 1);
     let rows = catalog.list_media(10, 0).await.unwrap();
     assert_eq!(rows[0].rel_path, "DCIM/a.jpg");
+}
+
+#[tokio::test]
+async fn nested_sources_are_deduped_keeping_the_shallowest() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("DCIM")).unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("DCIM/a.jpg")).unwrap();
+    // Only reachable via the root source — proves the walk isn't somehow
+    // restricted to just the nested "DCIM" source instead.
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("b.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Nested Source Drive", drive_dir.path()).await;
+    // Both the mount root ("") and "DCIM" (nested inside it) are enabled
+    // — "DCIM" must be dropped as a duplicate of the root walk, so
+    // DCIM/a.jpg is indexed exactly once, attributed to the root source.
+    let root = root_source(&catalog, drive.id).await;
+    let dcim = source(&catalog, drive.id, "DCIM").await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive,
+        vec![root.clone(), dcim.clone()],
+        deps,
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let ok = match terminal {
+        JobEvent::Finished { ok, .. } => ok,
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 2,
+        "each file must be indexed exactly once, events: {events:?}"
+    );
+    assert_eq!(catalog.count_media(None).await.unwrap(), 2);
+
+    let saw_total_two = events
+        .iter()
+        .any(|e| matches!(e, JobEvent::Progress { total: 2, .. }));
+    assert!(
+        saw_total_two,
+        "expected a Progress event with total==2 (no double-count from the nested source), got {events:?}"
+    );
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    for row in &rows {
+        assert_eq!(
+            row.source_id,
+            Some(root.id),
+            "every row must be attributed to the shallowest surviving (root) source, got {row:?}"
+        );
+    }
 }
 
 #[tokio::test]
