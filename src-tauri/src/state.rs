@@ -117,6 +117,19 @@ impl AppState {
         self.start_job("organize", drive_id, make_job)
     }
 
+    /// Starts a sidecar-sync job for `drive_id`, unless a job is already
+    /// running for it — in which case the existing sync's id is returned
+    /// instead of starting a duplicate, or an error if the running job is
+    /// of a *different* kind (see [`job_admission`]). `make_job` builds
+    /// the [`Job`] given the id it will run under.
+    pub fn start_sidecar_sync(
+        &self,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
+        self.start_job("sidecar", drive_id, make_job)
+    }
+
     /// Starts a revert job for `drive_id`, admitted under the exact same
     /// `"organize"` bucket as [`Self::start_organize`] — a scan, an
     /// organize, and a revert are mutually exclusive on a drive. Unlike

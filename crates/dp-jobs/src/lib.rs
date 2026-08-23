@@ -8,6 +8,7 @@ mod prune;
 mod revert;
 mod runner;
 mod scan;
+mod sidecar_sync;
 
 pub use detect::{detect_folders, detect_folders_with_progress};
 pub use organize::{OrganizeDeps, OrganizeJob};
@@ -15,6 +16,7 @@ pub use prune::prune_denied_legacy_rows;
 pub use revert::RevertJob;
 pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};
+pub use sidecar_sync::{SidecarSyncDeps, SidecarSyncJob};
 
 use async_trait::async_trait;
 use dp_core::{DpError, DpResult};
