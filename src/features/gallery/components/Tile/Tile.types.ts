@@ -1,3 +1,9 @@
 import type { Tile } from "@/lib/media/layout";
 
-export type TileProps = { tile: Tile; onOpen: (index: number) => void };
+export type TileProps = {
+  tile: Tile;
+  onOpen: (index: number) => void;
+  selected: boolean;
+  /** `shiftKey` distinguishes a plain (cmd/ctrl-click) toggle from a shift-range select. */
+  onToggle: (index: number, shiftKey: boolean) => void;
+};

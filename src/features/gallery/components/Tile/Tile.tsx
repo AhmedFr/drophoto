@@ -1,9 +1,10 @@
-import { ImageOff, Play } from "lucide-react";
+import { Check, ImageOff, Play } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/media/format";
 import { thumbUrl } from "@/lib/media/thumbUrl";
 import type { TileProps } from "./Tile.types";
 
-export function Tile({ tile, onOpen }: TileProps) {
+export function Tile({ tile, onOpen, selected, onToggle }: TileProps) {
   const { item, width, height, index } = tile;
   const { row, thumb_path, drive_name, online, has_thumb } = item;
 
@@ -12,9 +13,17 @@ export function Tile({ tile, onOpen }: TileProps) {
       role="button"
       tabIndex={0}
       aria-label={row.rel_path}
-      className="group relative shrink-0 cursor-pointer overflow-hidden bg-surface-2 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      className={cn(
+        "group relative shrink-0 cursor-pointer overflow-hidden bg-surface-2 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        selected && "ring-2 ring-foreground ring-inset",
+      )}
       style={{ width, height }}
-      onClick={() => onOpen(index)}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey) onToggle(index, false);
+        else if (e.shiftKey) onToggle(index, true);
+        else onOpen(index);
+      }}
+      onMouseDown={(e) => e.shiftKey && e.preventDefault()}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           onOpen(index);
@@ -24,6 +33,15 @@ export function Tile({ tile, onOpen }: TileProps) {
         }
       }}
     >
+      {selected && (
+        <div
+          data-testid="tile-selected-check"
+          className="absolute top-1.5 left-1.5 z-10 flex size-4 items-center justify-center bg-foreground text-background"
+        >
+          <Check size={11} strokeWidth={2.5} />
+        </div>
+      )}
+
       {has_thumb ? (
         <img
           loading="lazy"

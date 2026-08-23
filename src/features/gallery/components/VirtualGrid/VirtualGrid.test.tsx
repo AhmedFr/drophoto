@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
 import { virtualizerMockFactory } from "@/test/mockVirtualizer";
@@ -76,14 +76,14 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
 
 it("renders a month header with a label and item count", () => {
   const items = [item(1), item(2)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} />);
+  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
   expect(screen.getByText("September 2025")).toBeInTheDocument();
   expect(screen.getByText("2")).toBeInTheDocument();
 });
 
 it("renders a tile per item with alt text", () => {
   const items = [item(1), item(2), item(3)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} />);
+  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
   const imgs = screen.getAllByRole("img");
   expect(imgs).toHaveLength(3);
   expect(imgs[0]).toHaveAttribute("alt", "photos/1.jpg");
@@ -92,7 +92,7 @@ it("renders a tile per item with alt text", () => {
 it("calls onNearEnd once when the last rendered row is near the end of the layout", () => {
   const items = Array.from({ length: 3 }, (_, i) => item(i + 1));
   const onNearEnd = vi.fn();
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} />);
+  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />);
   expect(onNearEnd).toHaveBeenCalledTimes(1);
 });
 
@@ -100,15 +100,15 @@ it("does not call onNearEnd again for the same layout length", () => {
   const items = Array.from({ length: 3 }, (_, i) => item(i + 1));
   const onNearEnd = vi.fn();
   const { rerender } = render(
-    <VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} />,
+    <VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />,
   );
-  rerender(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} />);
+  rerender(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />);
   expect(onNearEnd).toHaveBeenCalledTimes(1);
 });
 
 it("re-measures the virtualizer when the container is resized", () => {
   const items = [item(1), item(2)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} />);
+  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
 
   const callsAfterMount = virtualizerSpies.measure.mock.calls.length;
   expect(callsAfterMount).toBeGreaterThan(0);
@@ -121,4 +121,37 @@ it("re-measures the virtualizer when the container is resized", () => {
   });
 
   expect(virtualizerSpies.measure.mock.calls.length).toBeGreaterThan(callsAfterMount);
+});
+
+it("marks a tile as selected when its id is in selectedIds", () => {
+  const items = [item(1), item(2)];
+  render(
+    <VirtualGrid
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set([2])}
+      onToggle={() => {}}
+    />,
+  );
+  expect(screen.getByTestId("tile-selected-check")).toBeInTheDocument();
+});
+
+it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {
+  const items = [item(1), item(2)];
+  const onOpen = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <VirtualGrid
+      items={items}
+      targetRowHeight={200}
+      onOpen={onOpen}
+      selectedIds={new Set()}
+      onToggle={onToggle}
+    />,
+  );
+  const tiles = screen.getAllByRole("button");
+  fireEvent.click(tiles[1], { metaKey: true });
+  expect(onToggle).toHaveBeenCalledWith(1, false);
+  expect(onOpen).not.toHaveBeenCalled();
 });

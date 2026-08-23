@@ -27,12 +27,23 @@ type GalleryState = {
   setTypeFilter: (typeFilter: TypeFilter) => void;
   setSort: (sort: SortOption) => void;
   setDensity: (density: Density) => void;
+  /** Selected media ids, insertion-ordered. Not persisted — see `partialize`. */
+  selectedIds: number[];
+  /** Index (in the loaded items array) of the last plainly-toggled tile, used as the shift-range anchor. Not persisted. */
+  anchorIndex: number | null;
+  /** Plain (cmd/ctrl-click) toggle: flips `id`'s membership and sets it as the new anchor. */
+  toggleSelected: (id: number, index: number) => void;
+  /** Shift-range select: adds `ids` to the selection without clearing it or moving the anchor. */
+  selectRange: (ids: number[]) => void;
+  clearSelection: () => void;
 };
 
 const DEFAULTS = {
   typeFilter: "ALL" as TypeFilter,
   sort: DEFAULT_SORT,
   density: "Comfortable" as Density,
+  selectedIds: [] as number[],
+  anchorIndex: null as number | null,
 };
 
 type PersistedGalleryState = Partial<Pick<GalleryState, "typeFilter" | "sort" | "density">>;
@@ -61,6 +72,20 @@ export const useGalleryStore = create<GalleryState>()(
       setTypeFilter: (typeFilter) => set({ typeFilter }),
       setSort: (sort) => set({ sort }),
       setDensity: (density) => set({ density }),
+      toggleSelected: (id, index) =>
+        set((state) => ({
+          selectedIds: state.selectedIds.includes(id)
+            ? state.selectedIds.filter((selectedId) => selectedId !== id)
+            : [...state.selectedIds, id],
+          anchorIndex: index,
+        })),
+      selectRange: (ids) =>
+        set((state) => {
+          const existing = new Set(state.selectedIds);
+          const toAdd = ids.filter((id) => !existing.has(id));
+          return { selectedIds: [...state.selectedIds, ...toAdd] };
+        }),
+      clearSelection: () => set({ selectedIds: [], anchorIndex: null }),
     }),
     {
       name: "drophoto.gallery",

@@ -37,7 +37,13 @@ class ResizeObserverStub {
 }
 
 beforeEach(() => {
-  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable" });
+  useGalleryStore.setState({
+    typeFilter: "ALL",
+    sort: "NEWEST",
+    density: "Comfortable",
+    selectedIds: [],
+    anchorIndex: null,
+  });
   useGalleryStore.persist.clearStorage();
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
 });
@@ -255,4 +261,137 @@ it("clamps the open lightbox index when a refetch shrinks the item list", async 
   await waitFor(() => {
     expect(within(screen.getByRole("dialog")).getByText("01 / 1")).toBeInTheDocument();
   });
+});
+
+it("shows the selection bar with a count after a cmd-click", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2), item(3)];
+    if (cmd === "count_media") return 3;
+    return undefined;
+  });
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+
+  expect(await screen.findByText("1 SELECTED")).toBeInTheDocument();
+});
+
+it("does not show the selection bar when nothing is selected", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+  expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
+});
+
+it("clears the selection when CLEAR is clicked", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(screen.getByRole("button", { name: "CLEAR" }));
+  expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
+});
+
+it("a shift-click with no prior anchor behaves like a plain toggle", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2), item(3)];
+    if (cmd === "count_media") return 3;
+    return undefined;
+  });
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[1], { shiftKey: true });
+
+  expect(await screen.findByText("1 SELECTED")).toBeInTheDocument();
+});
+
+it("a shift-click after a cmd-click selects the range between them", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2), item(3), item(4)];
+    if (cmd === "count_media") return 4;
+    return undefined;
+  });
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  fireEvent.click(tiles[2], { shiftKey: true });
+
+  expect(await screen.findByText("3 SELECTED")).toBeInTheDocument();
+});
+
+it("still opens the lightbox on a plain click of a selected tile", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(tiles[0]);
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
+});
+
+it("Escape clears a non-empty selection without closing the open lightbox", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(tiles[1]);
+  const dialog = await screen.findByRole("dialog");
+
+  fireEvent.keyDown(dialog, { key: "Escape" });
+
+  await waitFor(() => expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument());
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+it("clears the selection on unmount", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { unmount } = renderWithRouter(
+    <QueryClientProvider client={queryClient}>
+      <GalleryPage />
+    </QueryClientProvider>,
+  );
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  unmount();
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
 });

@@ -6,7 +6,14 @@ import { MonthHeader } from "./MonthHeader";
 import { useContainerWidth } from "./useContainerWidth";
 import type { VirtualGridProps } from "./VirtualGrid.types";
 
-function VirtualGridImpl({ items, targetRowHeight, onOpen, onNearEnd }: VirtualGridProps) {
+function VirtualGridImpl({
+  items,
+  targetRowHeight,
+  onOpen,
+  onNearEnd,
+  selectedIds,
+  onToggle,
+}: VirtualGridProps) {
   // `useContainerWidth` measures `contentRect.width`, which already excludes
   // the scroll element's `p-4` padding — no further subtraction needed here.
   const { ref, width } = useContainerWidth<HTMLDivElement>();
@@ -73,7 +80,12 @@ function VirtualGridImpl({ items, targetRowHeight, onOpen, onNearEnd }: VirtualG
               {row.kind === "header" ? (
                 <MonthHeader label={row.label} count={row.count} />
               ) : (
-                <JustifiedRow tiles={row.tiles} onOpen={onOpen} />
+                <JustifiedRow
+                  tiles={row.tiles}
+                  onOpen={onOpen}
+                  selectedIds={selectedIds}
+                  onToggle={onToggle}
+                />
               )}
             </div>
           );
