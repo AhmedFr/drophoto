@@ -94,6 +94,14 @@ impl MediaKind {
     }
 }
 
+/// A user-defined label, applied to media rows via `media_tags`. Names are
+/// unique case-insensitively (see the `tags` table's `COLLATE NOCASE`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MediaRow {
     pub id: i64,
@@ -121,6 +129,11 @@ pub struct MediaRow {
     /// scanned before sources existed, or otherwise not attributable to a
     /// configured source.
     pub source_id: Option<i64>,
+    /// Whether this row's tags have changed since its sidecar file was
+    /// last written — set by `Catalog::tag_media` when a tag link
+    /// actually changes, cleared by `Catalog::clear_sidecar_pending` once
+    /// the sidecar has been rewritten.
+    pub sidecar_pending: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

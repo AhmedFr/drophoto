@@ -816,6 +816,34 @@ impl Catalog for FailingCatalog {
     async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {
         self.0.count_legacy_unorganized(drive_id, root).await
     }
+
+    async fn list_tags(&self) -> DpResult<Vec<dp_core::Tag>> {
+        self.0.list_tags().await
+    }
+
+    async fn tags_for_media(&self, ids: &[i64]) -> DpResult<Vec<(i64, dp_core::Tag)>> {
+        self.0.tags_for_media(ids).await
+    }
+
+    async fn tag_media(&self, ids: &[i64], add: &[String], remove: &[i64]) -> DpResult<()> {
+        self.0.tag_media(ids, add, remove).await
+    }
+
+    async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>> {
+        self.0.tag_names_for_media(media_id).await
+    }
+
+    async fn list_sidecar_pending(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        self.0.list_sidecar_pending(drive_id).await
+    }
+
+    async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
+        self.0.clear_sidecar_pending(media_id).await
+    }
+
+    async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
+        self.0.mark_sidecar_pending(media_id).await
+    }
 }
 
 #[tokio::test]

@@ -5,11 +5,12 @@ mod organize_jobs;
 mod query;
 mod sources;
 mod sqlite;
+mod tags;
 
 use async_trait::async_trait;
 use dp_core::{
     DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewSource, OrganizeItemRow, OrganizeJobRow,
-    OrganizeRule, Source, UnorganizedSummary,
+    OrganizeRule, Source, Tag, UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -74,6 +75,18 @@ pub trait Catalog: Send + Sync {
     /// still unorganized, and outside `root` — see
     /// `dp_core::UnorganizedSummary::legacy`.
     async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64>;
+    async fn list_tags(&self) -> DpResult<Vec<Tag>>;
+    /// (media_id, tag) pairs for every id in `ids`, tags ordered by name.
+    async fn tags_for_media(&self, ids: &[i64]) -> DpResult<Vec<(i64, Tag)>>;
+    /// Creates any missing tags in `add` (name-insensitive), links them to every id,
+    /// unlinks every tag id in `remove`, and sets `sidecar_pending = 1` on every id
+    /// whose tag set actually changed. Whole call in one transaction.
+    async fn tag_media(&self, ids: &[i64], add: &[String], remove: &[i64]) -> DpResult<()>;
+    /// Tag names for one media row, ordered by name (for sidecar writing).
+    async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>>;
+    async fn list_sidecar_pending(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
+    async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
 }
 
 #[async_trait]
@@ -219,5 +232,33 @@ impl Catalog for SqliteCatalog {
 
     async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {
         organize::count_legacy_unorganized(&self.pool, drive_id, root).await
+    }
+
+    async fn list_tags(&self) -> DpResult<Vec<Tag>> {
+        tags::list_tags(&self.pool).await
+    }
+
+    async fn tags_for_media(&self, ids: &[i64]) -> DpResult<Vec<(i64, Tag)>> {
+        tags::tags_for_media(&self.pool, ids).await
+    }
+
+    async fn tag_media(&self, ids: &[i64], add: &[String], remove: &[i64]) -> DpResult<()> {
+        tags::tag_media(&self.pool, ids, add, remove).await
+    }
+
+    async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>> {
+        tags::tag_names_for_media(&self.pool, media_id).await
+    }
+
+    async fn list_sidecar_pending(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        tags::list_sidecar_pending(&self.pool, drive_id).await
+    }
+
+    async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
+        tags::clear_sidecar_pending(&self.pool, media_id).await
+    }
+
+    async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
+        tags::mark_sidecar_pending(&self.pool, media_id).await
     }
 }
