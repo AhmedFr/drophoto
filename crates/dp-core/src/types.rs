@@ -265,6 +265,8 @@ pub struct MediaItem {
 pub struct DetectedFolder {
     pub rel_path: String,
     pub media_count: u64,
+    /// Sum of on-disk sizes (`symlink_metadata().len()`) of every media
+    /// file counted toward `media_count`.
     pub bytes: u64,
     pub suggested: bool,
 }

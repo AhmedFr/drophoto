@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use dp_core::denylist::is_denied_path;
-use dp_core::{DetectedFolder, DpResult, MediaKind};
+use dp_core::denylist::{is_denied_name, is_denied_path};
+use dp_core::{DetectedFolder, DpError, DpResult, MediaKind};
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
@@ -18,11 +18,28 @@ const AGGREGATE_THRESHOLD: u64 = 20;
 /// regardless of media count.
 const SUGGESTED_NAMES: &[&str] = &["dcim", "pictures", "desktop", "downloads"];
 
+/// Folder names that act as rollup boundaries: aggregation never picks a
+/// target shallower than one of these, so e.g. a `Pictures` folder is
+/// always reported as itself (or rolled up no further than itself), never
+/// silently absorbed into some ancestor above it. Case-insensitive.
+const ROLLUP_BOUNDARY_NAMES: &[&str] = &["pictures", "desktop", "downloads", "dcim", "photos", "camera"];
+
 /// Walks `mount` (up to `max_depth` levels deep), skipping anything on the
 /// safety deny-list, and returns the folders worth offering as import
 /// sources: folders that directly contain media are rolled up into the
 /// shallowest ancestor whose subtree holds >= 20 media files, and reported
-/// individually otherwise. Sorted by `media_count` descending, then path.
+/// individually otherwise. `bytes` on each result is the sum of
+/// `symlink_metadata().len()` for every media file counted toward it.
+/// Sorted by `media_count` descending, then path.
+///
+/// `mount` is canonicalized before walking (failure -> `DpError::Io`), both
+/// to resolve symlinks consistently and so the deny-list's `..`-rejection
+/// can't be bypassed by a non-canonical starting point.
+///
+/// `home` is the caller's resolved `$HOME` (or `None` if it couldn't be
+/// determined), used for the `home/Library` deny rule; resolving it from
+/// the environment is the caller's job (e.g. the command layer, which
+/// should `tracing::warn!` when it's absent).
 ///
 /// Synchronous — callers running inside an async context should wrap this
 /// in `spawn_blocking`, as [`crate::scan`]'s walk does.
@@ -33,19 +50,43 @@ const SUGGESTED_NAMES: &[&str] = &["dcim", "pictures", "desktop", "downloads"];
 pub fn detect_folders(
     mount: &Path,
     max_depth: usize,
+    home: Option<&Path>,
     cancel: &CancellationToken,
 ) -> DpResult<Vec<DetectedFolder>> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mount = std::fs::canonicalize(mount).map_err(|e| DpError::Io {
+        message: format!("failed to canonicalize mount path: {e}"),
+        path: Some(mount.display().to_string()),
+    })?;
 
     // Media file count/bytes directly inside each directory (not
     // including subdirectories).
     let mut direct: HashMap<PathBuf, (u64, u64)> = HashMap::new();
 
-    let walker = WalkDir::new(mount)
+    let walker = WalkDir::new(&mount)
         .follow_links(false)
         .max_depth(max_depth)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_denied_path(e.path(), home.as_deref()));
+        .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy();
+            // Fast, entry-local checks first — these cover the vast
+            // majority of denied directories (hidden, housekeeping names,
+            // package suffixes, and the common "external volume mounted
+            // at an arbitrary path, with its own System folder" case)
+            // without re-walking every ancestor component back to the
+            // filesystem root for each entry.
+            if is_denied_name(&name) {
+                return false;
+            }
+            if e.depth() == 1 && name.eq_ignore_ascii_case("System") {
+                return false;
+            }
+            // Remaining rules (absolute system prefixes, `/Users/*/Library`,
+            // `home/Library`, `/Volumes/*/System`) need full-path context.
+            !is_denied_path(e.path(), home)
+        });
 
     for entry in walker {
         if cancel.is_cancelled() {
@@ -55,26 +96,35 @@ pub fn detect_folders(
         if entry.depth() == 0 {
             continue;
         }
-        let path = entry.path();
-        let Ok(meta) = std::fs::symlink_metadata(path) else {
-            continue;
-        };
-        if !meta.is_file() {
+        // Check the entry's type before doing any stat work below.
+        if !entry.file_type().is_file() {
             continue;
         }
+        let path = entry.path();
         let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
             continue;
         };
         if MediaKind::from_ext(ext).is_none() {
             continue;
         }
+        // Only a regular file counts — re-stat via `symlink_metadata` (not
+        // `entry.metadata()`, which under `follow_links(false)` already
+        // reports symlink type, but we want an explicit, cheap-to-audit
+        // guard here) and skip anything that fails to stat or isn't a
+        // plain file.
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
         let Some(dir) = path.parent() else { continue };
-        let entry = direct.entry(dir.to_path_buf()).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += meta.len();
+        let slot = direct.entry(dir.to_path_buf()).or_insert((0, 0));
+        slot.0 += 1;
+        slot.1 += meta.len();
     }
 
-    Ok(roll_up(mount, direct))
+    Ok(roll_up(&mount, direct))
 }
 
 /// Depth of `path` relative to `mount` (number of path components below
@@ -110,21 +160,59 @@ fn rel_path_string(path: &Path, mount: &Path) -> String {
         .join("/")
 }
 
+/// The shallowest depth (relative to `mount`, 1-based) that aggregation is
+/// allowed to consider for `dir`: the depth of the deepest "rollup
+/// boundary" among `dir`'s ancestors (inclusive of `dir` itself), or `1`
+/// if none of them are boundaries.
+///
+/// A boundary is either a [`ROLLUP_BOUNDARY_NAMES`] folder (`Pictures`,
+/// `DCIM`, ...) or a `Users/<name>` directory (depth 2, directly under a
+/// top-level `Users` folder) — both represent "obviously a specific,
+/// meaningful folder" that a shallower ancestor should never silently
+/// swallow.
+fn boundary_min_depth(dir: &Path, mount: &Path) -> usize {
+    let Ok(rel) = dir.strip_prefix(mount) else {
+        return 1;
+    };
+    let names: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+
+    let mut min_depth = 1usize;
+    for (i, name) in names.iter().enumerate() {
+        let depth = i + 1;
+        let is_well_known = ROLLUP_BOUNDARY_NAMES.contains(&name.as_str());
+        let is_users_child = depth == 2 && names[0] == "users";
+        if is_well_known || is_users_child {
+            min_depth = min_depth.max(depth);
+        }
+    }
+    min_depth
+}
+
 /// Rolls per-directory direct counts up into shallowest-qualifying
 /// ancestors and produces the final, sorted [`DetectedFolder`] list. See
 /// module docs / task brief for the aggregation rule.
 fn roll_up(mount: &Path, direct: HashMap<PathBuf, (u64, u64)>) -> Vec<DetectedFolder> {
-    // subtree[d] = sum of direct[] for d and every descendant directory
-    // that holds media. Built by, for each directory with direct media,
-    // adding its counts into every one of its ancestors (mount included).
+    // subtree[a] = sum of direct[] for every directory `d` such that `a`
+    // is an ancestor of (or equal to) `d`, *and* `a`'s depth is not
+    // shallower than `d`'s own rollup boundary — i.e. a boundary directory
+    // never contributes its count to an ancestor above the boundary. This
+    // is what makes e.g. `Users/alice/Pictures` un-absorbable into
+    // `Users/alice` or `Users`.
     let mut subtree: HashMap<PathBuf, (u64, u64)> = HashMap::new();
     for (dir, &(count, bytes)) in &direct {
-        let mut ancestor = PathBuf::new();
-        for comp in dir.components() {
-            ancestor.push(comp);
-            let entry = subtree.entry(ancestor.clone()).or_insert((0, 0));
-            entry.0 += count;
-            entry.1 += bytes;
+        let depth = rel_depth(dir, mount);
+        if depth == 0 {
+            continue;
+        }
+        let min_depth = boundary_min_depth(dir, mount);
+        for d in min_depth..=depth {
+            let ancestor = ancestor_at_depth(dir, mount, d);
+            let slot = subtree.entry(ancestor).or_insert((0, 0));
+            slot.0 += count;
+            slot.1 += bytes;
         }
     }
 
@@ -140,29 +228,29 @@ fn roll_up(mount: &Path, direct: HashMap<PathBuf, (u64, u64)>) -> Vec<DetectedFo
         if depth == 0 {
             // Mount root itself: always reported individually, at its own
             // direct count — never an aggregation target.
-            let (c, b) = direct[dir];
+            let (c, b) = direct.get(dir).copied().unwrap_or_default();
             reported.insert(String::new(), (c, b));
             continue;
         }
 
-        let mut target: Option<PathBuf> = None;
-        for d in 1..=depth {
+        let min_depth = boundary_min_depth(dir, mount);
+        let mut target: Option<(PathBuf, u64, u64)> = None;
+        for d in min_depth..=depth {
             let ancestor = ancestor_at_depth(dir, mount, d);
-            if let Some(&(count, _)) = subtree.get(&ancestor) {
+            if let Some(&(count, bytes)) = subtree.get(&ancestor) {
                 if count >= AGGREGATE_THRESHOLD {
-                    target = Some(ancestor);
+                    target = Some((ancestor, count, bytes));
                     break;
                 }
             }
         }
 
         match target {
-            Some(ancestor) => {
-                let (c, b) = subtree[&ancestor];
+            Some((ancestor, c, b)) => {
                 reported.insert(rel_path_string(&ancestor, mount), (c, b));
             }
             None => {
-                let (c, b) = direct[dir];
+                let (c, b) = direct.get(dir).copied().unwrap_or_default();
                 reported.insert(rel_path_string(dir, mount), (c, b));
             }
         }

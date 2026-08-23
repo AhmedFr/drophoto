@@ -107,19 +107,56 @@ fn is_under_home_library(abs: &Path, home: &Path) -> bool {
     abs_lower.len() >= lib_lower.len() && abs_lower[..lib_lower.len()] == lib_lower[..]
 }
 
+/// Whether `abs` is (or is under) `/Users/<name>/Library` for *any* user —
+/// not just the caller-supplied `home` — since a scan can stumble onto
+/// another account's home directory (e.g. `/Users/Shared/../otheruser`) as
+/// easily as the current user's.
+fn is_under_any_users_library(abs: &Path) -> bool {
+    let names: Vec<String> = abs
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    names.len() >= 3 && names[0] == "users" && names[2] == "library"
+}
+
 /// Whether `abs` (a file or a directory) falls under drophoto's safety
 /// deny-list: fixed absolute system prefixes, `<mount>/System`,
-/// `home/Library` (when `home` is known), or any ancestor component whose
-/// name is itself denied ([`is_denied_name`]) — housekeeping directories,
-/// hidden entries, and app/library package bundles.
+/// `/Users/<name>/Library` (for any user), `home/Library` (when `home` is
+/// known), or any ancestor component whose name is itself denied
+/// ([`is_denied_name`]) — housekeeping directories, hidden entries, and
+/// app/library package bundles.
+///
+/// **Fails closed**: a non-absolute path is denied outright (relative
+/// paths can't be checked against the absolute rules above, and treating
+/// them as safe would be a silent bypass), as is any path containing a
+/// `..` (`ParentDir`) component (it could walk back out of an
+/// already-approved subtree into a denied one, e.g.
+/// `/Users/me/Pictures/../../../System`). Callers are expected to hand in
+/// a canonicalized, absolute path.
 ///
 /// Checks every component of `abs`, so a file nested under a denied
-/// ancestor (e.g. `Foo.app/Contents/x.jpg`) is denied too.
+/// ancestor (e.g. `Foo.app/Contents/x.jpg`) is denied too — including any
+/// hidden (leading-`.`) *ancestor* directory anywhere above `abs`, not just
+/// within whatever subtree a caller happens to be walking. That's correct
+/// for real mounts (never hidden), but a trap for test fixtures built with
+/// `tempfile::tempdir()`, whose default directory name is dot-prefixed.
 pub fn is_denied_path(abs: &Path, home: Option<&Path>) -> bool {
+    if !abs.is_absolute() {
+        return true;
+    }
+    if abs.components().any(|c| matches!(c, Component::ParentDir)) {
+        return true;
+    }
     if is_under_absolute_system_prefix(abs) {
         return true;
     }
     if is_under_mount_system(abs) {
+        return true;
+    }
+    if is_under_any_users_library(abs) {
         return true;
     }
     if let Some(home) = home {
@@ -129,6 +166,12 @@ pub fn is_denied_path(abs: &Path, home: Option<&Path>) -> bool {
     }
     let mut ancestor = PathBuf::new();
     for comp in abs.components() {
+        // `Prefix` (Windows drive letters, e.g. `C:`) never occurs on the
+        // Unix targets this app runs on; skip it explicitly rather than
+        // letting it fall through to the `Normal` check below.
+        if matches!(comp, Component::Prefix(_)) {
+            continue;
+        }
         ancestor.push(comp);
         if let Component::Normal(name) = comp {
             if is_denied_name(&name.to_string_lossy()) {
@@ -214,7 +257,10 @@ mod tests {
 
     #[test]
     fn without_home_library_rule_is_skipped() {
-        assert!(!is_denied_path(Path::new("/Users/ahmed/Library/x"), None));
+        // A non-/Users home (e.g. Linux-style) isn't caught by the
+        // always-on "any /Users/<name>/Library" rule, so without `home`
+        // supplied there's nothing left to deny it.
+        assert!(!is_denied_path(Path::new("/home/ahmed/Library/x"), None));
     }
 
     #[test]
@@ -295,6 +341,41 @@ mod tests {
                 is_denied_path(Path::new(p), Some(home))
             );
         }
+    }
+
+    #[test]
+    fn relative_paths_fail_closed() {
+        assert!(is_denied_path(Path::new("Library/Preferences"), None));
+        assert!(is_denied_path(Path::new("Pictures/img.jpg"), None));
+    }
+
+    #[test]
+    fn parent_dir_components_fail_closed() {
+        assert!(is_denied_path(
+            Path::new("/Users/me/Pictures/../../../System/x"),
+            None
+        ));
+        // Even one that "resolves" to somewhere harmless must still be
+        // denied — the point is refusing to reason about `..` at all.
+        assert!(is_denied_path(
+            Path::new("/Volumes/Backup/Pics/../Pics/x.jpg"),
+            None
+        ));
+    }
+
+    #[test]
+    fn any_users_library_is_denied_regardless_of_caller_home() {
+        assert!(is_denied_path(Path::new("/Users/bob/Library/x"), None));
+        assert!(is_denied_path(
+            Path::new("/Users/bob/Library"),
+            Some(Path::new("/Users/ahmed"))
+        ));
+        assert!(is_denied_path(Path::new("/USERS/bob/LIBRARY/x"), None));
+    }
+
+    #[test]
+    fn users_non_library_top_level_dir_is_allowed() {
+        assert!(!is_denied_path(Path::new("/Users/bob/Pictures/x.jpg"), None));
     }
 
     #[test]
