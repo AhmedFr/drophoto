@@ -293,12 +293,14 @@ async fn reverts_items_in_reverse_of_the_original_order() {
 }
 
 /// After a *successful* revert, the original job's own `organize_items`
-/// rows are stale: replaying them again must not blindly move whatever
-/// now happens to sit at the old `new_rel_path`. The catalog's
-/// `rel_path` no longer agreeing with the stale item is exactly the
-/// identity check's job.
+/// rows are stale: replaying them again must not touch anything — the
+/// item is already exactly where the revert would have put it, so it's
+/// recorded `SkippedCollision` ("already reverted"), not re-moved and
+/// not failed. A second revert over an already-fully-reverted job is
+/// itself refused at the command layer (see `check_revertable`); this
+/// test exercises the job's own handling of a stale item directly.
 #[tokio::test]
-async fn a_second_revert_over_stale_already_reverted_items_fails_the_identity_check() {
+async fn a_second_revert_over_an_already_reverted_item_skips_it_without_touching_anything() {
     let drive_dir = tempfile::tempdir().unwrap();
     let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
 
@@ -322,25 +324,38 @@ async fn a_second_revert_over_stale_already_reverted_items_fails_the_identity_ch
     assert!(matches!(terminal, JobEvent::Finished { ok: 1, failed: 0, .. }));
 
     // Second revert attempt over the *same* (now-stale) organize items:
-    // the catalog's rel_path is "a.jpg" again, not "archive/a.jpg" —
-    // must be refused as a conflict, not treated as a missing source.
+    // the catalog's rel_path is "a.jpg" again, and the real file is
+    // sitting right there with the recorded size — already reverted,
+    // must be skipped rather than treated as a conflict or a failure.
     let revert_row_id_2 = catalog
         .create_revert_job(drive.id, organize_job_id, 1)
         .await
         .unwrap();
     let (events2, terminal2) = run_revert(&catalog, drive, revert_row_id_2, organize_items).await;
-    let failed = match terminal2 {
-        JobEvent::Finished { failed, .. } => failed,
+    let (ok, skipped, failed) = match terminal2 {
+        JobEvent::Finished {
+            ok, skipped, failed, ..
+        } => (ok, skipped, failed),
         other => panic!("expected Finished, got {other:?} (events: {events2:?})"),
     };
-    assert_eq!(failed, 1, "events: {events2:?}");
-    let saw_conflict = events2.iter().any(
-        |e| matches!(e, JobEvent::ItemError { code, message, .. } if code == "conflict" && message == "media moved since this job"),
-    );
-    assert!(
-        saw_conflict,
-        "expected a \"media moved since this job\" ItemError, got {events2:?}"
-    );
+    assert_eq!((ok, skipped, failed), (0, 1, 0), "events: {events2:?}");
+
+    let revert_items_2 = catalog.list_organize_items(revert_row_id_2, 10).await.unwrap();
+    assert_eq!(revert_items_2.len(), 1);
+    assert_eq!(revert_items_2[0].status, PlanStatus::SkippedCollision);
+    assert_eq!(revert_items_2[0].error.as_deref(), Some("already reverted"));
+
+    // A second attempt that only skipped already-reverted items must
+    // still finish "done" (not "failed"), and this second revert row
+    // itself now counts as the one that "reverted" the organize job.
+    let job_row_2 = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == revert_row_id_2)
+        .unwrap();
+    assert_eq!(job_row_2.status, "done");
 
     assert_eq!(
         std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
@@ -566,6 +581,117 @@ async fn a_revert_where_every_item_fails_does_not_block_a_retry() {
     assert_eq!(
         std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
         b"content-a"
+    );
+}
+
+/// The realistic shape of a retry: two items organized together, one
+/// revert attempt manages the other but not the first (its destination
+/// is occupied), and a second attempt — after the obstruction clears —
+/// both finishes the still-outstanding item and recognizes the
+/// already-reverted one as done rather than re-touching it.
+#[tokio::test]
+async fn a_retry_after_a_partial_revert_skips_the_already_reverted_item_and_finishes_the_rest() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+    let b_size = write(&drive_dir.path().join("b.jpg"), b"content-b");
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+    let b_id = catalog
+        .upsert_media(nm(drive.id, "b.jpg", "h-b", b_size))
+        .await
+        .unwrap();
+
+    let items = vec![
+        planned(a_id, "a.jpg", "archive/a.jpg"),
+        planned(b_id, "b.jpg", "archive/b.jpg"),
+    ];
+    let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
+
+    // Occupy b.jpg's original location so the revert fails on it —
+    // items are reverted in reverse of the original order, so b.jpg is
+    // attempted first and a.jpg second.
+    std::fs::write(drive_dir.path().join("b.jpg"), b"in the way").unwrap();
+
+    let revert_row_id_1 = catalog
+        .create_revert_job(drive.id, organize_job_id, 2)
+        .await
+        .unwrap();
+    let (_events1, terminal1) =
+        run_revert(&catalog, drive.clone(), revert_row_id_1, organize_items.clone()).await;
+    assert!(matches!(terminal1, JobEvent::Finished { ok: 1, failed: 1, .. }));
+
+    // a.jpg really did come back; b.jpg is still organized (untouched).
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
+        b"content-a"
+    );
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/b.jpg")).unwrap(),
+        b"content-b"
+    );
+
+    let organize_row_after_failure = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == organize_job_id)
+        .unwrap();
+    assert_eq!(organize_row_after_failure.reverted_by_job_id, None);
+
+    // Clear the obstruction and retry with the same (untouched) organize
+    // items.
+    std::fs::remove_file(drive_dir.path().join("b.jpg")).unwrap();
+
+    let revert_row_id_2 = catalog
+        .create_revert_job(drive.id, organize_job_id, 2)
+        .await
+        .unwrap();
+    let (events2, terminal2) = run_revert(&catalog, drive, revert_row_id_2, organize_items).await;
+    let (ok, skipped, failed) = match terminal2 {
+        JobEvent::Finished {
+            ok, skipped, failed, ..
+        } => (ok, skipped, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events2:?})"),
+    };
+    assert_eq!((ok, skipped, failed), (1, 1, 0), "events: {events2:?}");
+
+    let revert_items_2 = catalog.list_organize_items(revert_row_id_2, 10).await.unwrap();
+    let a_item = revert_items_2.iter().find(|i| i.media_id == a_id).unwrap();
+    assert_eq!(a_item.status, PlanStatus::SkippedCollision);
+    assert_eq!(a_item.error.as_deref(), Some("already reverted"));
+    let b_item = revert_items_2.iter().find(|i| i.media_id == b_id).unwrap();
+    assert_eq!(b_item.status, PlanStatus::Moved);
+
+    let job_row_2 = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == revert_row_id_2)
+        .unwrap();
+    assert_eq!(job_row_2.status, "done");
+
+    let organize_row_after_success = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == organize_job_id)
+        .unwrap();
+    assert_eq!(
+        organize_row_after_success.reverted_by_job_id,
+        Some(revert_row_id_2)
+    );
+
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("b.jpg")).unwrap(),
+        b"content-b"
     );
 }
 
