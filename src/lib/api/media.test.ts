@@ -32,6 +32,7 @@ const item: MediaItem = {
   drive_name: "Kodachrome",
   online: true,
   original_path: null,
+  has_thumb: true,
 };
 
 const query: MediaQuery = {

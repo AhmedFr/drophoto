@@ -303,6 +303,11 @@ pub struct MediaItem {
     pub drive_name: String,
     pub online: bool,
     pub original_path: Option<String>,
+    /// Whether a 400px thumbnail exists on disk for this row. `false` for
+    /// older catalog rows scanned before thumbnailing existed, or whose
+    /// thumbnail was otherwise never generated — the frontend renders a
+    /// placeholder tile instead of requesting `thumb_path` in that case.
+    pub has_thumb: bool,
 }
 
 /// A folder discovered by `dp_jobs::detect::detect_folders` that directly

@@ -41,6 +41,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
     drive_name: "Kodachrome",
     online: true,
     original_path: `/Volumes/Kodachrome/photos/${id}.jpg`,
+    has_thumb: true,
     ...overrides,
   };
 }
@@ -115,6 +116,22 @@ it("falls back to the thumb image when the preview fails to load", () => {
   fireEvent.error(img);
 
   expect(img.src).toContain("/tmp/thumbs/hash1/400.webp");
+});
+
+it("shows a placeholder instead of an img when the current item has no thumbnail", () => {
+  render(
+    <Lightbox
+      items={[item(1, { has_thumb: false, row: { ...item(1).row, ext: "arw" } })]}
+      index={0}
+      onClose={vi.fn()}
+      onPrev={vi.fn()}
+      onNext={vi.fn()}
+    />,
+  );
+
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("No preview")).toBeInTheDocument();
+  expect(screen.getByText("ARW")).toBeInTheDocument();
 });
 
 it("calls onNext when pressing ArrowRight", () => {

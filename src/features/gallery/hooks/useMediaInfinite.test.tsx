@@ -37,6 +37,7 @@ function item(id: number): MediaItem {
     drive_name: "Kodachrome",
     online: true,
     original_path: null,
+    has_thumb: true,
   };
 }
 

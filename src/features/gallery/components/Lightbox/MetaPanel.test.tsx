@@ -37,6 +37,7 @@ function item(overrides: Partial<MediaItem> = {}): MediaItem {
     drive_name: "Kodachrome",
     online: true,
     original_path: "/Volumes/Kodachrome/photos/family/beach.jpg",
+    has_thumb: true,
     ...overrides,
   };
 }

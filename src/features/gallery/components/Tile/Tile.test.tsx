@@ -39,6 +39,7 @@ function item(overrides: Partial<MediaItem> = {}): MediaItem {
     drive_name: "Kodachrome",
     online: true,
     original_path: null,
+    has_thumb: true,
     ...overrides,
   };
 }
@@ -97,4 +98,13 @@ it("hides the image on load error", () => {
   const img = screen.getByRole("img");
   img.dispatchEvent(new Event("error", { bubbles: true }));
   expect(img).toHaveStyle({ opacity: "0" });
+});
+
+it("renders a placeholder with the uppercased extension instead of an img when has_thumb is false", () => {
+  const t = tile({ item: item({ has_thumb: false, row: { ...item().row, ext: "heic" } }) });
+  render(<Tile tile={t} onOpen={() => {}} />);
+
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("No preview")).toBeInTheDocument();
+  expect(screen.getByText("HEIC")).toBeInTheDocument();
 });

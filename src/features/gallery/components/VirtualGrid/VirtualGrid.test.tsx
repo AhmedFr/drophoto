@@ -69,6 +69,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
     drive_name: "Kodachrome",
     online: true,
     original_path: null,
+    has_thumb: true,
     ...overrides,
   };
 }

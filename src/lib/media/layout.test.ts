@@ -36,6 +36,7 @@ function makeItem(width: number | null, height: number | null, takenAt: string |
     drive_name: "Drive",
     online: true,
     original_path: null,
+    has_thumb: true,
   };
 }
 
