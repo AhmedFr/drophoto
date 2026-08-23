@@ -1,7 +1,6 @@
 use crate::state::AppState;
 use dp_core::DpError;
 use dp_jobs::{ScanDeps, ScanJob};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
@@ -31,18 +30,13 @@ pub async fn start_scan(state: State<'_, AppState>, drive_id: i64) -> Result<Str
         });
     }
 
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if home.is_none() {
-        tracing::warn!("$HOME is not set; the home/Library deny-list rule will be skipped for this scan");
-    }
-
     let deps = ScanDeps {
         catalog: state.catalog.clone(),
         hasher: state.hasher.clone(),
         metadata: state.metadata.clone(),
         thumbs: state.thumbs.clone(),
         store: state.store.clone(),
-        home,
+        home: state.home.clone(),
     };
 
     state.start_scan(drive_id, |job_id| {

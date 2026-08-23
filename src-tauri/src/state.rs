@@ -7,6 +7,7 @@ use dp_organize::{default_strategy, MoveStrategy};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use dp_volumes::{SysinfoVolumes, VolumeProvider};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
@@ -24,6 +25,13 @@ pub struct AppState {
     pub store: Arc<ThumbStore>,
     pub strategy: Arc<dyn MoveStrategy>,
     pub runner: JobRunner,
+    /// The current user's home directory (`$HOME`), resolved once at
+    /// startup and reused by every command that needs it (the scan and
+    /// source-detection walks, for the deny-list's `home/Library` rule —
+    /// see [`dp_core::denylist::is_denied_path`]). `None` when `$HOME`
+    /// isn't set, which is logged once here rather than on every command
+    /// invocation.
+    pub home: Option<PathBuf>,
     /// Job id of the in-flight job for each `(kind, drive_id)` pair,
     /// where `kind` is `"scan"` or `"organize"`. A drive may have at most
     /// one running job *of any kind* at a time — see [`job_admission`].
@@ -62,6 +70,11 @@ impl AppState {
 
         let hasher: Arc<dyn Hasher> = Arc::new(Blake3Hasher);
 
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if home.is_none() {
+            tracing::warn!("$HOME is not set; the home/Library deny-list rule will be skipped");
+        }
+
         Ok(Self {
             volumes: Arc::new(SysinfoVolumes),
             catalog: Arc::new(catalog),
@@ -71,6 +84,7 @@ impl AppState {
             thumbs: Arc::new(ThumbChain::default_chain()),
             store: Arc::new(ThumbStore::new(thumbs_root)),
             runner,
+            home,
             active_jobs: Mutex::new(HashMap::new()),
         })
     }

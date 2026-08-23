@@ -246,6 +246,7 @@ it("starts a scan, shows live progress from job events, and cancels", async () =
   mockIPC((cmd, args) => {
     if (cmd === "list_drives") return [onlineDrive];
     if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
     if (cmd === "start_scan") {
       startScanArgs = args;
       return "scan-0";
@@ -257,6 +258,7 @@ it("starts a scan, shows live progress from job events, and cancels", async () =
     return undefined;
   });
   renderPage();
+  await screen.findByText("1 source");
 
   fireEvent.click(await screen.findByRole("button", { name: /scan/i }));
   await waitFor(() => expect(startScanArgs).toEqual({ driveId: 1 }));
@@ -298,4 +300,48 @@ it("refetches drives when a drives:changed event arrives", async () => {
   emit("drives:changed", null);
 
   await waitFor(() => expect(listDrivesCalls).toBeGreaterThan(callsBefore));
+});
+
+it("opens the Sources dialog automatically after registering a drive", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [];
+    if (cmd === "list_volumes") {
+      return [
+        {
+          name: "Kodachrome",
+          mount_path: "/Volumes/Kodachrome",
+          total_bytes: 2_000_000_000,
+          free_bytes: 1_500_000_000,
+          is_removable: true,
+        },
+      ];
+    }
+    if (cmd === "register_drive") return onlineDrive;
+    if (cmd === "list_sources") return [];
+    if (cmd === "detect_sources") return [];
+    return undefined;
+  });
+  renderPage();
+
+  fireEvent.click(await screen.findByRole("button", { name: /register/i }));
+  const registerDialog = await screen.findByRole("dialog");
+  fireEvent.click(within(registerDialog).getByRole("button", { name: "Register" }));
+
+  await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("Sources"));
+  expect(await screen.findByText("No photo folders found — add one manually.")).toBeInTheDocument();
+});
+
+it("opens the Sources dialog for a drive when its Sources… button is clicked", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "detect_sources") return [];
+    return undefined;
+  });
+  renderPage();
+
+  fireEvent.click(await screen.findByRole("button", { name: /sources/i }));
+
+  expect(await screen.findByRole("dialog")).toHaveTextContent("Sources — Kodachrome");
 });

@@ -41,3 +41,34 @@ it("calls onCancel when the cancel button is clicked while running", () => {
   fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
   expect(onCancel).toHaveBeenCalled();
 });
+
+it("shows a dot loader instead of the bar when the event is started", () => {
+  const event: JobEvent = { kind: "started", job_id: "scan-0" };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+  expect(screen.getByRole("status")).toBeInTheDocument();
+  expect(screen.getByText("Scanning…")).toBeInTheDocument();
+  expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
+});
+
+it("shows a dot loader instead of the bar during a total:0 progress event, using its current label", () => {
+  const event: JobEvent = { kind: "progress", job_id: "scan-0", done: 0, total: 0, current: "Scanning /DCIM" };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+  expect(screen.getByRole("status")).toBeInTheDocument();
+  expect(screen.getByText("Scanning /DCIM")).toBeInTheDocument();
+  expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
+});
+
+it("still allows cancelling while showing the dot loader", () => {
+  const onCancel = vi.fn();
+  const event: JobEvent = { kind: "started", job_id: "scan-0" };
+  render(<ScanProgress event={event} onCancel={onCancel} />);
+  fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+  expect(onCancel).toHaveBeenCalled();
+});
+
+it("shows the bar once a progress event reports a nonzero total", () => {
+  const event: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+  expect(screen.getByText("3 / 10")).toBeInTheDocument();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});

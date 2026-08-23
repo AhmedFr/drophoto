@@ -4,20 +4,25 @@ import { PageHeader } from "@/components/PageHeader";
 import { listVolumes } from "@/lib/api/volumes";
 import type { Volume } from "@/lib/api/volumes";
 import { listDrives, registerDrive } from "@/lib/api/drives";
+import type { Drive } from "@/lib/api/drives";
 import { startScan, cancelJob } from "@/lib/api/scan";
 import { useTauriEvent } from "@/lib/hooks/useTauriEvent";
 import { VolumeList } from "./components/VolumeList";
 import { DriveCard } from "./components/DriveCard";
 import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
+import { SourcesDialog } from "./components/SourcesDialog";
 import { useJobEvents } from "./hooks/useJobEvents";
+import { useSources } from "./hooks/useSources";
 
 export function DrivesPage() {
   const queryClient = useQueryClient();
   const volumes = useQuery({ queryKey: ["volumes"], queryFn: listVolumes, refetchInterval: 5_000 });
   const drives = useQuery({ queryKey: ["drives"], queryFn: listDrives });
   const [pending, setPending] = useState<Volume | null>(null);
+  const [sourcesDrive, setSourcesDrive] = useState<Drive | null>(null);
   const [scanJobs, setScanJobs] = useState<Record<number, string>>({});
   const jobEvents = useJobEvents();
+  const sourcesByDrive = useSources((drives.data ?? []).map((d) => d.id));
 
   useTauriEvent("drives:changed", () => {
     queryClient.invalidateQueries({ queryKey: ["drives"] });
@@ -25,9 +30,10 @@ export function DrivesPage() {
 
   const mutation = useMutation({
     mutationFn: registerDrive,
-    onSuccess: () => {
+    onSuccess: (newDrive) => {
       queryClient.invalidateQueries({ queryKey: ["drives"] });
       setPending(null);
+      setSourcesDrive(newDrive);
     },
   });
 
@@ -68,9 +74,11 @@ export function DrivesPage() {
                 <DriveCard
                   key={d.id}
                   drive={d}
+                  sources={sourcesByDrive[d.id]}
                   onScan={() => scanMutation.mutate(d.id)}
                   scanEvent={jobId ? jobEvents[jobId] : undefined}
                   onCancelScan={jobId ? () => cancelJob(jobId) : undefined}
+                  onOpenSources={() => setSourcesDrive(d)}
                 />
               );
             })}
@@ -93,6 +101,7 @@ export function DrivesPage() {
         onClose={handleDialogClose}
         onSubmit={(input) => mutation.mutate(input)}
       />
+      <SourcesDialog drive={sourcesDrive} onClose={() => setSourcesDrive(null)} />
     </div>
   );
 }

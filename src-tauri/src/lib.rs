@@ -12,6 +12,7 @@ pub fn run() {
         .init();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let st = tauri::async_runtime::block_on(state::AppState::init(app.handle()))?;
             app.manage(st);
@@ -27,6 +28,10 @@ pub fn run() {
             commands::media::get_media,
             commands::scan::start_scan,
             commands::scan::cancel_job,
+            commands::sources::detect_sources,
+            commands::sources::list_sources,
+            commands::sources::save_sources,
+            commands::sources::set_source_enabled,
             commands::organize::get_rule,
             commands::organize::save_rule,
             commands::organize::list_unorganized_summaries,
