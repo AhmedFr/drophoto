@@ -4,25 +4,23 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
 import { renderWithRouter } from "@/test/renderWithRouter";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
+import type { JobEvent } from "@/lib/api/scan";
 import type { OrganizeJobRow } from "@/lib/api/organize";
 import { RecentJobs } from "./RecentJobs";
 
-vi.mock("@tauri-apps/api/event");
-
-beforeEach(async () => {
-  const { listen } = await import("@tauri-apps/api/event");
-  vi.mocked(listen).mockResolvedValue(vi.fn());
+beforeEach(() => {
+  // `RecentJobs` renders `useRevertRow`, which reads job events from the
+  // global `jobsStore` (via `useJobEvents`) rather than listening for the
+  // "job" Tauri event itself — in the real app `JobEventsBridge` applies
+  // those events, so tests seed the store directly instead of mocking
+  // `listen`.
+  useJobsStore.setState({ events: {}, labels: {} });
 });
 
-/** Mocks `listen` to record the `"job"` handler, returning an `emit` helper. */
-async function mockListen() {
-  const { listen } = await import("@tauri-apps/api/event");
-  let handler: ((event: { payload: unknown }) => void) | undefined;
-  vi.mocked(listen).mockImplementation((_name, cb) => {
-    handler = cb as (event: { payload: unknown }) => void;
-    return Promise.resolve(vi.fn());
-  });
-  return { emit: (payload: unknown) => act(() => handler?.({ payload })) };
+/** Seeds job events straight into the global jobs store, returning an `emit` helper. */
+function mockListen() {
+  return { emit: (payload: unknown) => act(() => useJobsStore.getState().applyEvent(payload as JobEvent)) };
 }
 
 const now = new Date("2026-08-22T12:10:00Z").getTime();

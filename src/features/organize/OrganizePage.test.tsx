@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
 import { renderWithRouter } from "@/test/renderWithRouter";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
+import type { JobEvent } from "@/lib/api/scan";
 import type { OrganizeRule } from "@/lib/api/organize";
 import { useWizardStore } from "./store/wizardStore";
 import { OrganizePage } from "./OrganizePage";
@@ -13,6 +15,12 @@ beforeEach(async () => {
   const { listen } = await import("@tauri-apps/api/event");
   vi.mocked(listen).mockResolvedValue(vi.fn());
   useWizardStore.setState({ step: 0, selectedDriveIds: [] });
+  // `useOrganizeRun`/`useRevertRun` (used by this page) read job events
+  // from the global `jobsStore` rather than listening for the "job"
+  // Tauri event themselves — only `useUnorganized` still listens
+  // directly. Reset the store so a job id from one test can't leak
+  // into the next.
+  useJobsStore.setState({ events: {}, labels: {} });
 });
 
 /** Records every `listen(name, cb)` handler so `emit` can broadcast to all of them, matching real Tauri fan-out. */
@@ -26,7 +34,14 @@ async function mockListen() {
     return Promise.resolve(vi.fn());
   });
   return {
-    emit: (name: string, payload: unknown) => act(() => handlers.get(name)?.forEach((h) => h({ payload }))),
+    emit: (name: string, payload: unknown) =>
+      act(() => {
+        handlers.get(name)?.forEach((h) => h({ payload }));
+        // `useUnorganized` gets it via the real (mocked) "job" listener
+        // above; `useOrganizeRun`/`useRevertRun` read it from the store
+        // instead — apply it there too so this one helper drives both.
+        if (name === "job") useJobsStore.getState().applyEvent(payload as JobEvent);
+      }),
   };
 }
 

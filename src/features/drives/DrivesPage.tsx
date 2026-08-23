@@ -7,6 +7,7 @@ import { listDrives, registerDrive } from "@/lib/api/drives";
 import type { Drive } from "@/lib/api/drives";
 import { startScan, cancelJob } from "@/lib/api/scan";
 import { useTauriEvent } from "@/lib/hooks/useTauriEvent";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { VolumeList } from "./components/VolumeList";
 import { DriveCard } from "./components/DriveCard";
 import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
@@ -41,6 +42,11 @@ export function DrivesPage() {
     mutationFn: async (driveId: number) => ({ driveId, jobId: await startScan(driveId) }),
     onSuccess: ({ driveId, jobId }) => {
       setScanJobs((prev) => ({ ...prev, [driveId]: jobId }));
+      // Cheap to do here — the drive's name is already on hand — so the
+      // global `ActiveJobs` strip and terminal-event toast can show it
+      // instead of falling back to just "Scan".
+      const driveName = drives.data?.find((d) => d.id === driveId)?.name;
+      if (driveName) useJobsStore.getState().setLabel(jobId, driveName);
     },
   });
 

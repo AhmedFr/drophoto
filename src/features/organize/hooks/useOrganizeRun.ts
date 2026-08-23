@@ -4,6 +4,7 @@ import { ApiError } from "@/lib/api/client";
 import { startOrganize } from "@/lib/api/organize";
 import { cancelJob, type JobEvent } from "@/lib/api/scan";
 import { useJobEvents } from "@/features/drives/hooks/useJobEvents";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
 import type { OrganizeRunTotals, UseOrganizeRunResult } from "./useOrganizeRun.types";
 
 const EMPTY_TOTALS: OrganizeRunTotals = { moved: 0, skipped: 0, failed: 0 };
@@ -21,8 +22,13 @@ const EMPTY_TOTALS: OrganizeRunTotals = { moved: 0, skipped: 0, failed: 0 };
  * once the `cancelled` event arrives — the event can lag) short-circuits
  * `advanceQueue` so no further drive is started once the in-flight job
  * settles, however it settles.
+ *
+ * `driveNames` (drive id -> name), when the caller has it handy, is
+ * recorded as each job's label in the global `jobsStore` — so the
+ * sidebar's `ActiveJobs` strip and the terminal-event toast can show the
+ * drive name instead of falling back to just "Organize".
  */
-export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
+export function useOrganizeRun(driveIds: number[], driveNames?: Record<number, string>): UseOrganizeRunResult {
   const queryClient = useQueryClient();
   const events = useJobEvents();
 
@@ -53,12 +59,14 @@ export function useOrganizeRun(driveIds: number[]): UseOrganizeRunResult {
       try {
         const jobId = await startOrganize(driveId);
         setCurrentJobId(jobId);
+        const name = driveNames?.[driveId];
+        if (name) useJobsStore.getState().setLabel(jobId, name);
       } catch (e) {
         setRunning(false);
         setError(e instanceof ApiError ? e.message : "Failed to start the organize job.");
       }
     },
-    [],
+    [driveNames],
   );
 
   const start = useCallback(() => {

@@ -3,9 +3,17 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
+import type { JobEvent } from "@/lib/api/scan";
 import { useRevertRow } from "./useRevertRow";
 
-vi.mock("@tauri-apps/api/event");
+beforeEach(() => {
+  // `useRevertRow` reads job events from the global `jobsStore` (via
+  // `useJobEvents`) rather than listening for the "job" Tauri event
+  // itself — in the real app `JobEventsBridge` applies those events, so
+  // tests seed the store directly instead of mocking `listen`.
+  useJobsStore.setState({ events: {}, labels: {} });
+});
 
 function wrapperFor(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -13,14 +21,8 @@ function wrapperFor(queryClient: QueryClient) {
   };
 }
 
-async function mockListen() {
-  const { listen } = await import("@tauri-apps/api/event");
-  let handler: ((event: { payload: unknown }) => void) | undefined;
-  vi.mocked(listen).mockImplementation((_name, cb) => {
-    handler = cb as (event: { payload: unknown }) => void;
-    return Promise.resolve(vi.fn());
-  });
-  return { emit: (payload: unknown) => act(() => handler?.({ payload })) };
+function mockListen() {
+  return { emit: (payload: unknown) => act(() => useJobsStore.getState().applyEvent(payload as JobEvent)) };
 }
 
 function renderRow() {

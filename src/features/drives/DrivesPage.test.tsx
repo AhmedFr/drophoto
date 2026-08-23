@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, within, act } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { DrivesPage } from "./DrivesPage";
 
 vi.mock("@tauri-apps/api/event");
@@ -9,6 +10,12 @@ vi.mock("@tauri-apps/api/event");
 beforeEach(async () => {
   const { listen } = await import("@tauri-apps/api/event");
   vi.mocked(listen).mockResolvedValue(vi.fn());
+  // The "job" Tauri event is now only ever listened to by
+  // `JobEventsBridge` (mounted once in `AppShell`, not rendered by
+  // `DrivesPage` itself) — `DrivesPage` reads job progress from the
+  // global `jobsStore` via `useJobEvents` instead, so tests seed it
+  // directly rather than emitting a "job" Tauri event.
+  useJobsStore.setState({ events: {}, labels: {} });
 });
 
 function renderPage() {
@@ -240,7 +247,6 @@ it("unsubscribes its event listeners on unmount", async () => {
 });
 
 it("starts a scan, shows live progress from job events, and cancels", async () => {
-  const { emit } = await mockListen();
   let startScanArgs: unknown;
   let cancelArgs: unknown;
   mockIPC((cmd, args) => {
@@ -263,11 +269,32 @@ it("starts a scan, shows live progress from job events, and cancels", async () =
   fireEvent.click(await screen.findByRole("button", { name: /scan/i }));
   await waitFor(() => expect(startScanArgs).toEqual({ driveId: 1 }));
 
-  emit("job", { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" });
+  // In the real app `JobEventsBridge` (mounted in `AppShell`, not under
+  // test here) is what applies "job" Tauri events to the store; seed it
+  // directly to simulate that.
+  act(() =>
+    useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" }),
+  );
   expect(await screen.findByText("3 / 10")).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
   await waitFor(() => expect(cancelArgs).toEqual({ jobId: "scan-0" }));
+});
+
+it("records the drive's name as the job's label when a scan starts", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
+    if (cmd === "start_scan") return "scan-0";
+    return undefined;
+  });
+  renderPage();
+  await screen.findByText("1 source");
+
+  fireEvent.click(await screen.findByRole("button", { name: /scan/i }));
+
+  await waitFor(() => expect(useJobsStore.getState().labels["scan-0"]).toBe("Kodachrome"));
 });
 
 it("disables the Scan button for an offline drive", async () => {
