@@ -6,7 +6,7 @@ mod organize;
 mod runner;
 mod scan;
 
-pub use detect::detect_folders;
+pub use detect::{detect_folders, detect_folders_with_progress};
 pub use organize::{OrganizeDeps, OrganizeJob};
 pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};

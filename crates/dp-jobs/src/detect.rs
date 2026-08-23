@@ -26,15 +26,40 @@ const ROLLUP_BOUNDARY_NAMES: &[&str] = &["pictures", "desktop", "downloads", "dc
 
 /// Walks `mount` (up to `max_depth` levels deep), skipping anything on the
 /// safety deny-list, and returns the folders worth offering as import
-/// sources: folders that directly contain media are rolled up into the
-/// shallowest ancestor whose subtree holds >= 20 media files, and reported
-/// individually otherwise. `bytes` on each result is the sum of
-/// `symlink_metadata().len()` for every media file counted toward it.
-/// Sorted by `media_count` descending, then path.
+/// sources. Thin wrapper over [`detect_folders_with_progress`] with a
+/// no-op progress hook — see that function's docs for the full contract.
+pub fn detect_folders(
+    mount: &Path,
+    max_depth: usize,
+    home: Option<&Path>,
+    cancel: &CancellationToken,
+) -> DpResult<Vec<DetectedFolder>> {
+    detect_folders_with_progress(mount, max_depth, home, cancel, &mut |_| {})
+}
+
+/// Same as [`detect_folders`], but calls `on_entry` once per walked entry
+/// (directories and files, root excluded) with the running entry count,
+/// immediately after that entry is visited. This lets a caller — chiefly
+/// tests — trigger cancellation deterministically at a specific point in
+/// the walk instead of racing a wall-clock sleep against it: the walk's
+/// own `cancel.is_cancelled()` check runs at the top of the *next*
+/// iteration, so cancelling from inside the hook reliably stops the walk
+/// just after the entry that triggered it.
+///
+/// Folders that directly contain media are rolled up into the shallowest
+/// ancestor whose subtree holds >= 20 media files (never crossing a
+/// well-known-folder or `Users/<name>` rollup boundary — see
+/// [`boundary_min_depth`]), and reported individually otherwise. `bytes`
+/// on each result is the sum of `symlink_metadata().len()` for every media
+/// file counted toward it. Sorted by `media_count` descending, then path.
 ///
 /// `mount` is canonicalized before walking (failure -> `DpError::Io`), both
 /// to resolve symlinks consistently and so the deny-list's `..`-rejection
-/// can't be bypassed by a non-canonical starting point.
+/// can't be bypassed by a non-canonical starting point. The deny-list's
+/// system-prefix rules are mount-relative (see
+/// `dp_core::denylist::is_denied_path`), so canonicalizing `mount` to
+/// somewhere like `/private/...` does *not* cause everything under it to
+/// be denied.
 ///
 /// `home` is the caller's resolved `$HOME` (or `None` if it couldn't be
 /// determined), used for the `home/Library` deny rule; resolving it from
@@ -47,11 +72,12 @@ const ROLLUP_BOUNDARY_NAMES: &[&str] = &["pictures", "desktop", "downloads", "dc
 /// If `cancel` is triggered mid-walk, returns `Ok` with whatever was
 /// counted before the walk stopped (no partial-result flag; callers that
 /// care use a timeout on top of this).
-pub fn detect_folders(
+pub fn detect_folders_with_progress(
     mount: &Path,
     max_depth: usize,
     home: Option<&Path>,
     cancel: &CancellationToken,
+    on_entry: &mut dyn FnMut(u64),
 ) -> DpResult<Vec<DetectedFolder>> {
     let mount = std::fs::canonicalize(mount).map_err(|e| DpError::Io {
         message: format!("failed to canonicalize mount path: {e}"),
@@ -70,24 +96,18 @@ pub fn detect_folders(
             if e.depth() == 0 {
                 return true;
             }
-            let name = e.file_name().to_string_lossy();
-            // Fast, entry-local checks first — these cover the vast
-            // majority of denied directories (hidden, housekeeping names,
-            // package suffixes, and the common "external volume mounted
-            // at an arbitrary path, with its own System folder" case)
-            // without re-walking every ancestor component back to the
-            // filesystem root for each entry.
-            if is_denied_name(&name) {
+            // Fast, entry-local check first — covers hidden entries,
+            // housekeeping names, and package suffixes without needing
+            // any path context.
+            if is_denied_name(&e.file_name().to_string_lossy()) {
                 return false;
             }
-            if e.depth() == 1 && name.eq_ignore_ascii_case("System") {
-                return false;
-            }
-            // Remaining rules (absolute system prefixes, `/Users/*/Library`,
-            // `home/Library`, `/Volumes/*/System`) need full-path context.
-            !is_denied_path(e.path(), home)
+            // Remaining rules (mount-relative system prefixes,
+            // `Users/*/Library`, `home/Library`) need path context.
+            !is_denied_path(e.path(), &mount, home)
         });
 
+    let mut entries_seen: u64 = 0;
     for entry in walker {
         if cancel.is_cancelled() {
             break;
@@ -96,6 +116,9 @@ pub fn detect_folders(
         if entry.depth() == 0 {
             continue;
         }
+        entries_seen += 1;
+        on_entry(entries_seen);
+
         // Check the entry's type before doing any stat work below.
         if !entry.file_type().is_file() {
             continue;

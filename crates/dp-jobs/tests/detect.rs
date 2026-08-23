@@ -1,26 +1,17 @@
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use dp_jobs::detect_folders;
+use dp_jobs::{detect_folders, detect_folders_with_progress};
 use tokio_util::sync::CancellationToken;
 
-/// `tempfile::tempdir()` defaults to a dot-prefixed (hidden) directory
-/// name, which the safety deny-list would treat as a hidden ancestor and
-/// reject everything beneath it. It also lives under the system temp
-/// directory, which on macOS canonicalizes through `/private` — itself on
-/// the absolute deny-list. Tests need a mount root with an ordinary,
-/// non-hidden name, outside `/private` once canonicalized — same as any
-/// real external drive mount under `/Volumes`. Nesting under
-/// `CARGO_MANIFEST_DIR` (the crate's own directory, never a symlink into
-/// `/private`) satisfies both.
+/// Plain `tempfile::tempdir()` — no workaround needed. Its default
+/// dot-prefixed name and its home under the system temp directory (which
+/// on macOS canonicalizes through `/private`, itself on the mount-relative
+/// deny list) used to break the deny-list; both are now non-issues since
+/// `is_denied_path`'s rules are scoped to path components *below* the
+/// mount, never to the mount's own real location or name.
 fn mount_dir() -> tempfile::TempDir {
-    tempfile::Builder::new()
-        .prefix("dp-detect-test-")
-        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
-        .unwrap()
+    tempfile::tempdir().unwrap()
 }
 
 /// Writes `n` tiny (1-byte) jpgs named `0.jpg`, `1.jpg`, ... into `dir`
@@ -98,6 +89,30 @@ fn aggregates_dcim_and_lists_small_folders_while_excluding_denied_dirs() {
 }
 
 #[test]
+fn regression_a_tempdir_mount_canonicalizing_under_private_still_works() {
+    // This is the regression test for the "mount canonicalizes under
+    // /private -> everything denied" bug: a plain tempfile::tempdir() on
+    // macOS lives under /tmp or /var, both symlinks into /private, so
+    // std::fs::canonicalize(mount) inside detect_folders lands squarely on
+    // one of the mount-relative denied prefix names. If system-prefix
+    // checks were still absolute (checking the mount's own real location)
+    // this would silently return an empty result.
+    let tmp = mount_dir();
+    write_jpgs(&tmp.path().join("DCIM/100APPLE"), 25);
+    write_file(&tmp.path().join("Desktop/pic.jpg"), b"x");
+
+    let cancel = CancellationToken::new();
+    let folders = detect_folders(tmp.path(), 4, None, &cancel).unwrap();
+
+    let dcim = folders
+        .iter()
+        .find(|f| f.rel_path == "DCIM")
+        .expect("DCIM should be reported even though the mount canonicalizes under /private");
+    assert_eq!(dcim.media_count, 25);
+    assert!(folders.iter().any(|f| f.rel_path == "Desktop"));
+}
+
+#[test]
 fn max_depth_limits_how_far_the_walk_descends() {
     let tmp = mount_dir();
     // A media file 5 levels deep, past a max_depth of 2.
@@ -133,41 +148,34 @@ fn cancelling_before_the_walk_returns_an_empty_partial_result() {
 }
 
 #[test]
-fn cancelling_mid_walk_from_another_thread_stops_early_without_panicking() {
+fn cancelling_mid_walk_via_the_progress_hook_stops_before_the_whole_tree_is_counted() {
     let tmp = mount_dir();
-    // A tree wide/deep enough that a 50ms head start won't finish the
-    // walk before cancellation lands.
+    // 40 folders x 50 jpgs = 2000 files; cancelling after the 100th
+    // walked entry (from inside the walk itself, not a wall-clock race)
+    // should leave the overwhelming majority uncounted.
     for i in 0..40 {
         write_jpgs(&tmp.path().join(format!("Folder{i}")), 50);
     }
 
     let cancel = CancellationToken::new();
-    let canceller_ran = Arc::new(AtomicBool::new(false));
-    let canceller_ran_bg = canceller_ran.clone();
-    let cancel_bg = cancel.clone();
-    let handle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        cancel_bg.cancel();
-        canceller_ran_bg.store(true, Ordering::SeqCst);
-    });
+    let mut entries_seen = 0u64;
+    let folders = detect_folders_with_progress(tmp.path(), 4, None, &cancel, &mut |count| {
+        entries_seen = count;
+        if count >= 100 {
+            cancel.cancel();
+        }
+    })
+    .expect("mid-walk cancellation should still return Ok");
 
-    let start = Instant::now();
-    let result = detect_folders(tmp.path(), 4, None, &cancel);
-    let elapsed = start.elapsed();
-    handle.join().unwrap();
-
-    assert!(canceller_ran.load(Ordering::SeqCst));
-    let folders = result.expect("mid-walk cancellation should still return Ok");
-    // No hard assertion on emptiness either way (the walk may finish
-    // before or after the 50ms mark on a fast machine/small tree) — the
-    // point is it returns promptly and doesn't panic.
+    let total_counted: u64 = folders.iter().map(|f| f.media_count).sum();
     assert!(
-        elapsed < Duration::from_secs(5),
-        "cancellation should stop the walk promptly, took {elapsed:?}"
+        entries_seen >= 100,
+        "hook should have fired at least 100 times, got {entries_seen}"
     );
-    for f in &folders {
-        assert!(f.media_count > 0);
-    }
+    assert!(
+        total_counted < 2000,
+        "expected an early stop, counted {total_counted} of 2000 files"
+    );
 }
 
 #[test]
@@ -256,9 +264,11 @@ fn mount_relative_system_folder_is_denied_for_any_mount_location() {
 #[test]
 fn home_library_is_excluded_when_home_is_supplied() {
     let tmp = mount_dir();
-    // A drive that happens to contain a copy of "Library" under a path
-    // matching the supplied home.
-    let home = tmp.path().join("home-stand-in");
+    // `home` must line up with the *canonicalized* mount (what
+    // detect_folders actually walks), so build it from the canonical form
+    // rather than tmp.path() directly.
+    let mount_canon = std::fs::canonicalize(tmp.path()).unwrap();
+    let home = mount_canon.join("home-stand-in");
     write_file(&home.join("Library/Caches/should-not-count.jpg"), b"x");
     write_file(&home.join("Pictures/keep.jpg"), b"x");
 
