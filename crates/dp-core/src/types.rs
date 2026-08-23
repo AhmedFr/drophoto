@@ -258,6 +258,17 @@ pub struct MediaItem {
     pub original_path: Option<String>,
 }
 
+/// A folder discovered by `dp_jobs::detect::detect_folders` that directly
+/// (or, once rolled up, transitively) contains media files worth offering
+/// as an import source.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DetectedFolder {
+    pub rel_path: String,
+    pub media_count: u64,
+    pub bytes: u64,
+    pub suggested: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct MediaMetadata {
     pub width: Option<u32>,
