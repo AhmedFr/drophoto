@@ -13,7 +13,6 @@ export function DriveCard({
   scanEvent,
 }: DriveCardProps) {
   const scanInProgress = scanEvent != null && scanEvent.kind !== "finished" && scanEvent.kind !== "cancelled";
-  const totalSources = sources.length;
   const enabledSources = sources.filter((s) => s.enabled).length;
   const noEnabledSources = enabledSources === 0;
 
@@ -26,8 +25,8 @@ export function DriveCard({
         <span className="font-mono text-[10px] text-muted-foreground">
           {formatBytes(drive.free)} free / {formatBytes(drive.capacity)}
         </span>
-        <span className={`font-mono text-[10px] ${totalSources === 0 ? "text-red-400" : "text-faint"}`}>
-          {totalSources === 0 ? "No sources" : `${totalSources} source${totalSources === 1 ? "" : "s"}`}
+        <span className={`font-mono text-[10px] ${noEnabledSources ? "text-red-400" : "text-faint"}`}>
+          {noEnabledSources ? "No sources" : `${enabledSources} source${enabledSources === 1 ? "" : "s"}`}
         </span>
         {onOpenSources && (
           <Button variant="outline" size="xs" onClick={onOpenSources}>

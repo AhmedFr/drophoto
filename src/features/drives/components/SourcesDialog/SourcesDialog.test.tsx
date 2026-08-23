@@ -20,7 +20,7 @@ const drive: Drive = {
 };
 
 function renderDialog(props: { drive: Drive | null; onClose?: () => void }) {
-  const queryClient = new QueryClient();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <SourcesDialog drive={props.drive} onClose={props.onClose ?? vi.fn()} />
@@ -114,4 +114,31 @@ it("never offers the whole-drive row for the boot volume", async () => {
 
   await screen.findByText("No photo folders found — add one manually.");
   expect(screen.queryByText("Whole drive")).not.toBeInTheDocument();
+});
+
+it("keeps existing sources visible and savable when detect_sources fails (regression)", async () => {
+  let saveArgs: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
+    if (cmd === "detect_sources") throw { code: "io", message: "walk failed" };
+    if (cmd === "save_sources") {
+      saveArgs = args;
+      return null;
+    }
+    return undefined;
+  });
+  const onClose = vi.fn();
+  renderDialog({ drive, onClose });
+
+  expect(await screen.findByText("walk failed")).toBeInTheDocument();
+  expect(screen.getByText("DCIM")).toBeInTheDocument();
+  expect(screen.queryByText("No photo folders found — add one manually.")).not.toBeInTheDocument();
+
+  const saveButton = screen.getByRole("button", { name: /save/i });
+  expect(saveButton).not.toBeDisabled();
+
+  fireEvent.click(saveButton);
+
+  await waitFor(() => expect(saveArgs).toEqual({ driveId: 1, relPaths: ["DCIM"] }));
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
 });

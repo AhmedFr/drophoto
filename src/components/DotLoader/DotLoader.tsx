@@ -1,12 +1,14 @@
 import type { DotLoaderProps } from "./DotLoader.types";
 
-// Vendored/adapted from the 5x5 dot-matrix wave loader family at
-// https://dot-matrix-animations.vercel.app/ (MIT licensed). The site's
-// animations are generated client-side rather than shipped as static
-// markup, so this is a from-scratch re-implementation of the same
-// "diagonal wave across a 5x5 dot grid" idea rather than a byte-for-byte
-// copy of vendored SVG source — kept intentionally small (~1KB), single
-// color via `currentColor`, and inert under `prefers-reduced-motion`.
+// Adapted from the 5x5 dot-matrix wave loader family at
+// https://dot-matrix-animations.vercel.app/ (MIT licensed) — that site
+// does offer copyable SVG markup for its loaders, but this component
+// re-implements the same "diagonal wave across a 5x5 dot grid" idea from
+// scratch rather than pasting its markup verbatim, so it can render in a
+// single color via `currentColor` (the site's SVGs hardcode their own
+// palette) and go inert under `prefers-reduced-motion`. Kept
+// intentionally small (~1KB). MIT credit retained per the source site's
+// license.
 
 const GRID_SIZE = 5;
 const DOT_SPACING = 6;

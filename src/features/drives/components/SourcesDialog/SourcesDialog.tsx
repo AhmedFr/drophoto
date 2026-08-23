@@ -12,7 +12,7 @@ import { DetectedFolderRow } from "../DetectedFolderRow";
 import type { SourcesDialogProps } from "./SourcesDialog.types";
 
 export function SourcesDialog({ drive, onClose }: SourcesDialogProps) {
-  const { rows, isDetecting, detectError, addError, saveError, isSaving, toggle, addFolder, save } =
+  const { rows, isDetecting, detectError, addError, saveError, isSaving, canSave, toggle, addFolder, save } =
     useSourcesDialog(drive, onClose);
 
   return (
@@ -28,7 +28,7 @@ export function SourcesDialog({ drive, onClose }: SourcesDialogProps) {
           </div>
         ) : (
           <div className="flex max-h-80 flex-col gap-0.5 overflow-y-auto">
-            {rows.length === 0 && (
+            {rows.length === 0 && !detectError && (
               <p className="font-mono text-[11px] text-dim">No photo folders found — add one manually.</p>
             )}
             {rows.map((row) => (
@@ -45,7 +45,7 @@ export function SourcesDialog({ drive, onClose }: SourcesDialogProps) {
           <Button variant="outline" size="sm" onClick={addFolder} disabled={isDetecting}>
             Add folder…
           </Button>
-          <Button size="sm" onClick={save} disabled={isDetecting || isSaving}>
+          <Button size="sm" onClick={save} disabled={isDetecting || isSaving || !canSave}>
             Save
           </Button>
         </DialogFooter>

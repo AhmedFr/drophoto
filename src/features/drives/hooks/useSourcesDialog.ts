@@ -53,13 +53,21 @@ export function useSourcesDialog(drive: Drive | null, onClose: () => void) {
     enabled: driveId != null,
   });
 
+  // Existing rows are derived from `sourcesQuery` alone and always shown
+  // once it resolves — a failed `detectQuery` (offline mount hiccup, a
+  // walk error, ...) must never blank the dialog down to the empty state
+  // with Save enabled, since saving an empty set would disable every
+  // already-configured source. Detected rows are layered in only when
+  // `detectQuery.data` is actually present.
   const baseRows = useMemo<SourceRow[]>(() => {
-    if (!sourcesQuery.data || !detectQuery.data) return [];
+    if (!sourcesQuery.data) return [];
 
     const existing = sourcesQuery.data.filter((s) => !(isBootVolume && s.rel_path === ""));
-    const detected = detectQuery.data.filter((d) => !(isBootVolume && d.rel_path === ""));
     const existingPaths = new Set(existing.map((s) => s.rel_path));
     const noExistingSourcesYet = existing.length === 0;
+    const detected = (detectQuery.data ?? []).filter(
+      (d) => !(isBootVolume && d.rel_path === "") && !existingPaths.has(d.rel_path),
+    );
 
     return [
       ...existing.map((s) => ({
@@ -67,19 +75,17 @@ export function useSourcesDialog(drive: Drive | null, onClose: () => void) {
         media_count: null,
         bytes: null,
         suggested: false,
-        checked: true,
+        checked: s.enabled,
         existing: true,
       })),
-      ...detected
-        .filter((d) => !existingPaths.has(d.rel_path))
-        .map((d) => ({
-          rel_path: d.rel_path,
-          media_count: d.media_count,
-          bytes: d.bytes,
-          suggested: d.suggested,
-          checked: noExistingSourcesYet && d.suggested,
-          existing: false,
-        })),
+      ...detected.map((d) => ({
+        rel_path: d.rel_path,
+        media_count: d.media_count,
+        bytes: d.bytes,
+        suggested: d.suggested,
+        checked: noExistingSourcesYet && d.suggested,
+        existing: false,
+      })),
     ];
   }, [sourcesQuery.data, detectQuery.data, isBootVolume]);
 
@@ -105,7 +111,11 @@ export function useSourcesDialog(drive: Drive | null, onClose: () => void) {
     if (!picked) return;
 
     const rel = relativeToMount(picked, mountPath);
-    if (rel === null || (isBootVolume && rel === "")) {
+    if (isBootVolume && rel === "") {
+      setAddError("The whole boot volume can't be a source");
+      return;
+    }
+    if (rel === null) {
       setAddError("Folder must be on this drive");
       return;
     }
@@ -133,6 +143,8 @@ export function useSourcesDialog(drive: Drive | null, onClose: () => void) {
     },
   });
 
+  const sourcesError = sourcesQuery.isError ? (sourcesQuery.error as Error).message : null;
+
   return {
     rows,
     isDetecting: sourcesQuery.isLoading || detectQuery.isLoading,
@@ -140,6 +152,10 @@ export function useSourcesDialog(drive: Drive | null, onClose: () => void) {
     addError,
     saveError: saveMutation.isError ? (saveMutation.error as Error).message : null,
     isSaving: saveMutation.isPending,
+    // Existing sources failing to load at all is different from detect
+    // failing: there's no reliable row set to save in that case, so
+    // saving is blocked outright rather than risking an accidental wipe.
+    canSave: !sourcesError && !sourcesQuery.isLoading,
     toggle,
     addFolder,
     save: () => saveMutation.mutate(),

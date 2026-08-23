@@ -20,7 +20,7 @@ const drive: Drive = {
 };
 
 function wrapper() {
-  const queryClient = new QueryClient();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
@@ -178,4 +178,72 @@ it("saves the checked rel paths and closes on success", async () => {
 
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(saveArgs).toEqual({ driveId: 1, relPaths: ["DCIM"] });
+});
+
+it("keeps existing rows checked and savable when detect_sources fails (regression: must not wipe sources)", async () => {
+  let saveArgs: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_sources") {
+      return [
+        { id: 1, drive_id: 1, rel_path: "DCIM", enabled: true },
+        { id: 2, drive_id: 1, rel_path: "Downloads", enabled: false },
+      ];
+    }
+    if (cmd === "detect_sources") throw { code: "io", message: "walk failed" };
+    if (cmd === "save_sources") {
+      saveArgs = args;
+      return null;
+    }
+    return undefined;
+  });
+
+  const onClose = vi.fn();
+  const { result } = renderHook(() => useSourcesDialog(drive, onClose), { wrapper: wrapper() });
+
+  await waitFor(() => expect(result.current.isDetecting).toBe(false));
+  expect(result.current.detectError).toBe("walk failed");
+  expect(result.current.rows).toEqual([
+    expect.objectContaining({ rel_path: "DCIM", checked: true, existing: true }),
+    expect.objectContaining({ rel_path: "Downloads", checked: false, existing: true }),
+  ]);
+  expect(result.current.canSave).toBe(true);
+
+  act(() => result.current.save());
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  expect(saveArgs).toEqual({ driveId: 1, relPaths: ["DCIM"] });
+});
+
+it("blocks saving while sourcesQuery itself has not resolved successfully", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_sources") throw { code: "db", message: "db unavailable" };
+    if (cmd === "detect_sources") return [];
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useSourcesDialog(drive, vi.fn()), { wrapper: wrapper() });
+
+  await waitFor(() => expect(result.current.isDetecting).toBe(false));
+  expect(result.current.rows).toEqual([]);
+  expect(result.current.canSave).toBe(false);
+});
+
+it("shows a distinct error when picking the boot volume's own root as a folder", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_sources") return [];
+    if (cmd === "detect_sources") return [];
+    return undefined;
+  });
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  vi.mocked(open).mockResolvedValue("/");
+
+  const bootDrive = { ...drive, mount_path: "/" };
+  const { result } = renderHook(() => useSourcesDialog(bootDrive, vi.fn()), { wrapper: wrapper() });
+  await waitFor(() => expect(result.current.isDetecting).toBe(false));
+
+  await act(async () => {
+    await result.current.addFolder();
+  });
+
+  expect(result.current.addError).toBe("The whole boot volume can't be a source");
 });

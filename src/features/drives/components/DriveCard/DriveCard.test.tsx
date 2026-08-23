@@ -18,6 +18,7 @@ const baseDrive: Drive = {
 };
 
 const enabledSource: Source = { id: 1, drive_id: 1, rel_path: "DCIM", enabled: true };
+const enabledSource2: Source = { id: 3, drive_id: 1, rel_path: "Pictures", enabled: true };
 const disabledSource: Source = { id: 2, drive_id: 1, rel_path: "Downloads", enabled: false };
 
 it("renders the drive name and free/capacity space", () => {
@@ -113,10 +114,15 @@ it("shows 'No sources' in red-ish styling when there are none", () => {
   expect(label).toHaveClass("text-red-400");
 });
 
-it("shows the source count, faint, when there are sources", () => {
-  render(<DriveCard drive={baseDrive} sources={[enabledSource, disabledSource]} />);
+it("shows the enabled source count, faint, when there are enabled sources", () => {
+  render(<DriveCard drive={baseDrive} sources={[enabledSource, enabledSource2, disabledSource]} />);
   const label = screen.getByText("2 sources");
   expect(label).toHaveClass("text-faint");
+});
+
+it("counts only enabled sources, not disabled ones", () => {
+  render(<DriveCard drive={baseDrive} sources={[enabledSource, disabledSource]} />);
+  expect(screen.getByText("1 source")).toBeInTheDocument();
 });
 
 it("pluralizes a single source correctly", () => {
