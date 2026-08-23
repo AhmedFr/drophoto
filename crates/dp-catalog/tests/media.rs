@@ -27,6 +27,7 @@ fn nm_taken(drive_id: i64, rel_path: &str, hash: &str, taken_at: Option<DateTime
         lat: None,
         lon: None,
         organized_at: None,
+        source_id: None,
     }
 }
 

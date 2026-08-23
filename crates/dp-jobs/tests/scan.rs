@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{Drive, DriveRole, NewDrive};
+use dp_core::{Drive, DriveRole, NewDrive, NewSource, Source};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
 use dp_metadata::ExiftoolProvider;
@@ -58,6 +58,7 @@ fn default_deps(catalog: Arc<dyn Catalog>, store: Arc<ThumbStore>) -> ScanDeps {
         metadata: Arc::new(ExiftoolProvider::from_path()),
         thumbs: Arc::new(ThumbChain::default_chain()),
         store,
+        home: None,
     }
 }
 
@@ -74,6 +75,23 @@ async fn register_drive(catalog: &Arc<dyn Catalog>, name: &str, mount_path: &Pat
         .unwrap()
 }
 
+/// Registers (or re-enables) a source at `rel_path` for `drive_id`.
+async fn source(catalog: &Arc<dyn Catalog>, drive_id: i64, rel_path: &str) -> Source {
+    catalog
+        .upsert_source(NewSource {
+            drive_id,
+            rel_path: rel_path.into(),
+        })
+        .await
+        .unwrap()
+}
+
+/// A single source rooted at the mount itself — the common case for tests
+/// that don't care about sub-sources.
+async fn root_source(catalog: &Arc<dyn Catalog>, drive_id: i64) -> Source {
+    source(catalog, drive_id, "").await
+}
+
 #[tokio::test]
 async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     if !has_exiftool() {
@@ -85,22 +103,17 @@ async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
     std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
     std::fs::write(drive_dir.path().join("notes.txt"), b"just some notes").unwrap();
+    // Well under STUB_MAX_BYTES (8192) — a thumbnail failure on this file
+    // must be treated as a stub: not inserted, reported as `ItemError{code:
+    // "stub"}`, and counted as skipped rather than failed.
     std::fs::write(drive_dir.path().join("bad.jpg"), [0u8; 10]).unwrap();
 
     let jpg_before = std::fs::metadata(drive_dir.path().join("sample.jpg")).unwrap();
     let png_before = std::fs::metadata(drive_dir.path().join("sample.png")).unwrap();
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
-    let drive = catalog
-        .register_drive(NewDrive {
-            name: "Test Drive".into(),
-            mount_path: drive_dir.path().to_string_lossy().into_owned(),
-            role: DriveRole::Source,
-            capacity: 1_000_000,
-            free: 500_000,
-        })
-        .await
-        .unwrap();
+    let drive = register_drive(&catalog, "Test Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
 
     let thumbs_dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
@@ -109,27 +122,31 @@ async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
 
-    let (ok, failed) = match terminal {
-        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
         other => panic!("expected Finished, got {other:?}"),
     };
     assert_eq!(ok, 2, "events: {events:?}");
-    assert_eq!(failed, 1, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert_eq!(skipped, 1, "events: {events:?}");
 
-    let saw_bad_jpg_error = events
-        .iter()
-        .any(|e| matches!(e, JobEvent::ItemError { path, .. } if path.ends_with("bad.jpg")));
+    let saw_stub_error = events.iter().any(|e| {
+        matches!(e, JobEvent::ItemError { path, code, .. } if path.ends_with("bad.jpg") && code == "stub")
+    });
     assert!(
-        saw_bad_jpg_error,
-        "expected an ItemError for bad.jpg, got {events:?}"
+        saw_stub_error,
+        "expected an ItemError{{code: \"stub\"}} for bad.jpg, got {events:?}"
     );
 
-    assert_eq!(catalog.count_media(None).await.unwrap(), 3);
+    // Only the two real media files were cataloged — the stub was not.
+    assert_eq!(catalog.count_media(None).await.unwrap(), 2);
 
     let jpg_hash = Blake3Hasher.hash_file(&fx("sample.jpg")).await.unwrap();
     assert!(store.exists(&jpg_hash, 400));
@@ -149,16 +166,8 @@ async fn cancelling_immediately_emits_cancelled() {
     std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
-    let drive = catalog
-        .register_drive(NewDrive {
-            name: "Cancel Drive".into(),
-            mount_path: drive_dir.path().to_string_lossy().into_owned(),
-            role: DriveRole::Source,
-            capacity: 1_000_000,
-            free: 500_000,
-        })
-        .await
-        .unwrap();
+    let drive = register_drive(&catalog, "Cancel Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
 
     let thumbs_dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
@@ -167,7 +176,7 @@ async fn cancelling_immediately_emits_cancelled() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
     runner.spawn(job_id.clone(), job);
     runner.cancel(&job_id);
 
@@ -191,12 +200,13 @@ async fn run_direct_with_pre_cancelled_token_flags_cancelled_and_processes_nothi
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, "Direct Pre-Cancel Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
 
     let thumbs_dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
     let deps = default_deps(catalog.clone(), store);
 
-    let job = ScanJob::new("scan-direct-precancel".into(), drive, deps);
+    let job = ScanJob::new("scan-direct-precancel".into(), drive, vec![src], deps);
 
     // Cancel *before* run() is even called, isolating the "stopped early"
     // path from any race with the runner's own bookkeeping.
@@ -228,12 +238,13 @@ async fn run_direct_with_live_token_processes_everything_and_flags_not_cancelled
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, "Direct Live Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
 
     let thumbs_dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
     let deps = default_deps(catalog.clone(), store);
 
-    let job = ScanJob::new("scan-direct-live".into(), drive, deps);
+    let job = ScanJob::new("scan-direct-live".into(), drive, vec![src], deps);
 
     // A token that is never cancelled — proves `cancelled` is derived from
     // an actual early exit, not merely the token's live/dead state.
@@ -294,6 +305,7 @@ async fn unreadable_subdirectory_is_reported_as_an_io_item_error() {
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, "Locked Subdir Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
 
     let thumbs_dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
@@ -302,7 +314,7 @@ async fn unreadable_subdirectory_is_reported_as_an_io_item_error() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
     runner.spawn(job_id, job);
 
     let (events, _terminal) = drain_until_terminal(&mut rx).await;
@@ -313,5 +325,205 @@ async fn unreadable_subdirectory_is_reported_as_an_io_item_error() {
     assert!(
         saw_io_error,
         "expected an ItemError with code \"io\", got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn scan_with_two_sources_only_indexes_those_trees() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("DCIM")).unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("Pictures")).unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("Ignored")).unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("DCIM/a.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("Pictures/b.png")).unwrap();
+    // Sits outside both configured sources — must never be scanned.
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("Ignored/c.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Two Source Drive", drive_dir.path()).await;
+    let dcim = source(&catalog, drive.id, "DCIM").await;
+    let pictures = source(&catalog, drive.id, "Pictures").await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive,
+        vec![dcim.clone(), pictures.clone()],
+        deps,
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let ok = match terminal {
+        JobEvent::Finished { ok, .. } => ok,
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 2, "events: {events:?}");
+    assert_eq!(catalog.count_media(None).await.unwrap(), 2);
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    let mut rel_paths: Vec<&str> = rows.iter().map(|r| r.rel_path.as_str()).collect();
+    rel_paths.sort();
+    assert_eq!(rel_paths, ["DCIM/a.jpg", "Pictures/b.png"]);
+
+    for row in &rows {
+        assert!(
+            row.source_id == Some(dcim.id) || row.source_id == Some(pictures.id),
+            "expected a source_id from one of the two configured sources, got {:?}",
+            row.source_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn denied_subdir_inside_a_source_is_skipped() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("DCIM/node_modules")).unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("DCIM/a.jpg")).unwrap();
+    // "node_modules" is on the deny-list anywhere in the tree — this file
+    // must never be scanned even though it's inside a configured source.
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("DCIM/node_modules/b.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Denylist Drive", drive_dir.path()).await;
+    let dcim = source(&catalog, drive.id, "DCIM").await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![dcim], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let ok = match terminal {
+        JobEvent::Finished { ok, .. } => ok,
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 1, "events: {events:?}");
+    assert_eq!(catalog.count_media(None).await.unwrap(), 1);
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(rows[0].rel_path, "DCIM/a.jpg");
+}
+
+#[tokio::test]
+async fn tiny_garbage_file_is_rejected_as_a_stub_and_not_inserted() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    // 100 bytes of garbage, well under STUB_MAX_BYTES — a real photo/video
+    // decoder must fail on it, and the file must be rejected as a stub.
+    std::fs::write(drive_dir.path().join("tiny.jpg"), vec![0xAAu8; 100]).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Stub Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert_eq!(skipped, 1, "events: {events:?}");
+
+    assert_eq!(
+        catalog.count_media(None).await.unwrap(),
+        0,
+        "a stub must never be upserted"
+    );
+
+    let saw_stub_error = events.iter().any(
+        |e| matches!(e, JobEvent::ItemError { path, code, .. } if path.ends_with("tiny.jpg") && code == "stub"),
+    );
+    assert!(
+        saw_stub_error,
+        "expected an ItemError{{code: \"stub\"}} for tiny.jpg, got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn walk_progress_events_precede_the_first_per_file_progress() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Walk Progress Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    runner.spawn(job_id, job);
+
+    let (events, _terminal) = drain_until_terminal(&mut rx).await;
+
+    let is_walk_progress = |e: &JobEvent| {
+        matches!(
+            e,
+            JobEvent::Progress { done: 0, total: 0, current: Some(c), .. } if c.starts_with("Scanning")
+        )
+    };
+    let is_real_progress = |e: &JobEvent| matches!(e, JobEvent::Progress { total, .. } if *total > 0);
+
+    let walk_progress_index = events.iter().position(is_walk_progress);
+    let real_progress_index = events.iter().position(is_real_progress);
+
+    assert!(
+        walk_progress_index.is_some(),
+        "expected at least one walk-progress event (total==0, current starting \"Scanning\"), got {events:?}"
+    );
+    assert!(
+        real_progress_index.is_some(),
+        "expected at least one real per-file progress event, got {events:?}"
+    );
+    assert!(
+        walk_progress_index.unwrap() < real_progress_index.unwrap(),
+        "expected the walk-progress event to precede the first real progress event, got {events:?}"
     );
 }

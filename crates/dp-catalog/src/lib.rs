@@ -3,12 +3,13 @@ mod media;
 mod organize;
 mod organize_jobs;
 mod query;
+mod sources;
 mod sqlite;
 
 use async_trait::async_trait;
 use dp_core::{
-    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, OrganizeItemRow, OrganizeJobRow, OrganizeRule,
-    UnorganizedSummary,
+    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewSource, OrganizeItemRow, OrganizeJobRow,
+    OrganizeRule, Source, UnorganizedSummary,
 };
 pub use sqlite::SqliteCatalog;
 use std::collections::HashSet;
@@ -45,6 +46,12 @@ pub trait Catalog: Send + Sync {
     async fn mark_media_organized(&self, media_id: i64, new_rel_path: &str) -> DpResult<()>;
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>>;
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>>;
+    async fn list_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
+    async fn upsert_source(&self, s: NewSource) -> DpResult<Source>;
+    async fn set_source_enabled(&self, id: i64, enabled: bool) -> DpResult<()>;
+    async fn delete_source(&self, id: i64) -> DpResult<()>;
+    async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
+    async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64>;
 }
 
 #[async_trait]
@@ -146,5 +153,29 @@ impl Catalog for SqliteCatalog {
 
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>> {
         organize_jobs::list_organize_items(&self.pool, job_id, limit).await
+    }
+
+    async fn list_sources(&self, drive_id: i64) -> DpResult<Vec<Source>> {
+        sources::list_sources(&self.pool, drive_id).await
+    }
+
+    async fn upsert_source(&self, s: NewSource) -> DpResult<Source> {
+        sources::upsert_source(&self.pool, s).await
+    }
+
+    async fn set_source_enabled(&self, id: i64, enabled: bool) -> DpResult<()> {
+        sources::set_source_enabled(&self.pool, id, enabled).await
+    }
+
+    async fn delete_source(&self, id: i64) -> DpResult<()> {
+        sources::delete_source(&self.pool, id).await
+    }
+
+    async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<Source>> {
+        sources::list_enabled_sources(&self.pool, drive_id).await
+    }
+
+    async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64> {
+        sources::count_media_without_source(&self.pool, drive_id).await
     }
 }

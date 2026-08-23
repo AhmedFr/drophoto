@@ -41,6 +41,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         lat: None,
         lon: None,
         organized_at: None,
+        source_id: None,
     }
 }
 
@@ -768,6 +769,30 @@ impl Catalog for FailingCatalog {
 
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>> {
         self.0.list_organize_items(job_id, limit).await
+    }
+
+    async fn list_sources(&self, drive_id: i64) -> DpResult<Vec<dp_core::Source>> {
+        self.0.list_sources(drive_id).await
+    }
+
+    async fn upsert_source(&self, s: dp_core::NewSource) -> DpResult<dp_core::Source> {
+        self.0.upsert_source(s).await
+    }
+
+    async fn set_source_enabled(&self, id: i64, enabled: bool) -> DpResult<()> {
+        self.0.set_source_enabled(id, enabled).await
+    }
+
+    async fn delete_source(&self, id: i64) -> DpResult<()> {
+        self.0.delete_source(id).await
+    }
+
+    async fn list_enabled_sources(&self, drive_id: i64) -> DpResult<Vec<dp_core::Source>> {
+        self.0.list_enabled_sources(drive_id).await
+    }
+
+    async fn count_media_without_source(&self, drive_id: i64) -> DpResult<u64> {
+        self.0.count_media_without_source(drive_id).await
     }
 }
 

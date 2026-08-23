@@ -62,21 +62,23 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
         lon: row.try_get("lon").map_err(db)?,
         missing_at: from_rfc3339(missing_at)?,
         organized_at: from_rfc3339(organized_at)?,
+        source_id: row.try_get("source_id").map_err(db)?,
     })
 }
 
 pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64> {
     sqlx::query(
         "INSERT INTO media (drive_id, rel_path, hash, size, kind, ext, width, height, duration_ms, \
-         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, organized_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, organized_at, source_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(drive_id, rel_path) DO UPDATE SET \
          hash=excluded.hash, size=excluded.size, kind=excluded.kind, ext=excluded.ext, \
          width=excluded.width, height=excluded.height, duration_ms=excluded.duration_ms, \
          taken_at=excluded.taken_at, camera=excluded.camera, lens=excluded.lens, \
          aperture=excluded.aperture, shutter=excluded.shutter, iso=excluded.iso, \
          focal_mm=excluded.focal_mm, lat=excluded.lat, lon=excluded.lon, missing_at=NULL, \
-         organized_at=COALESCE(media.organized_at, excluded.organized_at)",
+         organized_at=COALESCE(media.organized_at, excluded.organized_at), \
+         source_id=COALESCE(excluded.source_id, media.source_id)",
     )
     .bind(m.drive_id)
     .bind(&m.rel_path)
@@ -97,6 +99,7 @@ pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64
     .bind(m.lat)
     .bind(m.lon)
     .bind(to_rfc3339(m.organized_at))
+    .bind(m.source_id)
     .execute(pool)
     .await
     .map_err(db)?;

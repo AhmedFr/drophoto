@@ -49,6 +49,7 @@ mod tests {
             lon: None,
             missing_at: None,
             organized_at: None,
+            source_id: None,
         }
     }
 

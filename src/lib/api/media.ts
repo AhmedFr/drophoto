@@ -24,6 +24,7 @@ export type MediaRow = {
   lon: number | null;
   missing_at: string | null;
   organized_at: string | null;
+  source_id: number | null;
 };
 
 export type MediaItem = {

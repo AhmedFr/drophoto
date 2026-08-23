@@ -39,6 +39,25 @@ pub struct NewDrive {
     pub free: u64,
 }
 
+/// A configured scan root within a drive: `mount_path/rel_path` (or the
+/// mount root itself, when `rel_path` is empty). A drive scan walks every
+/// *enabled* source rather than the whole mount, and every media row
+/// scanned from a source carries that source's `id` (see
+/// [`MediaRow::source_id`]).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Source {
+    pub id: i64,
+    pub drive_id: i64,
+    pub rel_path: String,
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NewSource {
+    pub drive_id: i64,
+    pub rel_path: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Copy, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
@@ -98,6 +117,10 @@ pub struct MediaRow {
     pub lon: Option<f64>,
     pub missing_at: Option<DateTime<Utc>>,
     pub organized_at: Option<DateTime<Utc>>,
+    /// The [`Source`] this row was scanned from, if any. `None` for rows
+    /// scanned before sources existed, or otherwise not attributable to a
+    /// configured source.
+    pub source_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -121,6 +144,7 @@ pub struct NewMedia {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub organized_at: Option<DateTime<Utc>>,
+    pub source_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
