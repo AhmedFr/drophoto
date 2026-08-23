@@ -209,26 +209,73 @@ fn dir_label(path: &Path, mount: &Path) -> String {
     }
 }
 
-/// Drops any enabled source whose root (`mount.join(rel_path)`) is a
-/// descendant of, or identical to, another enabled source's root —
-/// keeping the shallowest survivor of each overlapping group. Without
-/// this, e.g. a drive configured with both `""` (the whole mount) and
-/// `"DCIM"` as sources would walk (and re-upsert) every file under
-/// `DCIM` twice: once as part of the root walk, once as its own source.
+/// Resolves each enabled source's walk root to its real filesystem
+/// identity, then drops sources that would duplicate or escape another's
+/// walk, returning `(source, root_to_walk)` pairs for what's left.
 ///
-/// Ties (equal depth) can't nest each other and are all kept. Every
-/// dropped source is logged via `tracing::info!` along with the source
-/// that covers it.
-fn dedup_nested_sources(mount: &Path, mut sources: Vec<Source>) -> Vec<Source> {
-    // Shallowest (fewest path components) first, so a shallower source is
-    // always considered — and can cover a deeper one — before that
-    // deeper source is checked.
-    sources.sort_by_key(|s| source_root(mount, &s.rel_path).components().count());
+/// Deduping by the *lexical* path (`mount.join(rel_path)` compared as
+/// strings/components) isn't enough: on a case-insensitive filesystem
+/// (APFS, by default) `"DCIM"` and `"dcim"` are the same directory but
+/// don't compare equal lexically, and a source that's a symlink to
+/// another source's target is a different lexical path pointing at the
+/// identical inode. Both would otherwise be walked — and every file
+/// under them upserted — twice. So each source's root is resolved with
+/// [`std::fs::canonicalize`] (which both fixes casing to the on-disk
+/// spelling and fully resolves symlinks) before any comparison:
+///
+/// - A root that fails to canonicalize (the configured folder is
+///   missing, unreadable, ...) is **kept as-is**, walked at its literal
+///   `mount.join(rel_path)` — [`collect_media_files`] will naturally
+///   report an `io` item error for it, same as it already does for any
+///   other unreadable path. It's excluded from the containment
+///   comparisons below, since nothing is known about where it would
+///   really point.
+/// - A root that canonicalizes to somewhere outside the canonical
+///   `mount` (e.g. a symlink escaping the drive) is dropped entirely —
+///   logged, never walked.
+/// - Among the remaining, successfully-resolved sources, one whose
+///   canonical root is a descendant of (or identical to) another's is
+///   dropped, keeping the shallowest (by canonical path-component count)
+///   survivor of each overlapping/duplicate group. Ties (equal depth)
+///   can't nest each other and are all kept.
+///
+/// Every dropped source is logged via `tracing::info!` along with why.
+fn dedup_nested_sources(mount: &Path, sources: Vec<Source>) -> Vec<(Source, PathBuf)> {
+    let mut resolvable: Vec<(Source, PathBuf)> = Vec::new();
+    let mut unresolved: Vec<(Source, PathBuf)> = Vec::new();
 
-    let mut kept: Vec<(Source, PathBuf)> = Vec::with_capacity(sources.len());
     for s in sources {
-        let root = source_root(mount, &s.rel_path);
-        if let Some((covering, _)) = kept.iter().find(|(_, kept_root)| root.starts_with(kept_root)) {
+        let literal_root = source_root(mount, &s.rel_path);
+        match std::fs::canonicalize(&literal_root) {
+            Ok(canon) if canon.starts_with(mount) => resolvable.push((s, canon)),
+            Ok(canon) => {
+                tracing::info!(
+                    source_id = s.id,
+                    rel_path = %s.rel_path,
+                    canonical_root = %canon.display(),
+                    "dropping scan source whose canonical root escapes the drive mount"
+                );
+            }
+            Err(e) => {
+                tracing::info!(
+                    source_id = s.id,
+                    rel_path = %s.rel_path,
+                    error = %e,
+                    "scan source root could not be resolved; walking it as configured (expect an io item error)"
+                );
+                unresolved.push((s, literal_root));
+            }
+        }
+    }
+
+    // Shallowest canonical root first, so a shallower source is always
+    // considered — and can cover a deeper one — before that deeper
+    // source is checked.
+    resolvable.sort_by_key(|(_, canon)| canon.components().count());
+
+    let mut kept: Vec<(Source, PathBuf)> = Vec::with_capacity(resolvable.len());
+    for (s, canon) in resolvable {
+        if let Some((covering, _)) = kept.iter().find(|(_, kept_canon)| canon.starts_with(kept_canon)) {
             tracing::info!(
                 skipped_source_id = s.id,
                 skipped_rel_path = %s.rel_path,
@@ -238,9 +285,10 @@ fn dedup_nested_sources(mount: &Path, mut sources: Vec<Source>) -> Vec<Source> {
             );
             continue;
         }
-        kept.push((s, root));
+        kept.push((s, canon));
     }
-    kept.into_iter().map(|(s, _)| s).collect()
+
+    kept.into_iter().chain(unresolved).collect()
 }
 
 /// Sends a `Progress` event with `done: 0, total: 0` and a `current`
@@ -261,10 +309,13 @@ fn emit_walk_progress(job_id: &str, events: &mpsc::Sender<JobEvent>, current: &s
     });
 }
 
-/// Walks every entry of `sources` (each rooted at `mount.join(rel_path)`),
-/// skipping anything on the safety deny-list ([`is_denied_path`], checked
-/// mount-relative against `mount`), returning every file whose extension
-/// maps to a [`MediaKind`]. Runs synchronously (intended for
+/// Walks every entry of `sources` (each `(source, root)` pair already
+/// resolved and deduped by [`dedup_nested_sources`] — `root` is that
+/// source's canonical walk root, or its literal `mount.join(rel_path)`
+/// when canonicalization failed), skipping anything on the safety
+/// deny-list ([`is_denied_path`], checked mount-relative against
+/// `mount`), returning every file whose extension maps to a
+/// [`MediaKind`]. Runs synchronously (intended for
 /// [`tokio::task::spawn_blocking`]): checks `cancel` on each entry so a
 /// long walk can be interrupted, records (rather than silently dropping)
 /// any entry walkdir fails to read, and emits a lightweight walk-progress
@@ -272,7 +323,7 @@ fn emit_walk_progress(job_id: &str, events: &mpsc::Sender<JobEvent>, current: &s
 /// [`WALK_PROGRESS_INTERVAL`] entries thereafter.
 fn collect_media_files(
     mount: &Path,
-    sources: &[Source],
+    sources: &[(Source, PathBuf)],
     home: Option<&Path>,
     cancel: &CancellationToken,
     job_id: &str,
@@ -282,11 +333,10 @@ fn collect_media_files(
     let mut errors = Vec::new();
     let mut stopped_early = false;
 
-    'sources: for source in sources {
-        let root = source_root(mount, &source.rel_path);
-        emit_walk_progress(job_id, events, &format!("Scanning {}", dir_label(&root, mount)));
+    'sources: for (source, root) in sources {
+        emit_walk_progress(job_id, events, &format!("Scanning {}", dir_label(root, mount)));
 
-        let walker = WalkDir::new(&root)
+        let walker = WalkDir::new(root)
             .into_iter()
             .filter_entry(|e| !is_denied_path(e.path(), mount, home));
 

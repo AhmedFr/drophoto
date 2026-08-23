@@ -491,6 +491,150 @@ async fn nested_sources_are_deduped_keeping_the_shallowest() {
     }
 }
 
+/// Whether `dir` sits on a case-insensitive filesystem: creates a probe
+/// subdirectory and checks whether it can also be opened via a
+/// differently-cased name. macOS's default (APFS) is case-insensitive,
+/// but this isn't guaranteed (a case-sensitive APFS volume, or CI running
+/// on a different OS), so the test that relies on this skips itself
+/// rather than assuming.
+fn tempdir_is_case_insensitive(dir: &Path) -> bool {
+    let probe = dir.join("CaseInsensitivityProbe");
+    std::fs::create_dir_all(&probe).unwrap();
+    std::fs::metadata(dir.join("caseinsensitivityprobe")).is_ok()
+}
+
+#[tokio::test]
+async fn case_insensitive_duplicate_sources_are_walked_once() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    if !tempdir_is_case_insensitive(drive_dir.path()) {
+        eprintln!("skipping: tempdir filesystem is case-sensitive");
+        return;
+    }
+
+    std::fs::create_dir_all(drive_dir.path().join("DCIM")).unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("DCIM/a.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Case Insensitive Drive", drive_dir.path()).await;
+    // Same real directory, two different-cased configured sources — must
+    // be walked (and cataloged) exactly once, not twice.
+    let upper = source(&catalog, drive.id, "DCIM").await;
+    let lower = source(&catalog, drive.id, "dcim").await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![upper, lower], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let ok = match terminal {
+        JobEvent::Finished { ok, .. } => ok,
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 1, "the file must be indexed exactly once, events: {events:?}");
+    assert_eq!(catalog.count_media(None).await.unwrap(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_duplicate_source_is_walked_once_without_panicking() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("DCIM")).unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("DCIM/a.jpg")).unwrap();
+    std::os::unix::fs::symlink(drive_dir.path().join("DCIM"), drive_dir.path().join("link")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Symlink Source Drive", drive_dir.path()).await;
+    // "link" canonicalizes to the same real directory as "DCIM" — must be
+    // walked (and cataloged) exactly once, not twice, and must not panic
+    // (walkdir doesn't follow symlinks by default, and canonicalizing a
+    // symlinked root must not trip up the containment check).
+    let dcim = source(&catalog, drive.id, "DCIM").await;
+    let link = source(&catalog, drive.id, "link").await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![dcim, link], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let ok = match terminal {
+        JobEvent::Finished { ok, .. } => ok,
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 1,
+        "no duplicate rows from the symlinked source, events: {events:?}"
+    );
+    assert_eq!(catalog.count_media(None).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn missing_source_root_reports_io_error_but_other_sources_still_scanned() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("Pictures")).unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("Pictures/a.jpg")).unwrap();
+    // "Missing" is never created on disk — its root can't be canonicalized.
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Missing Source Drive", drive_dir.path()).await;
+    let pictures = source(&catalog, drive.id, "Pictures").await;
+    let missing = source(&catalog, drive.id, "Missing").await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![pictures, missing], deps));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let ok = match terminal {
+        JobEvent::Finished { ok, .. } => ok,
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 1,
+        "the existing source must still be scanned, events: {events:?}"
+    );
+
+    let saw_io_error = events
+        .iter()
+        .any(|e| matches!(e, JobEvent::ItemError { code, .. } if code == "io"));
+    assert!(
+        saw_io_error,
+        "expected an io ItemError for the missing source, got {events:?}"
+    );
+}
+
 #[tokio::test]
 async fn tiny_garbage_file_is_rejected_as_a_stub_and_not_inserted() {
     if !has_exiftool() {
