@@ -31,6 +31,7 @@ export function DoneOverlay({
   reverting = false,
   revertProgress = null,
   reverted = false,
+  revertError = null,
 }: DoneOverlayProps) {
   const title = cancelled ? "Cancelled" : "Organized";
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -87,6 +88,9 @@ export function DoneOverlay({
             </Button>
           ))}
       </div>
+      {showRevert && revertError && (
+        <p className="font-mono text-[10.5px] text-red-400">{revertError}</p>
+      )}
       {showRevert && onRevert && (
         <RevertConfirmDialog
           open={confirmOpen}

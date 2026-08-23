@@ -184,3 +184,45 @@ it("shows REVERTED in place of the button once reverted", async () => {
   expect(await screen.findByText("REVERTED")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "REVERT" })).not.toBeInTheDocument();
 });
+
+it("shows a revertError message inline and keeps the REVERT button available", async () => {
+  renderWithRouter(
+    <DoneOverlay
+      moved={7}
+      skipped={0}
+      failed={0}
+      fileTpl="t"
+      folders={[]}
+      onRevert={vi.fn()}
+      revertError="REVERT FAILED — 2 files could not be moved back"
+    />,
+  );
+  expect(
+    await screen.findByText("REVERT FAILED — 2 files could not be moved back"),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "REVERT" })).toBeInTheDocument();
+  expect(screen.queryByText("REVERTED")).not.toBeInTheDocument();
+});
+
+it("omits the revertError message when there isn't one", async () => {
+  renderWithRouter(
+    <DoneOverlay moved={7} skipped={0} failed={0} fileTpl="t" folders={[]} onRevert={vi.fn()} />,
+  );
+  await screen.findByRole("button", { name: "REVERT" });
+  expect(screen.queryByText(/REVERT FAILED/)).not.toBeInTheDocument();
+});
+
+it("omits the revertError message when the REVERT action itself is unavailable", async () => {
+  renderWithRouter(
+    <DoneOverlay
+      moved={0}
+      skipped={0}
+      failed={0}
+      fileTpl="t"
+      folders={[]}
+      revertError="should never show without onRevert/moved"
+    />,
+  );
+  await screen.findByText("ORGANIZED");
+  expect(screen.queryByText("should never show without onRevert/moved")).not.toBeInTheDocument();
+});

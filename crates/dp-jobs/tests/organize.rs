@@ -777,6 +777,10 @@ impl Catalog for FailingCatalog {
         self.0.list_organize_jobs(limit).await
     }
 
+    async fn get_organize_job(&self, id: i64) -> DpResult<Option<OrganizeJobRow>> {
+        self.0.get_organize_job(id).await
+    }
+
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>> {
         self.0.list_organize_items(job_id, limit).await
     }

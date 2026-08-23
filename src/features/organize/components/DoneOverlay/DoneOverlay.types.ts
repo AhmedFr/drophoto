@@ -22,4 +22,12 @@ export type DoneOverlayProps = {
   revertProgress?: { done: number; total: number } | null;
   /** True once the revert has completed — replaces the REVERT button with a note. */
   reverted?: boolean;
+  /**
+   * A message to show inline (in red) below the actions: either the
+   * `revert_organize` call's own error, or a summary of items that
+   * finished the revert but still failed. Showing this never implies
+   * `reverted` — the REVERT button stays available so the user can
+   * retry.
+   */
+  revertError?: string | null;
 };

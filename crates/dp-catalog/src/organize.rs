@@ -190,12 +190,18 @@ pub(crate) async fn mark_media_reverted(
     media_id: i64,
     old_rel_path: &str,
 ) -> DpResult<()> {
-    sqlx::query("UPDATE media SET rel_path = ?, organized_at = NULL WHERE id = ?")
+    let result = sqlx::query("UPDATE media SET rel_path = ?, organized_at = NULL WHERE id = ?")
         .bind(old_rel_path)
         .bind(media_id)
         .execute(pool)
         .await
         .map_err(db)?;
+    if result.rows_affected() == 0 {
+        // Not fatal to the revert job itself — the file move already
+        // happened — but a media row that no longer exists (or never
+        // did) is worth knowing about rather than silently no-op'ing.
+        tracing::warn!(media_id, "mark_media_reverted affected no rows");
+    }
     Ok(())
 }
 

@@ -102,3 +102,97 @@ it("clears the in-flight state when the revert is cancelled", async () => {
   emit({ kind: "cancelled", job_id: "revert-1" });
   await waitFor(() => expect(result.current.revertingJobId).toBeNull());
 });
+
+it("surfaces a revert_organize call error on the job's row", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "revert_organize") {
+      throw { code: "Unsupported", message: "another job is running on this drive" };
+    }
+    return undefined;
+  });
+  await mockListen();
+
+  const { result } = renderRow();
+  act(() => result.current.requestRevert(7));
+  act(() => result.current.confirmRevert());
+
+  await waitFor(() =>
+    expect(result.current.revertError).toEqual({
+      jobId: 7,
+      message: "another job is running on this drive",
+    }),
+  );
+  expect(result.current.revertingJobId).toBeNull();
+});
+
+it("surfaces a partial-failure outcome as REVERT FAILED on the job's row, without blocking a retry", async () => {
+  mockIPC((cmd) => (cmd === "revert_organize" ? "revert-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRow();
+  act(() => result.current.requestRevert(7));
+  act(() => result.current.confirmRevert());
+  await waitFor(() => expect(result.current.revertingJobId).toBe(7));
+
+  emit({ kind: "finished", job_id: "revert-1", ok: 1, failed: 2, skipped: 0 });
+
+  await waitFor(() =>
+    expect(result.current.revertError).toEqual({
+      jobId: 7,
+      message: "REVERT FAILED — 2 files could not be moved back",
+    }),
+  );
+  expect(result.current.revertingJobId).toBeNull();
+});
+
+it("uses singular file wording for a single failed item", async () => {
+  mockIPC((cmd) => (cmd === "revert_organize" ? "revert-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRow();
+  act(() => result.current.requestRevert(7));
+  act(() => result.current.confirmRevert());
+  await waitFor(() => expect(result.current.revertingJobId).toBe(7));
+
+  emit({ kind: "finished", job_id: "revert-1", ok: 0, failed: 1, skipped: 0 });
+
+  await waitFor(() =>
+    expect(result.current.revertError).toEqual({
+      jobId: 7,
+      message: "REVERT FAILED — 1 file could not be moved back",
+    }),
+  );
+});
+
+it("does not surface an error when the revert fully succeeds", async () => {
+  mockIPC((cmd) => (cmd === "revert_organize" ? "revert-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRow();
+  act(() => result.current.requestRevert(7));
+  act(() => result.current.confirmRevert());
+  await waitFor(() => expect(result.current.revertingJobId).toBe(7));
+
+  emit({ kind: "finished", job_id: "revert-1", ok: 3, failed: 0, skipped: 0 });
+  await waitFor(() => expect(result.current.revertingJobId).toBeNull());
+
+  expect(result.current.revertError).toBeNull();
+});
+
+it("clears a stale revertError once a fresh attempt is confirmed", async () => {
+  const revertJobIds = ["revert-1", "revert-2"];
+  let call = 0;
+  mockIPC((cmd) => (cmd === "revert_organize" ? revertJobIds[call++] : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRow();
+  act(() => result.current.requestRevert(7));
+  act(() => result.current.confirmRevert());
+  await waitFor(() => expect(result.current.revertingJobId).toBe(7));
+  emit({ kind: "finished", job_id: "revert-1", ok: 0, failed: 1, skipped: 0 });
+  await waitFor(() => expect(result.current.revertError?.jobId).toBe(7));
+
+  act(() => result.current.requestRevert(7));
+  act(() => result.current.confirmRevert());
+  await waitFor(() => expect(result.current.revertError).toBeNull());
+});

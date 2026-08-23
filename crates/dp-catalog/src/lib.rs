@@ -52,6 +52,10 @@ pub trait Catalog: Send + Sync {
     /// `old_rel_path` and clears `organized_at`.
     async fn mark_media_reverted(&self, media_id: i64, old_rel_path: &str) -> DpResult<()>;
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>>;
+    /// A single `organize_jobs` row by id (`None` if it doesn't exist),
+    /// with the same `reverted_by_job_id` computation as
+    /// [`Self::list_organize_jobs`].
+    async fn get_organize_job(&self, id: i64) -> DpResult<Option<OrganizeJobRow>>;
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>>;
     async fn list_sources(&self, drive_id: i64) -> DpResult<Vec<Source>>;
     async fn upsert_source(&self, s: NewSource) -> DpResult<Source>;
@@ -168,6 +172,10 @@ impl Catalog for SqliteCatalog {
 
     async fn list_organize_jobs(&self, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {
         organize_jobs::list_organize_jobs(&self.pool, limit).await
+    }
+
+    async fn get_organize_job(&self, id: i64) -> DpResult<Option<OrganizeJobRow>> {
+        organize_jobs::get_organize_job(&self.pool, id).await
     }
 
     async fn list_organize_items(&self, job_id: i64, limit: u32) -> DpResult<Vec<OrganizeItemRow>> {

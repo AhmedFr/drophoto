@@ -44,6 +44,7 @@ export function RecentJobs({ jobs, now }: RecentJobsProps) {
         <ul className="flex flex-col">
           {jobs.map((job) => {
             const isReverting = revert.revertingJobId === job.id;
+            const rowError = revert.revertError?.jobId === job.id ? revert.revertError.message : null;
             return (
               <li key={job.id} className="flex items-center gap-4 border-b border-border px-6 py-3">
                 <Badge variant="outline" className="gap-1.5">
@@ -63,6 +64,7 @@ export function RecentJobs({ jobs, now }: RecentJobsProps) {
                   {job.moved}/{job.planned} moved · {job.skipped} skipped · {job.failed} failed
                 </span>
                 <span className="flex-1" />
+                {rowError && <span className="font-mono text-[10px] text-red-400">{rowError}</span>}
                 {isReverting && (
                   <span className="font-mono text-[10px] text-dim">
                     REVERTING… {revert.revertProgress?.done ?? 0}/{revert.revertProgress?.total ?? 0}

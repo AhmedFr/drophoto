@@ -11,4 +11,12 @@ export type UseRevertRowResult = {
   revertingJobId: number | null;
   /** Progress of the in-flight revert, if it has reported one. */
   revertProgress: { done: number; total: number } | null;
+  /**
+   * The most recent revert attempt's failure, if any: either the
+   * `revert_organize` call itself errored, or it ran but finished with
+   * some items still failed. `jobId` identifies which row it belongs to
+   * — `RecentJobs` only renders it on that row. Cleared the moment a
+   * fresh attempt is confirmed.
+   */
+  revertError: { jobId: number; message: string } | null;
 };

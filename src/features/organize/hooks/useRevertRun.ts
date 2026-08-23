@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api/client";
 import { revertOrganize } from "@/lib/api/organize";
 import { useJobEvents } from "@/features/drives/hooks/useJobEvents";
+import type { JobEvent } from "@/lib/api/scan";
 import type { UseRevertRunResult } from "./useRevertRun.types";
 
 /**
@@ -23,6 +24,12 @@ export function useRevertRun(jobIds: number[]): UseRevertRunResult {
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Items that finished a job's "finished" event still reporting `failed`
+  // — accumulated across every job id in the sequence, so a caller can
+  // tell "reverted everything" (`done && failed === 0`) apart from
+  // "reverted, but not all of it" (`done && failed > 0`), the latter of
+  // which must leave the action retryable rather than reading as success.
+  const [failed, setFailed] = useState(0);
 
   // Guards against double-handling the same terminal event, the same
   // way `useOrganizeRun` does.
@@ -44,6 +51,7 @@ export function useRevertRun(jobIds: number[]): UseRevertRunResult {
     setIndex(0);
     setDone(false);
     setError(null);
+    setFailed(0);
     setRunning(true);
     void startAt(0);
   }, [running, jobIds, startAt]);
@@ -51,7 +59,11 @@ export function useRevertRun(jobIds: number[]): UseRevertRunResult {
   const currentEvent = currentJobId ? events[currentJobId] : undefined;
 
   const advance = useCallback(
-    (currentIndex: number) => {
+    (currentIndex: number, event: JobEvent) => {
+      if (event.kind === "finished") {
+        setFailed((f) => f + event.failed);
+      }
+
       const nextIndex = currentIndex + 1;
       if (nextIndex < jobIds.length) {
         setIndex(nextIndex);
@@ -75,7 +87,7 @@ export function useRevertRun(jobIds: number[]): UseRevertRunResult {
     if (handledJobIds.current.has(currentJobId)) return;
     handledJobIds.current.add(currentJobId);
 
-    advance(index);
+    advance(index, currentEvent);
   }, [currentJobId, currentEvent, index, advance]);
 
   const progress =
@@ -83,5 +95,5 @@ export function useRevertRun(jobIds: number[]): UseRevertRunResult {
       ? { done: currentEvent.done, total: currentEvent.total }
       : null;
 
-  return { start, running, done, progress, error };
+  return { start, running, done, progress, failed, error };
 }

@@ -164,27 +164,46 @@ pub(crate) async fn insert_organize_item(pool: &SqlitePool, item: &OrganizeItemR
     Ok(result.last_insert_rowid())
 }
 
+/// The subquery behind `reverted_by_job_id`: per organize job, the
+/// *newest* **successful** (`status = 'done'`) revert job that
+/// references it (`MAX(id)` grouped by `reverts_job_id`). A `failed` or
+/// `cancelled` revert must never block a retry (see `RevertJob::run_inner`
+/// — a revert with any failed item finishes `"failed"`, not `"done"`),
+/// so only a `done` revert counts here.
+const REVERTED_BY_SUBQUERY: &str = "SELECT reverts_job_id, MAX(id) AS id FROM organize_jobs \
+     WHERE kind = 'revert' AND status = 'done' GROUP BY reverts_job_id";
+
 pub(crate) async fn list_organize_jobs(pool: &SqlitePool, limit: u32) -> DpResult<Vec<OrganizeJobRow>> {
-    // The `reverted_by` subquery picks, per organize job, the *newest*
-    // revert job that references it (`MAX(id)` grouped by
-    // `reverts_job_id`) — a job can in principle have more than one
-    // revert row (a failed/cancelled revert doesn't block a retry), and
-    // only the latest is what `reverted_by_job_id` should report.
-    let rows = sqlx::query(
+    let sql = format!(
         "SELECT j.*, d.name AS drive_name, r.id AS reverted_by_job_id \
          FROM organize_jobs j \
          JOIN drives d ON d.id = j.drive_id \
-         LEFT JOIN ( \
-             SELECT reverts_job_id, MAX(id) AS id FROM organize_jobs \
-             WHERE kind = 'revert' GROUP BY reverts_job_id \
-         ) r ON r.reverts_job_id = j.id \
+         LEFT JOIN ({REVERTED_BY_SUBQUERY}) r ON r.reverts_job_id = j.id \
          ORDER BY j.id DESC LIMIT ?",
-    )
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(db)?;
+    );
+    let rows = sqlx::query(&sql).bind(limit).fetch_all(pool).await.map_err(db)?;
     rows.iter().map(row_to_job).collect()
+}
+
+/// A single `organize_jobs` row by id, or `None` if it doesn't exist.
+/// Same shape (and the same `reverted_by_job_id` computation) as
+/// [`list_organize_jobs`], just addressed by id instead of listed —
+/// what `revert_organize` uses to load the job it's about to revert
+/// without scanning the whole recent-jobs list.
+pub(crate) async fn get_organize_job(pool: &SqlitePool, id: i64) -> DpResult<Option<OrganizeJobRow>> {
+    let sql = format!(
+        "SELECT j.*, d.name AS drive_name, r.id AS reverted_by_job_id \
+         FROM organize_jobs j \
+         JOIN drives d ON d.id = j.drive_id \
+         LEFT JOIN ({REVERTED_BY_SUBQUERY}) r ON r.reverts_job_id = j.id \
+         WHERE j.id = ?",
+    );
+    let row = sqlx::query(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db)?;
+    row.as_ref().map(row_to_job).transpose()
 }
 
 pub(crate) async fn list_organize_items(

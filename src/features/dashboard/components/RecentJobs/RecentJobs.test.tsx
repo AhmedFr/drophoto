@@ -196,6 +196,40 @@ it("shows a REVERTING badge with progress once a revert is confirmed", async () 
   await waitFor(() => expect(screen.getByText("REVERTING… 3/9")).toBeInTheDocument());
 });
 
+it("shows a REVERT FAILED message and keeps the REVERT button available after a partial failure", async () => {
+  mockIPC((cmd) => (cmd === "revert_organize" ? "revert-1" : undefined));
+  const { emit } = await mockListen();
+
+  renderJobs([doneJob]);
+  fireEvent.click(screen.getByRole("button", { name: "REVERT" }));
+  fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+  await waitFor(() => expect(screen.getByText(/REVERTING…/)).toBeInTheDocument());
+
+  emit({ kind: "finished", job_id: "revert-1", ok: 6, failed: 3, skipped: 0 });
+
+  expect(
+    await screen.findByText("REVERT FAILED — 3 files could not be moved back"),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "REVERT" })).toBeInTheDocument();
+});
+
+it("shows the revert_organize call's own error message on the row", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "revert_organize") {
+      throw { code: "Unsupported", message: "another job is running on this drive" };
+    }
+    return undefined;
+  });
+  await mockListen();
+
+  renderJobs([doneJob]);
+  fireEvent.click(screen.getByRole("button", { name: "REVERT" }));
+  fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+
+  expect(await screen.findByText("another job is running on this drive")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "REVERT" })).toBeInTheDocument();
+});
+
 it("does not call revert_organize when the confirm dialog is cancelled", async () => {
   const revertOrganizeSpy = vi.fn();
   mockIPC((cmd) => (cmd === "revert_organize" ? revertOrganizeSpy() : undefined));

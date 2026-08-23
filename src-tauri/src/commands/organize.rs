@@ -212,18 +212,19 @@ fn check_revertable(job: &OrganizeJobRow) -> Result<(), DpError> {
 /// Refuses with [`DpError::Unsupported`] when the job is still running
 /// (there's nothing finished to undo yet), when it isn't an `"organize"`
 /// job in the first place (reverting a revert isn't supported), or when
-/// it's already been reverted (`reverted_by_job_id` is set) — the second
-/// revert's items would just fail one-by-one against paths the first
-/// revert already restored, so refusing up front gives a clearer error
-/// than a job that "succeeds" having reverted nothing.
+/// it's already been reverted (`reverted_by_job_id` is set — which, per
+/// `RevertJob::run_inner`, only happens once a revert finished with
+/// *zero* failed items; a partial or fully-failed revert never sets
+/// this, so a retry always stays available) — the second revert's items
+/// would just fail one-by-one against paths the first revert already
+/// restored, so refusing up front gives a clearer error than a job that
+/// "succeeds" having reverted nothing.
 #[tauri::command]
 pub async fn revert_organize(state: State<'_, AppState>, job_id: i64) -> Result<String, DpError> {
     let job = state
         .catalog
-        .list_organize_jobs(u32::MAX)
+        .get_organize_job(job_id)
         .await?
-        .into_iter()
-        .find(|j| j.id == job_id)
         .ok_or_else(|| DpError::NotFound {
             message: format!("organize job {job_id} not found"),
         })?;
@@ -246,16 +247,18 @@ pub async fn revert_organize(state: State<'_, AppState>, job_id: i64) -> Result<
         });
     }
 
-    // Same up-front dedup/exclusivity check `start_organize` makes: skip
-    // the work below entirely when a job is already running on this
-    // drive, rather than leaving an orphaned `organize_jobs` row for a
-    // revert that will just be thrown away.
-    if let Some(existing_job_id) = state.active_job("organize", job.drive_id) {
-        return Ok(existing_job_id);
-    }
-    if state.active_job("scan", job.drive_id).is_some() {
+    // Refuse up front — before ever creating a `revert_jobs` row — when
+    // another job is already running on this drive. `state.start_revert`
+    // is exclusive (see its doc comment: unlike `start_organize`, it
+    // never reuses another job's id) and would refuse this exact case on
+    // its own, but checking here first avoids creating a row only to
+    // immediately have to close it back out for a revert that was never
+    // going to run.
+    if state.active_job("organize", job.drive_id).is_some()
+        || state.active_job("scan", job.drive_id).is_some()
+    {
         return Err(DpError::Unsupported {
-            message: "a scan job is already running on this drive".into(),
+            message: "another job is running on this drive".into(),
             path: None,
         });
     }
@@ -274,28 +277,29 @@ pub async fn revert_organize(state: State<'_, AppState>, job_id: i64) -> Result<
         home: state.home.clone(),
     };
 
-    // See `start_organize`'s identical comment: `state.start_revert` may
-    // decide not to call `make_job` at all, which would otherwise leave
-    // the row just created above stuck `"running"` forever.
-    let spawned = Arc::new(AtomicBool::new(false));
-    let spawned_flag = spawned.clone();
+    // Unlike `start_organize`'s dance with an `AtomicBool` flag,
+    // `state.start_revert` only ever spawns or refuses — it never
+    // reuses another job's id (see its doc comment) — so any `Err` here
+    // unambiguously means nothing was spawned and the row just created
+    // above is orphaned. Close it out as `"failed"`, not `"cancelled"`:
+    // it never ran, and `"failed"` is exactly the status that (per the
+    // ruling on `RevertJob`'s own status logic) never blocks a retry.
     let drive_id = job.drive_id;
-    let result = state.start_revert(drive_id, move |revert_id| {
-        spawned_flag.store(true, Ordering::SeqCst);
+    match state.start_revert(drive_id, move |revert_id| {
         Arc::new(RevertJob::new(revert_id, drive, revert_row_id, items, deps)) as Arc<dyn Job>
-    });
-
-    if !spawned.load(Ordering::SeqCst) {
-        if let Err(e) = state
-            .catalog
-            .finish_organize_job(revert_row_id, "cancelled", 0, 0, 0)
-            .await
-        {
-            tracing::warn!(error = %e, revert_row_id, "failed to close out an orphaned revert job row");
+    }) {
+        Ok(runner_job_id) => Ok(runner_job_id),
+        Err(e) => {
+            if let Err(finish_err) = state
+                .catalog
+                .finish_organize_job(revert_row_id, "failed", 0, 0, 0)
+                .await
+            {
+                tracing::warn!(error = %finish_err, revert_row_id, "failed to close out an orphaned revert job row");
+            }
+            Err(e)
         }
     }
-
-    result
 }
 
 /// Count of `Planned` items — matches [`OrganizePlan::planned`], and is

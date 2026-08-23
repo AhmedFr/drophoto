@@ -17,12 +17,18 @@ fn taken_at() -> DateTime<Utc> {
     "2025-09-12T10:00:00Z".parse().unwrap()
 }
 
-fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
+/// `size` must match the real on-disk byte length of the file this
+/// media row describes — `RevertJob`'s identity/size guard (see
+/// `crates/dp-jobs/src/revert.rs`) compares the catalog's recorded
+/// `size` against what's actually at `from` before ever moving it, so a
+/// test that fabricates a mismatched size would (correctly) have every
+/// one of its reverts fail. Use [`write`] to get a real, matching size.
+fn nm(drive_id: i64, rel_path: &str, hash: &str, size: u64) -> NewMedia {
     NewMedia {
         drive_id,
         rel_path: rel_path.into(),
         hash: hash.into(),
-        size: 1000,
+        size,
         kind: MediaKind::Photo,
         ext: "jpg".into(),
         width: None,
@@ -40,6 +46,13 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         organized_at: None,
         source_id: None,
     }
+}
+
+/// Writes `content` at `path` and returns its byte length — the `size`
+/// [`nm`] needs so the media row it builds matches the real file.
+fn write(path: &Path, content: &[u8]) -> u64 {
+    std::fs::write(path, content).unwrap();
+    content.len() as u64
 }
 
 fn planned(media_id: i64, old: &str, new: &str) -> OrganizePlanItem {
@@ -127,16 +140,44 @@ async fn run_organize(
     (job_row_id, item_rows)
 }
 
+/// Runs a [`RevertJob`] over `items` to completion and returns the
+/// terminal event.
+async fn run_revert(
+    catalog: &Arc<dyn Catalog>,
+    drive: Drive,
+    revert_row_id: i64,
+    items: Vec<OrganizeItemRow>,
+) -> (Vec<JobEvent>, JobEvent) {
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("revert");
+    let job = Arc::new(RevertJob::new(
+        job_id.clone(),
+        drive,
+        revert_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+    drain_until_terminal(&mut rx).await
+}
+
 #[tokio::test]
 async fn reverts_moved_items_back_to_their_original_locations() {
     let drive_dir = tempfile::tempdir().unwrap();
-    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
-    std::fs::write(drive_dir.path().join("b.jpg"), b"content-b").unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+    let b_size = write(&drive_dir.path().join("b.jpg"), b"content-b");
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, drive_dir.path()).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
-    let b_id = catalog.upsert_media(nm(drive.id, "b.jpg", "h-b")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+    let b_id = catalog
+        .upsert_media(nm(drive.id, "b.jpg", "h-b", b_size))
+        .await
+        .unwrap();
 
     let items = vec![
         planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg"),
@@ -152,19 +193,7 @@ async fn reverts_moved_items_back_to_their_original_locations() {
         .create_revert_job(drive.id, organize_job_id, 2)
         .await
         .unwrap();
-    let (tx, mut rx) = mpsc::channel(64);
-    let runner = JobRunner::new(tx);
-    let job_id = runner.next_id("revert");
-    let job = Arc::new(RevertJob::new(
-        job_id.clone(),
-        drive,
-        revert_row_id,
-        organize_items,
-        deps(catalog.clone()),
-    ));
-    runner.spawn(job_id, job);
-
-    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
     let (ok, failed, skipped) = match terminal {
         JobEvent::Finished {
             ok, failed, skipped, ..
@@ -230,13 +259,19 @@ async fn reverts_moved_items_back_to_their_original_locations() {
 #[tokio::test]
 async fn reverts_items_in_reverse_of_the_original_order() {
     let drive_dir = tempfile::tempdir().unwrap();
-    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
-    std::fs::write(drive_dir.path().join("b.jpg"), b"content-b").unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+    let b_size = write(&drive_dir.path().join("b.jpg"), b"content-b");
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, drive_dir.path()).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
-    let b_id = catalog.upsert_media(nm(drive.id, "b.jpg", "h-b")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+    let b_id = catalog
+        .upsert_media(nm(drive.id, "b.jpg", "h-b", b_size))
+        .await
+        .unwrap();
 
     let items = vec![
         planned(a_id, "a.jpg", "archive/a.jpg"),
@@ -248,19 +283,7 @@ async fn reverts_items_in_reverse_of_the_original_order() {
         .create_revert_job(drive.id, organize_job_id, 2)
         .await
         .unwrap();
-    let (tx, mut rx) = mpsc::channel(64);
-    let runner = JobRunner::new(tx);
-    let job_id = runner.next_id("revert");
-    let job = Arc::new(RevertJob::new(
-        job_id.clone(),
-        drive,
-        revert_row_id,
-        organize_items,
-        deps(catalog.clone()),
-    ));
-    runner.spawn(job_id, job);
-
-    let (events, _terminal) = drain_until_terminal(&mut rx).await;
+    let (events, _terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
     let first_progress_path = events.iter().find_map(|e| match e {
         JobEvent::Progress { current, .. } => current.clone(),
         _ => None,
@@ -269,21 +292,22 @@ async fn reverts_items_in_reverse_of_the_original_order() {
     assert_eq!(first_progress_path.as_deref(), Some("archive/b.jpg"));
 }
 
+/// After a *successful* revert, the original job's own `organize_items`
+/// rows are stale: replaying them again must not blindly move whatever
+/// now happens to sit at the old `new_rel_path`. The catalog's
+/// `rel_path` no longer agreeing with the stale item is exactly the
+/// identity check's job.
 #[tokio::test]
-async fn a_second_revert_of_the_same_job_is_refused_by_the_catalog_state() {
-    // The job itself doesn't refuse a second revert (that's the command
-    // layer's job) — but nothing stops two revert rows from being
-    // created for the same organize job at the catalog layer, and a
-    // second run over already-restored items must simply fail per-item
-    // (the "occupied destination" case below) rather than corrupt
-    // anything. This test documents that a *second* RevertJob run over
-    // the same, already-reverted items reports every item failed.
+async fn a_second_revert_over_stale_already_reverted_items_fails_the_identity_check() {
     let drive_dir = tempfile::tempdir().unwrap();
-    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, drive_dir.path()).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
 
     let items = vec![planned(a_id, "a.jpg", "archive/a.jpg")];
     let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
@@ -293,51 +317,29 @@ async fn a_second_revert_of_the_same_job_is_refused_by_the_catalog_state() {
         .create_revert_job(drive.id, organize_job_id, 1)
         .await
         .unwrap();
-    let (tx, mut rx) = mpsc::channel(64);
-    let runner = JobRunner::new(tx);
-    let job_id = runner.next_id("revert");
-    let job = Arc::new(RevertJob::new(
-        job_id.clone(),
-        drive.clone(),
-        revert_row_id,
-        organize_items,
-        deps(catalog.clone()),
-    ));
-    runner.spawn(job_id, job);
-    let (_events, terminal) = drain_until_terminal(&mut rx).await;
+    let (_events, terminal) =
+        run_revert(&catalog, drive.clone(), revert_row_id, organize_items.clone()).await;
     assert!(matches!(terminal, JobEvent::Finished { ok: 1, failed: 0, .. }));
 
     // Second revert attempt over the *same* (now-stale) organize items:
-    // `from` (archive/a.jpg) no longer exists — the job must fail the
-    // item, not touch anything.
-    let organize_items_again = catalog.list_organize_items(organize_job_id, 10).await.unwrap();
+    // the catalog's rel_path is "a.jpg" again, not "archive/a.jpg" —
+    // must be refused as a conflict, not treated as a missing source.
     let revert_row_id_2 = catalog
         .create_revert_job(drive.id, organize_job_id, 1)
         .await
         .unwrap();
-    let (tx2, mut rx2) = mpsc::channel(64);
-    let runner2 = JobRunner::new(tx2);
-    let job_id2 = runner2.next_id("revert");
-    let job2 = Arc::new(RevertJob::new(
-        job_id2.clone(),
-        drive,
-        revert_row_id_2,
-        organize_items_again,
-        deps(catalog.clone()),
-    ));
-    runner2.spawn(job_id2, job2);
-    let (events2, terminal2) = drain_until_terminal(&mut rx2).await;
+    let (events2, terminal2) = run_revert(&catalog, drive, revert_row_id_2, organize_items).await;
     let failed = match terminal2 {
         JobEvent::Finished { failed, .. } => failed,
         other => panic!("expected Finished, got {other:?} (events: {events2:?})"),
     };
     assert_eq!(failed, 1, "events: {events2:?}");
-    let saw_missing = events2
-        .iter()
-        .any(|e| matches!(e, JobEvent::ItemError { message, .. } if message == "source missing"));
+    let saw_conflict = events2.iter().any(
+        |e| matches!(e, JobEvent::ItemError { code, message, .. } if code == "conflict" && message == "media moved since this job"),
+    );
     assert!(
-        saw_missing,
-        "expected a \"source missing\" ItemError, got {events2:?}"
+        saw_conflict,
+        "expected a \"media moved since this job\" ItemError, got {events2:?}"
     );
 
     assert_eq!(
@@ -346,14 +348,78 @@ async fn a_second_revert_of_the_same_job_is_refused_by_the_catalog_state() {
     );
 }
 
+/// The identity check's actual purpose: a stale `organize_items` row
+/// whose media has since been re-filed elsewhere (another organize run,
+/// in this test simulated directly on the catalog) must never have its
+/// revert move back whatever unrelated file now happens to occupy the
+/// stale `new_rel_path` — that file is untouched, and the item fails.
 #[tokio::test]
-async fn an_occupied_destination_is_failed_and_the_file_is_left_untouched() {
+async fn media_reorganized_elsewhere_since_this_job_is_failed_and_the_occupying_file_is_untouched() {
     let drive_dir = tempfile::tempdir().unwrap();
-    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, drive_dir.path()).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/a.jpg")];
+    let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
+
+    // Simulate a later, unrelated re-file of this same media (e.g. a
+    // second organize run) without physically moving the file at
+    // archive/a.jpg — exactly the "DB says one thing, the stale item
+    // says another" scenario the identity check exists for.
+    catalog
+        .mark_media_organized(a_id, "archive/elsewhere.jpg")
+        .await
+        .unwrap();
+
+    // And now something else entirely occupies the stale new_rel_path.
+    std::fs::write(drive_dir.path().join("archive/a.jpg"), b"unrelated file").unwrap();
+
+    let revert_row_id = catalog
+        .create_revert_job(drive.id, organize_job_id, 1)
+        .await
+        .unwrap();
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 1, "events: {events:?}");
+
+    let saw_conflict = events.iter().any(
+        |e| matches!(e, JobEvent::ItemError { code, message, .. } if code == "conflict" && message == "media moved since this job"),
+    );
+    assert!(saw_conflict, "expected a conflict ItemError, got {events:?}");
+
+    // The unrelated occupying file is untouched, and nothing was written
+    // back to the original a.jpg location.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/a.jpg")).unwrap(),
+        b"unrelated file"
+    );
+    assert!(!drive_dir.path().join("a.jpg").exists());
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert_eq!(a_row.rel_path, "archive/elsewhere.jpg");
+}
+
+#[tokio::test]
+async fn an_occupied_destination_is_failed_and_the_file_is_left_untouched() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
 
     let items = vec![planned(a_id, "a.jpg", "archive/a.jpg")];
     let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
@@ -366,19 +432,7 @@ async fn an_occupied_destination_is_failed_and_the_file_is_left_untouched() {
         .create_revert_job(drive.id, organize_job_id, 1)
         .await
         .unwrap();
-    let (tx, mut rx) = mpsc::channel(64);
-    let runner = JobRunner::new(tx);
-    let job_id = runner.next_id("revert");
-    let job = Arc::new(RevertJob::new(
-        job_id.clone(),
-        drive,
-        revert_row_id,
-        organize_items,
-        deps(catalog.clone()),
-    ));
-    runner.spawn(job_id, job);
-
-    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
     let (ok, failed) = match terminal {
         JobEvent::Finished { ok, failed, .. } => (ok, failed),
         other => panic!("expected Finished, got {other:?} (events: {events:?})"),
@@ -403,18 +457,134 @@ async fn an_occupied_destination_is_failed_and_the_file_is_left_untouched() {
         "a failed revert must not touch the catalog row"
     );
     assert!(a_row.organized_at.is_some());
+
+    // The job row itself must read "failed" — not "done" — so a retry
+    // stays possible, and the organize job it targeted must not be
+    // reported as reverted.
+    let job_row = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == revert_row_id)
+        .unwrap();
+    assert_eq!(job_row.status, "failed");
+
+    let organize_row = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == organize_job_id)
+        .unwrap();
+    assert_eq!(
+        organize_row.reverted_by_job_id, None,
+        "a revert job that failed every item must not count as \"reverted\""
+    );
+}
+
+/// A revert that fails every item (here: the destination is occupied)
+/// must not block a later retry once the obstruction is cleared — the
+/// job row reads "failed", `reverted_by_job_id` stays `None`, and a
+/// second attempt is free to succeed.
+#[tokio::test]
+async fn a_revert_where_every_item_fails_does_not_block_a_retry() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/a.jpg")];
+    let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
+
+    // Occupy the destination so the first revert attempt fails outright.
+    std::fs::write(drive_dir.path().join("a.jpg"), b"in the way").unwrap();
+
+    let revert_row_id_1 = catalog
+        .create_revert_job(drive.id, organize_job_id, 1)
+        .await
+        .unwrap();
+    let (_events, terminal1) =
+        run_revert(&catalog, drive.clone(), revert_row_id_1, organize_items.clone()).await;
+    assert!(matches!(terminal1, JobEvent::Finished { ok: 0, failed: 1, .. }));
+
+    let job_row_1 = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == revert_row_id_1)
+        .unwrap();
+    assert_eq!(job_row_1.status, "failed");
+
+    let organize_row_after_failure = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == organize_job_id)
+        .unwrap();
+    assert_eq!(organize_row_after_failure.reverted_by_job_id, None);
+
+    // Clear the obstruction and retry: same (untouched) organize items,
+    // a fresh revert row.
+    std::fs::remove_file(drive_dir.path().join("a.jpg")).unwrap();
+
+    let revert_row_id_2 = catalog
+        .create_revert_job(drive.id, organize_job_id, 1)
+        .await
+        .unwrap();
+    let (_events2, terminal2) = run_revert(&catalog, drive, revert_row_id_2, organize_items).await;
+    assert!(matches!(terminal2, JobEvent::Finished { ok: 1, failed: 0, .. }));
+
+    let job_row_2 = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == revert_row_id_2)
+        .unwrap();
+    assert_eq!(job_row_2.status, "done");
+
+    let organize_row_after_success = catalog
+        .list_organize_jobs(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.id == organize_job_id)
+        .unwrap();
+    assert_eq!(
+        organize_row_after_success.reverted_by_job_id,
+        Some(revert_row_id_2)
+    );
+
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg")).unwrap(),
+        b"content-a"
+    );
 }
 
 #[tokio::test]
 async fn a_missing_source_is_failed_and_the_job_continues() {
     let drive_dir = tempfile::tempdir().unwrap();
-    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
-    std::fs::write(drive_dir.path().join("b.jpg"), b"content-b").unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+    let b_size = write(&drive_dir.path().join("b.jpg"), b"content-b");
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, drive_dir.path()).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
-    let b_id = catalog.upsert_media(nm(drive.id, "b.jpg", "h-b")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+    let b_id = catalog
+        .upsert_media(nm(drive.id, "b.jpg", "h-b", b_size))
+        .await
+        .unwrap();
 
     let items = vec![
         planned(a_id, "a.jpg", "archive/a.jpg"),
@@ -430,19 +600,7 @@ async fn a_missing_source_is_failed_and_the_job_continues() {
         .create_revert_job(drive.id, organize_job_id, 2)
         .await
         .unwrap();
-    let (tx, mut rx) = mpsc::channel(64);
-    let runner = JobRunner::new(tx);
-    let job_id = runner.next_id("revert");
-    let job = Arc::new(RevertJob::new(
-        job_id.clone(),
-        drive,
-        revert_row_id,
-        organize_items,
-        deps(catalog.clone()),
-    ));
-    runner.spawn(job_id, job);
-
-    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
     let (ok, failed) = match terminal {
         JobEvent::Finished { ok, failed, .. } => (ok, failed),
         other => panic!("expected Finished, got {other:?} (events: {events:?})"),
@@ -462,14 +620,71 @@ async fn a_missing_source_is_failed_and_the_job_continues() {
     assert!(a_row.organized_at.is_some());
 }
 
+/// A file whose bytes changed underneath it (same `rel_path`, but not
+/// the content the catalog last recorded a size for) must not be
+/// silently moved back — even though the identity check alone would let
+/// it through.
 #[tokio::test]
-async fn cancelling_before_start_moves_nothing() {
+async fn a_size_mismatch_is_failed_and_the_file_is_left_untouched() {
     let drive_dir = tempfile::tempdir().unwrap();
-    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
 
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, drive_dir.path()).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/a.jpg")];
+    let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
+
+    // The file at its organized location changed size after the fact —
+    // rel_path still matches, but the bytes don't.
+    std::fs::write(
+        drive_dir.path().join("archive/a.jpg"),
+        b"a much longer replacement body",
+    )
+    .unwrap();
+
+    let revert_row_id = catalog
+        .create_revert_job(drive.id, organize_job_id, 1)
+        .await
+        .unwrap();
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, organize_items).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 1, "events: {events:?}");
+
+    let saw_size_mismatch = events.iter().any(
+        |e| matches!(e, JobEvent::ItemError { code, message, .. } if code == "conflict" && message == "size mismatch"),
+    );
+    assert!(
+        saw_size_mismatch,
+        "expected a size-mismatch ItemError, got {events:?}"
+    );
+
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/a.jpg")).unwrap(),
+        b"a much longer replacement body"
+    );
+    assert!(!drive_dir.path().join("a.jpg").exists());
+}
+
+#[tokio::test]
+async fn cancelling_before_start_moves_nothing() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    let a_size = write(&drive_dir.path().join("a.jpg"), b"content-a");
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", a_size))
+        .await
+        .unwrap();
 
     let items = vec![planned(a_id, "a.jpg", "archive/a.jpg")];
     let (organize_job_id, organize_items) = run_organize(&catalog, drive.clone(), items).await;
@@ -511,7 +726,10 @@ async fn cancelling_before_start_moves_nothing() {
 async fn offline_drive_fails_the_job_and_finishes_the_job_row_as_failed() {
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let mut drive = register_drive(&catalog, Path::new("/Volumes/Offline")).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", 9))
+        .await
+        .unwrap();
 
     let organize_job_id = catalog.create_organize_job(drive.id, 1).await.unwrap();
     let item_rows = vec![OrganizeItemRow {
@@ -568,7 +786,10 @@ async fn only_moved_items_are_ever_reverted() {
     let drive_dir = tempfile::tempdir().unwrap();
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive = register_drive(&catalog, drive_dir.path()).await;
-    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "a.jpg", "h-a", 9))
+        .await
+        .unwrap();
 
     let organize_job_id = catalog.create_organize_job(drive.id, 1).await.unwrap();
     let item_rows = vec![OrganizeItemRow {
@@ -585,19 +806,7 @@ async fn only_moved_items_are_ever_reverted() {
         .await
         .unwrap();
 
-    let (tx, mut rx) = mpsc::channel(64);
-    let runner = JobRunner::new(tx);
-    let job_id = runner.next_id("revert");
-    let job = Arc::new(RevertJob::new(
-        job_id.clone(),
-        drive,
-        revert_row_id,
-        item_rows,
-        deps(catalog.clone()),
-    ));
-    runner.spawn(job_id, job);
-
-    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (events, terminal) = run_revert(&catalog, drive, revert_row_id, item_rows).await;
     let (ok, failed, skipped) = match terminal {
         JobEvent::Finished {
             ok, failed, skipped, ..

@@ -152,7 +152,19 @@ impl RevertJob {
             skipped: 0,
             cancelled,
         };
-        let status = if cancelled { "cancelled" } else { "done" };
+        // A revert that leaves even one item un-reverted must never read
+        // as `"done"` (fully successful) — `reverted_by_job_id` (see
+        // `dp_catalog::organize_jobs::list_organize_jobs`) treats `"done"`
+        // as "this job has been reverted, don't offer it again", and a
+        // partial revert is exactly the case where a retry must still be
+        // possible.
+        let status = if cancelled {
+            "cancelled"
+        } else if outcome.failed > 0 {
+            "failed"
+        } else {
+            "done"
+        };
         self.finish_row(status, outcome.ok, outcome.failed).await;
 
         Ok(outcome)
@@ -181,11 +193,26 @@ impl RevertJob {
     /// it's going back to (`old_rel_path`). Applies the exact same
     /// escapes-mount / deny-list / symlink guards as
     /// [`crate::OrganizeJob::apply_move`] — both sides are just as much
-    /// user-controlled paths here as they are on the way in — plus one
-    /// revert-specific check: `from` must actually exist, since a
-    /// missing source can't be distinguished from "already reverted" any
-    /// other way and deserves a clearer message than whatever `rename`
-    /// itself would report.
+    /// user-controlled paths here as they are on the way in — plus two
+    /// revert-specific checks, both run before anything is moved:
+    ///
+    /// 1. **Identity**: the catalog's current `rel_path` for this media
+    ///    must still equal `item.new_rel_path`. An `organize_items` row
+    ///    is a *stale snapshot* the moment anything else re-files that
+    ///    same photo (a later organize run, an earlier — possibly
+    ///    partial — revert) — without this check, replaying that stale
+    ///    row would move back whatever now happens to sit at `from`,
+    ///    which may not be this photo at all any more.
+    /// 2. **Size**: the file actually at `from` must be the same size the
+    ///    catalog recorded for this media at scan time. Belt-and-braces
+    ///    on top of the identity check — `rel_path` can agree while the
+    ///    bytes underneath it don't (a same-named file dropped in by
+    ///    something else entirely) — cheap enough to always run, unlike
+    ///    a full hash.
+    ///
+    /// `from` must also actually exist, since a missing source can't be
+    /// distinguished from "already reverted" any other way and deserves
+    /// a clearer message than whatever `rename` itself would report.
     async fn apply_revert(&self, ctx: &JobCtx, mount_path: &str, item: &OrganizeItemRow) -> bool {
         let mount = Path::new(mount_path);
         let from = mount.join(&item.new_rel_path);
@@ -210,8 +237,29 @@ impl RevertJob {
             return false;
         }
 
-        if std::fs::symlink_metadata(&from).is_err() {
-            self.record_failed(ctx, item, "not_found", "source missing".into())
+        let media = match self.deps.catalog.get_media_with_drive(item.media_id).await {
+            Ok((media, _drive)) => media,
+            Err(e) => {
+                self.record_failed(ctx, item, error_code(&e), e.to_string()).await;
+                return false;
+            }
+        };
+        if media.rel_path != item.new_rel_path {
+            self.record_failed(ctx, item, "conflict", "media moved since this job".into())
+                .await;
+            return false;
+        }
+
+        let metadata = match std::fs::symlink_metadata(&from) {
+            Ok(m) => m,
+            Err(_) => {
+                self.record_failed(ctx, item, "not_found", "source missing".into())
+                    .await;
+                return false;
+            }
+        };
+        if metadata.len() != media.size {
+            self.record_failed(ctx, item, "conflict", "size mismatch".into())
                 .await;
             return false;
         }

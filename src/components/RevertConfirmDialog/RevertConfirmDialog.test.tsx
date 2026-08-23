@@ -13,7 +13,7 @@ it("shows how many files would move back, pluralized", () => {
 
 it("uses singular file for a count of one", () => {
   render(<RevertConfirmDialog open moved={1} onCancel={vi.fn()} onConfirm={vi.fn()} />);
-  expect(screen.getByText("Move 1 file back to their original locations?")).toBeInTheDocument();
+  expect(screen.getByText("Move 1 file back to its original location?")).toBeInTheDocument();
 });
 
 it("calls onConfirm when Revert is clicked", () => {

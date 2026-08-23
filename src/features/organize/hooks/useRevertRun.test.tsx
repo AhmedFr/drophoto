@@ -104,6 +104,60 @@ it("marks done when a revert job is cancelled", async () => {
   expect(result.current.running).toBe(false);
 });
 
+it("accumulates failed items across the whole sequence", async () => {
+  const revertJobIds = ["revert-1", "revert-2"];
+  let call = 0;
+  mockIPC((cmd) => (cmd === "revert_organize" ? revertJobIds[call++] : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([10, 20]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.running).toBe(true));
+
+  emit({ kind: "finished", job_id: "revert-1", ok: 0, failed: 2, skipped: 0 });
+  await waitFor(() => expect(call).toBe(2));
+
+  emit({ kind: "finished", job_id: "revert-2", ok: 3, failed: 1, skipped: 0 });
+  await waitFor(() => expect(result.current.done).toBe(true));
+
+  expect(result.current.failed).toBe(3);
+});
+
+it("reports failed as zero once every job id fully reverted", async () => {
+  mockIPC((cmd) => (cmd === "revert_organize" ? "revert-1" : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.running).toBe(true));
+
+  emit({ kind: "finished", job_id: "revert-1", ok: 5, failed: 0, skipped: 0 });
+  await waitFor(() => expect(result.current.done).toBe(true));
+
+  expect(result.current.failed).toBe(0);
+});
+
+it("resets failed to zero on a fresh start()", async () => {
+  // Two distinct job ids across the two runs — a real `revert_organize`
+  // call always returns a fresh, runner-scoped id, so this is the
+  // realistic case (as opposed to a stale terminal event for a reused
+  // id "sticking around" in `useJobEvents`, which is an artifact of the
+  // mock rather than something that happens for real).
+  const revertJobIds = ["revert-1", "revert-2"];
+  let call = 0;
+  mockIPC((cmd) => (cmd === "revert_organize" ? revertJobIds[call++] : undefined));
+  const { emit } = await mockListen();
+
+  const { result } = renderRun([1]);
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.running).toBe(true));
+  emit({ kind: "finished", job_id: "revert-1", ok: 0, failed: 2, skipped: 0 });
+  await waitFor(() => expect(result.current.failed).toBe(2));
+
+  act(() => result.current.start());
+  await waitFor(() => expect(result.current.failed).toBe(0));
+});
+
 it("does nothing when jobIds is empty", async () => {
   const revertOrganizeSpy = vi.fn();
   mockIPC((cmd) => (cmd === "revert_organize" ? revertOrganizeSpy() : undefined));
