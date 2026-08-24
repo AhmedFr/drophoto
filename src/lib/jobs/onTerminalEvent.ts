@@ -18,20 +18,27 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
  * `started`/`progress`/`item_error` events are no-ops; only a job's own
  * terminal event should invalidate or toast, never a per-item one.
  *
- * A sidecar sync (`job_id` prefixed `"sidecar-"`) is a background sweep
- * nobody explicitly asked for — its own success is silent (no toast),
- * so it never interrupts whatever the user's actually doing. A failure
- * still surfaces as the usual error toast: it's the one outcome worth
- * knowing about unprompted.
+ * A sidecar sync (`job_id` prefixed `"sidecar-"`) is handled first and
+ * quite differently, because it's a background sweep nobody explicitly
+ * asked for. It writes `.xmp` files on disk and clears a flag no query
+ * here reads, so it changes nothing behind `INVALIDATE_KEYS` — refetching
+ * the whole gallery after every sweep would be pure churn, and is skipped
+ * entirely. Its success is likewise silent, so it never interrupts
+ * whatever the user's actually doing; a failure still surfaces as the
+ * usual error toast, the one outcome worth knowing about unprompted.
  */
 export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label: string): void {
   if (event.kind !== "finished" && event.kind !== "cancelled") return;
 
-  for (const queryKey of INVALIDATE_KEYS) {
-    queryClient.invalidateQueries({ queryKey: [...queryKey] });
-  }
+  const isSidecarSync = event.job_id.startsWith("sidecar-");
 
-  if (event.job_id.startsWith("sidecar-") && event.failed === 0) return;
+  if (isSidecarSync) {
+    if (event.failed === 0) return;
+  } else {
+    for (const queryKey of INVALIDATE_KEYS) {
+      queryClient.invalidateQueries({ queryKey: [...queryKey] });
+    }
+  }
 
   if (event.kind === "cancelled") {
     toast(`${label} cancelled — ${event.ok} file${event.ok === 1 ? "" : "s"} done`);

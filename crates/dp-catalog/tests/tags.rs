@@ -161,3 +161,40 @@ async fn mark_sidecar_pending_sets_the_flag() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, a);
 }
+
+#[tokio::test]
+async fn has_sidecar_pending_reports_whether_any_row_is_flagged() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h1")).await.unwrap();
+
+    assert!(!c.has_sidecar_pending(drive_id).await.unwrap());
+
+    c.tag_media(&[a], &["x".into()], &[]).await.unwrap();
+    assert!(c.has_sidecar_pending(drive_id).await.unwrap());
+
+    c.clear_sidecar_pending(a).await.unwrap();
+    assert!(!c.has_sidecar_pending(drive_id).await.unwrap());
+}
+
+#[tokio::test]
+async fn has_sidecar_pending_is_scoped_to_one_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let other_id = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            capacity: 100,
+            free: 40,
+        })
+        .await
+        .unwrap()
+        .id;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h1")).await.unwrap();
+    c.tag_media(&[a], &["x".into()], &[]).await.unwrap();
+
+    assert!(c.has_sidecar_pending(drive_id).await.unwrap());
+    assert!(!c.has_sidecar_pending(other_id).await.unwrap());
+}

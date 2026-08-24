@@ -201,3 +201,23 @@ it("locks page scroll while open", async () => {
     expect(locked).toBe(true);
   });
 });
+
+// The end-to-end shape of the arrow-keys-in-a-text-field bug: the tag
+// panel's filter is a plain `<input>` inside the open lightbox, and the
+// arrow-key listener is bound on `window`, so moving the caret inside it
+// used to flip to another photo mid-typing.
+it("does not navigate when arrow keys are pressed inside the tag panel filter", async () => {
+  const user = userEvent.setup();
+  const onPrev = vi.fn();
+  const onNext = vi.fn();
+  renderLightbox({ items: items(3), index: 1, onClose: vi.fn(), onPrev, onNext });
+
+  await user.click(screen.getByRole("button", { name: "Add tag" }));
+  const filter = await screen.findByPlaceholderText("Filter or create a tag…");
+  await user.click(filter);
+  await user.type(filter, "wed{ArrowLeft}{ArrowRight}");
+
+  expect(filter).toHaveValue("wed");
+  expect(onPrev).not.toHaveBeenCalled();
+  expect(onNext).not.toHaveBeenCalled();
+});

@@ -23,8 +23,7 @@ pub async fn start_sidecar_sync_all(state: State<'_, AppState>) -> Result<Vec<St
             continue;
         }
 
-        let pending = state.catalog.list_sidecar_pending(drive.id).await?;
-        if pending.is_empty() {
+        if !state.catalog.has_sidecar_pending(drive.id).await? {
             continue;
         }
 

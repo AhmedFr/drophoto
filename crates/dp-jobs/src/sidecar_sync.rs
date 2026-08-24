@@ -2,7 +2,11 @@
 //! every row on a drive flagged `sidecar_pending` (see
 //! `dp_catalog::Catalog::list_sidecar_pending`), writes that row's full,
 //! current tag set to its media file's XMP sidecar and clears the flag.
+//! Any subjects an external app wrote into that sidecar in the meantime
+//! are read back and merged into the catalog first, so a sweep never
+//! silently erases an edit made outside this app.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -90,28 +94,62 @@ impl SidecarSyncJob {
             path: Some(mount_path.clone()),
         })?;
 
-        let rows = self.deps.catalog.list_sidecar_pending(self.drive.id).await?;
-        let total = rows.len() as u64;
+        // Tagging is bursty: the user selects a dozen photos, tags them,
+        // and keeps going while this sweep runs. A single
+        // `list_sidecar_pending` snapshot would leave everything tagged
+        // after it was taken sitting unwritten until *something else*
+        // happened to start another sweep, so instead we re-fetch until
+        // nothing new turns up.
+        //
+        // `attempted` is what keeps that from spinning forever: a row
+        // whose sync failed deliberately keeps its `sidecar_pending`
+        // flag (so a *later* sweep retries it), which means it comes
+        // straight back in the next fetch. Filtering out ids already
+        // tried in this run means a permanently-failing row ends the
+        // loop instead of restarting it, and is tallied exactly once.
+        let mut attempted: HashSet<i64> = HashSet::new();
+        let mut done = 0u64;
         let mut cancelled = false;
 
-        for (i, row) in rows.iter().enumerate() {
+        'sweep: loop {
             if ctx.cancel.is_cancelled() {
                 cancelled = true;
                 break;
             }
 
-            self.sync_row(ctx, &mount, row).await;
+            let rows: Vec<MediaRow> = self
+                .deps
+                .catalog
+                .list_sidecar_pending(self.drive.id)
+                .await?
+                .into_iter()
+                .filter(|row| !attempted.contains(&row.id))
+                .collect();
+            if rows.is_empty() {
+                break;
+            }
 
-            let done = (i + 1) as u64;
-            let _ = ctx
-                .events
-                .send(JobEvent::Progress {
-                    job_id: self.id.clone(),
-                    done,
-                    total,
-                    current: Some(row.rel_path.clone()),
-                })
-                .await;
+            let total = done + rows.len() as u64;
+            for row in &rows {
+                if ctx.cancel.is_cancelled() {
+                    cancelled = true;
+                    break 'sweep;
+                }
+
+                attempted.insert(row.id);
+                self.sync_row(ctx, &mount, row).await;
+
+                done += 1;
+                let _ = ctx
+                    .events
+                    .send(JobEvent::Progress {
+                        job_id: self.id.clone(),
+                        done,
+                        total,
+                        current: Some(row.rel_path.clone()),
+                    })
+                    .await;
+            }
         }
 
         let (ok, failed) = self.totals();
@@ -139,9 +177,10 @@ impl SidecarSyncJob {
     /// [`crate::OrganizeJob`]/[`crate::RevertJob`] apply to every move
     /// destination — confirms the sidecar's path still really resolves
     /// under `mount` once symlinks are followed, before ever writing to
-    /// it. Only then does it write the row's current tag names to the
-    /// sidecar and clear the pending flag (see [`Self::finish_row`] for
-    /// the lost-update check that guards that last step). Any failure
+    /// it. Only then does it write the row's tag names — merged with any
+    /// external sidecar edit, see [`Self::merged_names`] — to the sidecar
+    /// and clear the pending flag (see [`Self::finish_row`] for the
+    /// lost-update check that guards that last step). Any failure
     /// along the way is recorded via [`Self::record_failed`] and leaves
     /// the row's `sidecar_pending` flag untouched, so a later sync
     /// retries it.
@@ -173,12 +212,9 @@ impl SidecarSyncJob {
             return;
         }
 
-        let mut names = match self.deps.catalog.tag_names_for_media(row.id).await {
-            Ok(names) => names,
-            Err(e) => {
-                self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
-                return;
-            }
+        let mut names = match self.merged_names(ctx, &abs, row).await {
+            Some(names) => names,
+            None => return,
         };
         names.sort_by_key(|n| n.to_lowercase());
 
@@ -188,6 +224,71 @@ impl SidecarSyncJob {
         }
 
         self.finish_row(ctx, row, &names).await;
+    }
+
+    /// The tag names to write for `row`, after folding any *external*
+    /// sidecar edit back into the catalog.
+    ///
+    /// A row can sit flagged `sidecar_pending` for a while, and in that
+    /// window another app — Lightroom, Bridge, a text editor — can write
+    /// subjects straight into the `.xmp`. Writing the catalog's tag set
+    /// blind would erase that edit with no trace, so this reads the
+    /// sidecar first, and any subject the catalog doesn't already have
+    /// (compared case-insensitively, same as everywhere else tags are
+    /// matched) is `tag_media`'d *into* the catalog before the fresh,
+    /// merged set is re-fetched and returned. The external edit is
+    /// imported rather than lost.
+    ///
+    /// The merge is deliberately a union, not a reconciliation: a tag the
+    /// catalog holds but the sidecar no longer does is re-added to the
+    /// sidecar rather than removed from the catalog. Deletions are the
+    /// one direction where catalog wins, because a sidecar with a tag
+    /// missing is indistinguishable from a sidecar written before that
+    /// tag was ever added — and re-adding a tag someone deleted elsewhere
+    /// is a far smaller loss than dropping tags this app was told to add.
+    /// The documented trade-off: a tag deleted in another app, on a row
+    /// that's still pending here, comes back.
+    ///
+    /// Returns `None` when something failed (already recorded via
+    /// [`Self::record_failed`]) and the row should be abandoned.
+    async fn merged_names(&self, ctx: &JobCtx, abs: &Path, row: &MediaRow) -> Option<Vec<String>> {
+        let names = match self.deps.catalog.tag_names_for_media(row.id).await {
+            Ok(names) => names,
+            Err(e) => {
+                self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
+                return None;
+            }
+        };
+
+        let subjects = match self.deps.sidecars.read_subjects(abs).await {
+            Ok(subjects) => subjects,
+            Err(e) => {
+                self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
+                return None;
+            }
+        };
+
+        let known: HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let external: Vec<String> = subjects
+            .into_iter()
+            .filter(|s| !known.contains(&s.to_lowercase()))
+            .collect();
+        if external.is_empty() {
+            return Some(names);
+        }
+
+        if let Err(e) = self.deps.catalog.tag_media(&[row.id], &external, &[]).await {
+            self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
+            return None;
+        }
+
+        match self.deps.catalog.tag_names_for_media(row.id).await {
+            Ok(names) => Some(names),
+            Err(e) => {
+                self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
+                None
+            }
+        }
     }
 
     /// After a successful [`Sidecars::write_subjects`], re-fetches the

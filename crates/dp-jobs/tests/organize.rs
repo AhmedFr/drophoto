@@ -845,6 +845,10 @@ impl Catalog for FailingCatalog {
         self.0.list_sidecar_pending(drive_id).await
     }
 
+    async fn has_sidecar_pending(&self, drive_id: i64) -> DpResult<bool> {
+        self.0.has_sidecar_pending(drive_id).await
+    }
+
     async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
         self.0.clear_sidecar_pending(media_id).await
     }

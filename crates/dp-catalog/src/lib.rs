@@ -85,6 +85,10 @@ pub trait Catalog: Send + Sync {
     /// Tag names for one media row, ordered by name (for sidecar writing).
     async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>>;
     async fn list_sidecar_pending(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    /// Whether any row on `drive_id` is flagged `sidecar_pending` — the
+    /// cheap gate in front of [`Self::list_sidecar_pending`], for callers
+    /// that only need to know whether a sweep is worth starting.
+    async fn has_sidecar_pending(&self, drive_id: i64) -> DpResult<bool>;
     async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
     async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
 }
@@ -252,6 +256,10 @@ impl Catalog for SqliteCatalog {
 
     async fn list_sidecar_pending(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
         tags::list_sidecar_pending(&self.pool, drive_id).await
+    }
+
+    async fn has_sidecar_pending(&self, drive_id: i64) -> DpResult<bool> {
+        tags::has_sidecar_pending(&self.pool, drive_id).await
     }
 
     async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()> {

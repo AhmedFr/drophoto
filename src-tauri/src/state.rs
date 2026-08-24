@@ -286,6 +286,8 @@ enum Resolution {
 /// generic message revert wants for either sub-case.
 fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> Resolution {
     const GENERIC_CONFLICT: &str = "another job is running on this drive";
+    const SIDECAR_CONFLICT: &str =
+        "a background sidecar sync is finishing on this drive — try again in a moment";
 
     match decision {
         Admission::Start => Resolution::Spawn,
@@ -299,6 +301,14 @@ fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> R
         Admission::Blocked { other_kind } => {
             if exclusive {
                 Resolution::Refuse(GENERIC_CONFLICT.into())
+            } else if other_kind == "sidecar" {
+                // A sidecar sync is the one job kind the user never
+                // started — it's a background sweep triggered by their
+                // own tag edits. Naming it the way the other kinds are
+                // named ("a sidecar job is already running") reads like
+                // they did something wrong, and says nothing about what
+                // to do. It's also always short, so say that instead.
+                Resolution::Refuse(SIDECAR_CONFLICT.into())
             } else {
                 Resolution::Refuse(format!("a {other_kind} job is already running on this drive"))
             }
@@ -469,6 +479,26 @@ mod tests {
                 true
             ),
             Resolution::Refuse("another job is running on this drive".into())
+        );
+    }
+
+    /// A sidecar sync is a background sweep the user never asked for, so
+    /// "a sidecar job is already running on this drive" reads like an
+    /// accusation about something they did. It's also always brief —
+    /// hence the wording, and the nudge to just try again.
+    #[test]
+    fn resolve_admission_explains_a_blocking_sidecar_sync_in_plain_words() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "sidecar".into()
+                },
+                "organize",
+                false
+            ),
+            Resolution::Refuse(
+                "a background sidecar sync is finishing on this drive — try again in a moment".into()
+            )
         );
     }
 }

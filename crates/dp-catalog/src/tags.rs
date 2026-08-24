@@ -143,6 +143,21 @@ pub(crate) async fn list_sidecar_pending(pool: &SqlitePool, drive_id: i64) -> Dp
     rows.iter().map(row_to_media).collect()
 }
 
+/// Whether *any* row on `drive_id` is flagged `sidecar_pending`. A
+/// `SELECT EXISTS(...)` rather than a `list_sidecar_pending(..).is_empty()`
+/// check: the caller sweeping every drive only wants a yes/no, and
+/// materialising every pending `MediaRow` just to throw them away scales
+/// with the size of a tagging spree.
+pub(crate) async fn has_sidecar_pending(pool: &SqlitePool, drive_id: i64) -> DpResult<bool> {
+    let exists: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE drive_id = ? AND sidecar_pending = 1)")
+            .bind(drive_id)
+            .fetch_one(pool)
+            .await
+            .map_err(db)?;
+    Ok(exists != 0)
+}
+
 pub(crate) async fn clear_sidecar_pending(pool: &SqlitePool, media_id: i64) -> DpResult<()> {
     sqlx::query("UPDATE media SET sidecar_pending = 0 WHERE id = ?")
         .bind(media_id)

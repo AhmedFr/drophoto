@@ -487,3 +487,183 @@ async fn cancel_stops_early() {
 
     assert_eq!(pending_ids(&catalog, drive.id).await, vec![b_id]);
 }
+
+/// An edit made in another app — Lightroom, Bridge, a text editor —
+/// writes subjects straight into the `.xmp` while the row is still
+/// flagged pending. Blindly writing the catalog's tag set over the top
+/// would silently erase that edit; the sweep instead unions it back into
+/// the catalog first, then writes the merged set.
+#[tokio::test]
+async fn an_external_sidecar_edit_is_merged_into_the_catalog_not_erased() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    catalog
+        .tag_media(&[a_id], &["one".to_string()], &[])
+        .await
+        .unwrap();
+
+    // Another app wrote "Wedding" into the sidecar while the row sat pending.
+    ExiftoolSidecars::from_path()
+        .write_subjects(&drive_dir.path().join("a.jpg"), &["Wedding".to_string()])
+        .await
+        .unwrap();
+
+    let (events, terminal) = run_sync(&catalog, drive.clone()).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!((ok, failed), (1, 0), "events: {events:?}");
+
+    // The sidecar holds the union — the catalog's tag *and* the external one.
+    let subjects = ExiftoolSidecars::from_path()
+        .read_subjects(&drive_dir.path().join("a.jpg"))
+        .await
+        .unwrap();
+    assert_eq!(subjects, vec!["one".to_string(), "Wedding".to_string()]);
+
+    // ...and the external edit was imported into the catalog, not just echoed back.
+    let names = catalog.tag_names_for_media(a_id).await.unwrap();
+    assert_eq!(names, vec!["one".to_string(), "Wedding".to_string()]);
+
+    // Both sides now agree, so the flag is cleared.
+    assert!(pending_ids(&catalog, drive.id).await.is_empty());
+}
+
+/// A [`Sidecars`] decorator that flags *another* row pending — via a real
+/// `tag_media` call — the first time anything is written, simulating the
+/// user tagging a second photo mid-sweep.
+struct TagsAnotherRowDuringWrite {
+    inner: ExiftoolSidecars,
+    catalog: Arc<dyn Catalog>,
+    other_id: i64,
+    fired: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Sidecars for TagsAnotherRowDuringWrite {
+    async fn write_subjects(&self, media_path: &Path, subjects: &[String]) -> DpResult<()> {
+        if !self.fired.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            self.catalog
+                .tag_media(&[self.other_id], &["late".to_string()], &[])
+                .await?;
+        }
+        self.inner.write_subjects(media_path, subjects).await
+    }
+
+    async fn read_subjects(&self, media_path: &Path) -> DpResult<Vec<String>> {
+        self.inner.read_subjects(media_path).await
+    }
+}
+
+/// A row tagged *after* the sweep took its snapshot must not have to wait
+/// for the next sweep: `run_inner` re-fetches until nothing is pending.
+#[tokio::test]
+async fn rows_tagged_mid_sweep_are_drained_in_the_same_run() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+    std::fs::write(drive_dir.path().join("b.jpg"), b"content-b").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    let b_id = catalog.upsert_media(nm(drive.id, "b.jpg", "h-b")).await.unwrap();
+
+    // Only a.jpg is pending when the job starts; b.jpg is tagged mid-write.
+    catalog
+        .tag_media(&[a_id], &["one".to_string()], &[])
+        .await
+        .unwrap();
+
+    let sidecars = Arc::new(TagsAnotherRowDuringWrite {
+        inner: ExiftoolSidecars::from_path(),
+        catalog: catalog.clone(),
+        other_id: b_id,
+        fired: std::sync::atomic::AtomicBool::new(false),
+    });
+    let deps = SidecarSyncDeps {
+        catalog: catalog.clone(),
+        sidecars,
+        home: None,
+    };
+    let job_id = "sidecar-drain".to_string();
+    let job = Arc::new(SidecarSyncJob::new(job_id.clone(), drive.clone(), deps));
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!((ok, failed), (2, 0), "events: {events:?}");
+
+    // Both sidecars landed in this single run.
+    let reader = ExiftoolSidecars::from_path();
+    assert_eq!(
+        reader
+            .read_subjects(&drive_dir.path().join("a.jpg"))
+            .await
+            .unwrap(),
+        vec!["one".to_string()]
+    );
+    assert_eq!(
+        reader
+            .read_subjects(&drive_dir.path().join("b.jpg"))
+            .await
+            .unwrap(),
+        vec!["late".to_string()]
+    );
+
+    assert!(pending_ids(&catalog, drive.id).await.is_empty());
+}
+
+/// The drain loop must not spin forever on rows that keep failing: a row
+/// already attempted this run is never re-fetched into a later pass, so a
+/// permanently-failing row ends the sweep instead of restarting it.
+#[tokio::test]
+async fn a_permanently_failing_row_does_not_loop_forever() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    // The row's file never exists, so every attempt fails `not_found`
+    // and its `sidecar_pending` flag is deliberately left set.
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog
+        .upsert_media(nm(drive.id, "gone.jpg", "h-a"))
+        .await
+        .unwrap();
+    catalog
+        .tag_media(&[a_id], &["one".to_string()], &[])
+        .await
+        .unwrap();
+
+    let (events, terminal) = run_sync(&catalog, drive.clone()).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    // Exactly one attempt — not one per pass.
+    assert_eq!((ok, failed), (0, 1), "events: {events:?}");
+    assert_eq!(pending_ids(&catalog, drive.id).await, vec![a_id]);
+}
