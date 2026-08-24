@@ -103,6 +103,7 @@ it("apply calls tag_media with mediaIds plus add/remove, then invalidates tags/m
   expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["tags"] });
   expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["media-tags"] });
   expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["media"] });
+  expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["search"] });
 });
 
 it("exposes isApplying while the mutation is in flight", async () => {

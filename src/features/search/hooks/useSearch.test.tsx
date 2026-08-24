@@ -124,6 +124,100 @@ it("does not refire on rapid keystrokes within the debounce window", async () =>
   expect(callCount).toBe(1);
 });
 
+it("keys the query on the trimmed value, sharing cache across leading/trailing whitespace", async () => {
+  let callCount = 0;
+  mockIPC((cmd) => {
+    if (cmd === "search_media") {
+      callCount++;
+      return [];
+    }
+    return undefined;
+  });
+
+  const { rerender } = renderHook(({ query }) => useSearch(query), {
+    wrapper,
+    initialProps: { query: "beach" },
+  });
+  await advance(200);
+  await advance(0);
+  expect(callCount).toBe(1);
+
+  // Same trimmed value, different raw string — must hit the same cache
+  // entry rather than firing a second network call.
+  rerender({ query: "  beach  " });
+  await advance(200);
+  await advance(0);
+  expect(callCount).toBe(1);
+});
+
+it("keeps a non-empty previous result set on screen while a new query is in flight", async () => {
+  let resolveSecond: ((items: unknown[]) => void) | undefined;
+  let calls = 0;
+  mockIPC((cmd) => {
+    if (cmd !== "search_media") return undefined;
+    calls++;
+    if (calls === 1) return [{ row: { id: 1 } }];
+    return new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+  });
+
+  const { result, rerender } = renderHook(({ query }) => useSearch(query), {
+    wrapper,
+    initialProps: { query: "" },
+  });
+
+  rerender({ query: "beach" });
+  await advance(200);
+  await advance(0);
+  expect(result.current.items).toEqual([{ row: { id: 1 } }]);
+  expect(result.current.isFetching).toBe(false);
+
+  rerender({ query: "beaches" });
+  await advance(200);
+
+  // The second query is in flight, but the previous non-empty result set
+  // must still be showing, and the loader must not reappear over it.
+  expect(result.current.items).toEqual([{ row: { id: 1 } }]);
+  expect(result.current.isFetching).toBe(false);
+
+  resolveSecond?.([{ row: { id: 2 } }]);
+  await advance(0);
+  expect(result.current.items).toEqual([{ row: { id: 2 } }]);
+});
+
+it("shows the loader for a new query when the previous result set was empty", async () => {
+  let resolveSecond: ((items: unknown[]) => void) | undefined;
+  let calls = 0;
+  mockIPC((cmd) => {
+    if (cmd !== "search_media") return undefined;
+    calls++;
+    if (calls === 1) return [];
+    return new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+  });
+
+  const { result, rerender } = renderHook(({ query }) => useSearch(query), {
+    wrapper,
+    initialProps: { query: "" },
+  });
+
+  rerender({ query: "nope" });
+  await advance(200);
+  await advance(0);
+  expect(result.current.items).toEqual([]);
+
+  rerender({ query: "nopenope" });
+  await advance(200);
+
+  expect(result.current.isFetching).toBe(true);
+
+  resolveSecond?.([{ row: { id: 3 } }]);
+  await advance(0);
+  expect(result.current.items).toEqual([{ row: { id: 3 } }]);
+});
+
 it("returns the resolved items once the search settles", async () => {
   mockIPC((cmd) =>
     cmd === "search_media"

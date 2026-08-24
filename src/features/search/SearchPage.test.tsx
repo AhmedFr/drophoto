@@ -217,6 +217,36 @@ it("clamps the open lightbox index when the kind filter shrinks the results", as
   });
 });
 
+it("keeps a non-empty result set and its grid on screen while typing further, instead of showing the loader", async () => {
+  let resolveNext: (() => void) | undefined;
+  let calls = 0;
+  mockIPC((cmd) => {
+    if (cmd !== "search_media") return undefined;
+    calls += 1;
+    if (calls === 1) return [item(1), item(2)];
+    return new Promise((resolve) => {
+      resolveNext = () => resolve([item(1)]);
+    });
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.type(screen.getByRole("textbox"), "beach");
+  await screen.findByText("2 RESULTS");
+
+  await user.type(screen.getByRole("textbox"), "es");
+  await waitFor(() => expect(calls).toBe(2));
+
+  // The second search is now in flight, but the previous non-empty
+  // result set must stay visible — no loader, grid still showing the
+  // prior results.
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.getByText("2 RESULTS")).toBeInTheDocument();
+
+  resolveNext?.();
+  expect(await screen.findByText("1 RESULT")).toBeInTheDocument();
+});
+
 it("goes back to the hint when the query is cleared", async () => {
   mockIPC((cmd) => (cmd === "search_media" ? [item(1)] : undefined));
   const user = userEvent.setup();

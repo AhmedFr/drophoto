@@ -8,9 +8,8 @@
 use crate::drives::row_to_drive_prefixed;
 use crate::media::row_to_media;
 use crate::sqlite::db;
-use crate::tags::tag_names_for_media;
 use dp_core::{DpResult, Drive, MediaRow};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 
 fn stem_of(rel_path: &str) -> String {
     std::path::Path::new(rel_path)
@@ -20,14 +19,32 @@ fn stem_of(rel_path: &str) -> String {
         .to_string()
 }
 
+/// Same query [`crate::tags::tag_names_for_media`] runs, but over a
+/// connection already inside [`sync_fts`]/[`rebuild_fts`]'s transaction
+/// rather than a fresh pool checkout — kept local to this module so
+/// [`insert_fts_row`] can run entirely on `&mut SqliteConnection`.
+async fn tag_names_for_media_conn(conn: &mut SqliteConnection, media_id: i64) -> DpResult<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT t.name AS name FROM media_tags mt JOIN tags t ON t.id = mt.tag_id \
+         WHERE mt.media_id = ? ORDER BY t.name COLLATE NOCASE",
+    )
+    .bind(media_id)
+    .fetch_all(conn)
+    .await
+    .map_err(db)?;
+    rows.iter().map(|r| r.try_get("name").map_err(db)).collect()
+}
+
 /// Inserts a fresh `media_fts` row for `media_id` from current catalog
 /// state, or does nothing if the media row no longer exists. Assumes any
 /// prior row for `media_id` has already been removed (see [`sync_fts`]/
-/// [`rebuild_fts`]) — this never deletes on its own.
-async fn insert_fts_row(pool: &SqlitePool, media_id: i64) -> DpResult<()> {
+/// [`rebuild_fts`]) — this never deletes on its own. Runs on `conn`
+/// directly so callers can share one transaction across the delete +
+/// insert (or the whole rebuild loop).
+async fn insert_fts_row(conn: &mut SqliteConnection, media_id: i64) -> DpResult<()> {
     let row = sqlx::query("SELECT rel_path, camera FROM media WHERE id = ?")
         .bind(media_id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(db)?;
     let Some(row) = row else {
@@ -37,7 +54,7 @@ async fn insert_fts_row(pool: &SqlitePool, media_id: i64) -> DpResult<()> {
     let camera: Option<String> = row.try_get("camera").map_err(db)?;
 
     let stem = stem_of(&rel_path);
-    let tags = tag_names_for_media(pool, media_id).await?.join(" ");
+    let tags = tag_names_for_media_conn(&mut *conn, media_id).await?.join(" ");
     let place = ""; // populated from media.place_id starting Phase 4c
     let camera = camera.unwrap_or_default();
 
@@ -47,7 +64,7 @@ async fn insert_fts_row(pool: &SqlitePool, media_id: i64) -> DpResult<()> {
         .bind(tags)
         .bind(place)
         .bind(camera)
-        .execute(pool)
+        .execute(conn)
         .await
         .map_err(db)?;
     Ok(())
@@ -56,49 +73,66 @@ async fn insert_fts_row(pool: &SqlitePool, media_id: i64) -> DpResult<()> {
 /// Rebuilds `media_id`'s `media_fts` row from current catalog state
 /// (stem of `rel_path`, space-joined tag names, place, camera); deletes
 /// the row outright when the media row is gone (e.g. after a delete).
+/// The delete + insert run in one transaction (M1) so a reader never
+/// observes `media_id`'s row transiently missing.
 pub(crate) async fn sync_fts(pool: &SqlitePool, media_id: i64) -> DpResult<()> {
+    let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("DELETE FROM media_fts WHERE rowid = ?")
         .bind(media_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
-    insert_fts_row(pool, media_id).await
+    insert_fts_row(&mut tx, media_id).await?;
+    tx.commit().await.map_err(db)?;
+    Ok(())
 }
 
 /// Drops and refills the whole index — the recovery path if `media_fts`
-/// is ever found to have drifted from `media`/`tags`.
+/// is ever found to have drifted from `media`/`tags`, and the path
+/// `SqliteCatalog::open` takes automatically when it finds `media_fts`
+/// empty on a catalog that already has media rows. The whole drop +
+/// refill runs in one transaction, so a search running concurrently
+/// never sees the index partially emptied.
 pub(crate) async fn rebuild_fts(pool: &SqlitePool) -> DpResult<()> {
+    let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("DELETE FROM media_fts")
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
     let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM media")
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
     for id in ids {
-        insert_fts_row(pool, id).await?;
+        insert_fts_row(&mut tx, id).await?;
     }
+    tx.commit().await.map_err(db)?;
     Ok(())
 }
 
 /// Builds an FTS5 `MATCH` expression from raw user input, or `None` when
-/// nothing usable survives sanitization. Splits on whitespace, strips
-/// every character from each token except `is_alphanumeric()`/`_` (so
-/// quotes, `OR`, `-`, `*`, etc. in user input can never reach the FTS
-/// query parser as syntax), drops tokens that end up empty, quotes every
-/// surviving token, ANDs them together, and prefix-matches only the last
+/// nothing usable survives sanitization. Splits on whitespace, then
+/// splits *each* whitespace token again on every character that isn't
+/// `is_alphanumeric()`/`_` (so quotes, `OR`, `-`, `*`, etc. in user input
+/// can never reach the FTS query parser as syntax) — producing a
+/// separate piece per run of alphanumeric/underscore characters rather
+/// than deleting the separator outright, so e.g. `2025-09-12` becomes
+/// three pieces instead of the single unmatchable blob `20250912`. This
+/// mirrors how FTS5's own `unicode61` tokenizer splits the *indexed*
+/// text: hyphens and apostrophes are separators there too, while `_`
+/// stays part of a token. Drops pieces that end up empty, quotes every
+/// surviving piece, ANDs them together, and prefix-matches only the last
 /// one — `"tok1" AND "tok2"*` (the `*` sits outside the closing quote,
 /// which is the syntax FTS5 requires for a quoted prefix match).
 fn build_match_query(query: &str) -> Option<String> {
     let tokens: Vec<String> = query
         .split_whitespace()
-        .map(|tok| {
-            tok.chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_')
-                .collect::<String>()
+        .flat_map(|tok| {
+            tok.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .filter(|piece| !piece.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
         })
-        .filter(|tok| !tok.is_empty())
         .collect();
 
     if tokens.is_empty() {

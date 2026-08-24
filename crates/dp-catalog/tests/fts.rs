@@ -177,6 +177,72 @@ async fn empty_and_whitespace_queries_return_empty() {
     assert!(c.search_media("   ", 10).await.unwrap().is_empty());
 }
 
+/// C1: a catalog opened on a file where `media` has rows but `media_fts`
+/// is empty (e.g. a previous process crashed mid-rebuild, or the DB
+/// predates migration 0006 with no backfill) must notice and backfill
+/// the index automatically on `SqliteCatalog::open` — no explicit
+/// `rebuild_fts` call required. In-memory can't exercise this: it never
+/// outlives the process that opened it, so there's no way to "reopen" it
+/// with a drifted index already on disk.
+#[tokio::test]
+async fn startup_backfills_a_missing_fts_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("catalog.db");
+    let c = SqliteCatalog::open(&db_path).await.unwrap();
+    let drive_id = drive(&c).await;
+    c.upsert_media(nm(drive_id, "IMG_7777.jpg", "h-a")).await.unwrap();
+    assert_eq!(c.search_media("img_7777", 10).await.unwrap().len(), 1);
+
+    // Simulate `media_fts` having been dropped/emptied out from under a
+    // previous process, via a raw connection to the same file.
+    let raw = SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM media_fts").execute(&raw).await.unwrap();
+    raw.close().await;
+
+    let reopened = SqliteCatalog::open(&db_path).await.unwrap();
+    assert_eq!(reopened.search_media("img_7777", 10).await.unwrap().len(), 1);
+}
+
+/// I2: a query token gets *split* on separators rather than having them
+/// deleted outright, mirroring how FTS5's `unicode61` tokenizer already
+/// splits the *indexed* stem on hyphens — so a rel_path like
+/// `2025-09-12_IMG_1.jpg` is searchable by its date piece.
+#[tokio::test]
+async fn hyphenated_terms_match_by_each_piece() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c
+        .upsert_media(nm(drive_id, "archive/2025-09-12_IMG_1.jpg", "h-a"))
+        .await
+        .unwrap();
+
+    let found = c.search_media("2025-09-12", 10).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0.id, a);
+}
+
+/// I2: same splitting behavior for an apostrophe — `l'été` still matches
+/// the tag verbatim (split into "l" AND "été"*, both of which the
+/// indexed tag also tokenizes into), and diacritic folding still lets
+/// the plain-ASCII form find it too.
+#[tokio::test]
+async fn apostrophized_tag_matches_verbatim_and_diacritic_folded() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    c.tag_media(&[a], &["l'été".into()], &[]).await.unwrap();
+
+    let by_apostrophe_form = c.search_media("l'été", 10).await.unwrap();
+    assert_eq!(by_apostrophe_form.len(), 1);
+    assert_eq!(by_apostrophe_form[0].0.id, a);
+
+    let by_ete = c.search_media("ete", 10).await.unwrap();
+    assert_eq!(by_ete.len(), 1);
+    assert_eq!(by_ete[0].0.id, a);
+}
+
 #[tokio::test]
 async fn fts_query_syntax_is_escaped() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();

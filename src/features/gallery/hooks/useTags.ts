@@ -11,9 +11,11 @@ import { startSidecarSyncAll } from "@/lib/api/sidecars";
  *
  * A successful apply invalidates `["tags"]` (the tag list may have grown),
  * `["media-tags"]` (every cached coverage query, not just this hook's own
- * `mediaIds`), and `["media"]` (thumbnails/metadata panels reading tags),
- * then fire-and-forgets a sidecar sync sweep — its result isn't surfaced
- * here, only that a mutation succeeded needs one queued.
+ * `mediaIds`), `["media"]` (thumbnails/metadata panels reading tags), and
+ * `["search"]` (a tag is indexed text — `useSearch` — so a changed tag set
+ * can change which searches find these ids), then fire-and-forgets a
+ * sidecar sync sweep — its result isn't surfaced here, only that a
+ * mutation succeeded needs one queued.
  */
 export function useTags(mediaIds: number[]) {
   const queryClient = useQueryClient();
@@ -60,6 +62,7 @@ export function useTags(mediaIds: number[]) {
       queryClient.invalidateQueries({ queryKey: ["tags"] });
       queryClient.invalidateQueries({ queryKey: ["media-tags"] });
       queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["search"] });
       startSidecarSyncAll().catch(() => {});
     },
   });

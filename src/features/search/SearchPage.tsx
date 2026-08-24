@@ -37,7 +37,11 @@ export function SearchPage() {
 
   const trimmedQuery = query.trim();
   const isEmptyQuery = trimmedQuery === "";
-  const isLoading = !isEmptyQuery && (isDebouncing || isFetching);
+  // M5: the loader only ever covers the "nothing to show yet" case —
+  // `useSearch` already keeps a non-empty previous result set as `items`
+  // while debouncing/refetching, so `filteredItems.length === 0` is the
+  // real gate here, same as `useSearch`'s own `isFetching` reasoning.
+  const isLoading = !isEmptyQuery && filteredItems.length === 0 && (isDebouncing || isFetching);
   const hasResults = !isEmptyQuery && !isLoading && filteredItems.length > 0;
   const hasNoResults = !isEmptyQuery && !isLoading && filteredItems.length === 0;
 
