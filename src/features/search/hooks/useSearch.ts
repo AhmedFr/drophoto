@@ -33,7 +33,11 @@ export function useSearch(query: string) {
 
   return {
     items: result.data ?? [],
-    isFetching: result.isFetching,
+    // `isPending` (no data yet), not `isFetching`: a background refetch of
+    // an already-rendered result set (e.g. window refocus past staleTime)
+    // must not collapse the grid back into a spinner — the cached items
+    // stay on screen and refresh in place, same as the gallery.
+    isFetching: result.isPending && trimmed !== "",
     isDebouncing,
   };
 }
