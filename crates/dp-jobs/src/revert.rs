@@ -10,7 +10,9 @@ use dp_core::denylist::is_denied_path;
 use dp_core::{DpError, DpResult, Drive, OrganizeItemRow, PlanStatus};
 use futures::FutureExt;
 
-use crate::move_guards::{destination_stays_on_drive, escapes_mount, mount_online, MOUNT_RECHECK_INTERVAL};
+use crate::move_guards::{
+    destination_stays_on_drive, escapes_mount, mount_online, move_sidecar_along, MOUNT_RECHECK_INTERVAL,
+};
 use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome, OrganizeDeps};
 
 /// A [`Job`] that reverts a finished organize job: for every item that
@@ -306,6 +308,19 @@ impl RevertJob {
             {
                 Ok(()) => {
                     self.insert_item(item, PlanStatus::Moved, None).await;
+                    move_sidecar_along(
+                        ctx,
+                        &self.id,
+                        &self.deps.catalog,
+                        &self.deps.strategy,
+                        item.media_id,
+                        &from,
+                        &to,
+                        &item.new_rel_path,
+                        &item.old_rel_path,
+                        mount,
+                    )
+                    .await;
                     RevertOutcome::Moved
                 }
                 Err(e) => {

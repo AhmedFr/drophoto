@@ -7,7 +7,7 @@ use dp_catalog::Catalog;
 use dp_core::denylist::is_denied_path;
 use dp_core::{DpError, DpResult, Drive, MediaKind, MediaMetadata, NewMedia, Source};
 use dp_hash::Hasher;
-use dp_metadata::MetadataProvider;
+use dp_metadata::{MetadataProvider, Sidecars};
 use dp_thumbs::{ThumbChain, ThumbStore, THUMB_SIZES};
 use futures::stream::{self, StreamExt};
 use tokio::sync::mpsc;
@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::prune::prune_denied_legacy_rows;
-use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
+use crate::{error_code, tag_sets_match, Job, JobCtx, JobEvent, JobOutcome};
 
 /// Number of files hashed/thumbnailed/read concurrently during a scan.
 const SCAN_CONCURRENCY: usize = 4;
@@ -40,6 +40,10 @@ pub struct ScanDeps {
     pub metadata: Arc<dyn MetadataProvider>,
     pub thumbs: Arc<ThumbChain>,
     pub store: Arc<ThumbStore>,
+    /// Reads/writes each media file's XMP sidecar's `XMP-dc:Subject` list.
+    /// After a file is upserted, its sidecar (if any) is read and its
+    /// subjects imported as catalog tags — see [`import_sidecar_tags`].
+    pub sidecars: Arc<dyn Sidecars>,
     /// The current user's home directory (`$HOME`), used for the
     /// deny-list's `home/Library` rule (see
     /// [`dp_core::denylist::is_denied_path`]). `None` when it couldn't be
@@ -584,9 +588,14 @@ async fn process_file(
         source_id: Some(file.source_id),
     };
 
-    if let Err(e) = deps.catalog.upsert_media(new_media).await {
-        had_error = true;
-        report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+    match deps.catalog.upsert_media(new_media).await {
+        Ok(media_id) => {
+            import_sidecar_tags(ctx, deps, job_id, drive_id, &file.path, &rel, media_id).await;
+        }
+        Err(e) => {
+            had_error = true;
+            report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+        }
     }
 
     if had_error {
@@ -596,6 +605,78 @@ async fn process_file(
     }
 
     advance_progress(ctx, job_id, done, total, &rel).await;
+}
+
+/// Imports `media_path`'s XMP sidecar subjects (if any) as catalog tags on
+/// `media_id`, right after it's been upserted. `Sidecars::read_subjects`
+/// already returns `Ok(vec![])` when no sidecar exists, so a file with no
+/// sidecar is a no-op here — no explicit existence check needed.
+///
+/// Empty/whitespace-only subject strings are filtered out before reaching
+/// `tag_media`, so a stray blank entry in the sidecar can never become an
+/// empty-named tag. The import is a pure union (`tag_media(&[media_id],
+/// &subjects, &[])`) — it never removes a catalog tag.
+///
+/// `tag_media` marks a row sidecar-pending on *any* real tag-set change
+/// (Task 4a.1), which would otherwise leave a freshly-imported row pending
+/// even though the sidecar already holds exactly what was just imported —
+/// the sync job would then rewrite every such sidecar once, for nothing.
+/// So after the `tag_media` call, this re-fetches the row's full tag set
+/// via `tag_names_for_media` and compares it against the imported
+/// `subjects`, case-insensitively as sets:
+/// - Equal (the common case — the row's tags now exactly mirror the
+///   sidecar) → `clear_sidecar_pending(media_id)`: the sidecar already
+///   holds the truth, there's nothing to sync back.
+/// - Not equal (the row already carried catalog tags beyond the sidecar's
+///   subjects) → leave pending, so the sync job writes the union back to
+///   the sidecar.
+///
+/// This is the *only* place scan ever calls `clear_sidecar_pending` — it
+/// never blindly clears an already-pending row for any other reason.
+///
+/// A sidecar read failure (missing `exiftool`, corrupt/unparsable XMP, ...)
+/// is recorded via [`report_item_error`] and otherwise ignored — it must
+/// never fail the media file itself, which has already been cataloged
+/// successfully by the time this runs.
+async fn import_sidecar_tags(
+    ctx: &JobCtx,
+    deps: &ScanDeps,
+    job_id: &str,
+    drive_id: i64,
+    media_path: &Path,
+    rel: &str,
+    media_id: i64,
+) {
+    let subjects = match deps.sidecars.read_subjects(media_path).await {
+        Ok(subjects) => subjects,
+        Err(e) => {
+            report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
+            return;
+        }
+    };
+
+    let subjects: Vec<String> = subjects.into_iter().filter(|s| !s.trim().is_empty()).collect();
+    if subjects.is_empty() {
+        return;
+    }
+
+    if let Err(e) = deps.catalog.tag_media(&[media_id], &subjects, &[]).await {
+        report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
+        return;
+    }
+
+    match deps.catalog.tag_names_for_media(media_id).await {
+        Ok(catalog_names) => {
+            if tag_sets_match(&catalog_names, &subjects) {
+                if let Err(e) = deps.catalog.clear_sidecar_pending(media_id).await {
+                    report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
+                }
+            }
+        }
+        Err(e) => {
+            report_item_error(ctx, deps, job_id, drive_id, rel, &e).await;
+        }
+    }
 }
 
 async fn advance_progress(ctx: &JobCtx, job_id: &str, done: &AtomicU64, total: u64, current: &str) {

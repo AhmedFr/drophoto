@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
 import { GalleryToolbar } from "./components/GalleryToolbar";
 import { Lightbox } from "./components/Lightbox";
+import { SelectionBar } from "./components/SelectionBar";
+import { TagPanel } from "./components/TagPanel";
 import { VirtualGrid } from "./components/VirtualGrid";
 import { useMediaCount } from "./hooks/useMediaCount";
 import { useMediaInfinite } from "./hooks/useMediaInfinite";
@@ -13,10 +15,105 @@ export function GalleryPage() {
   const media = useMediaInfinite();
   const count = useMediaCount();
   const density = useGalleryStore((s) => s.density);
+  const selectedIds = useGalleryStore((s) => s.selectedIds);
+  const anchorIndex = useGalleryStore((s) => s.anchorIndex);
+  const toggleSelected = useGalleryStore((s) => s.toggleSelected);
+  const selectRange = useGalleryStore((s) => s.selectRange);
+  const clearSelection = useGalleryStore((s) => s.clearSelection);
   const items = media.items;
+
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s `onClose`).
   const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  // Opened by `SelectionBar`'s TAG button, for the current selection.
+  const [tagPanelOpen, setTagPanelOpen] = useState(false);
+
+  // Mirrors whether `Lightbox`'s `MetaPanel` currently has its own
+  // (single-id) `TagPanel` open — see the Escape handler below.
+  const [metaTagPanelOpen, setMetaTagPanelOpen] = useState(false);
+
+  // `onToggle` from `Tile`/`VirtualGrid`: `shiftKey` false is a plain
+  // (cmd/ctrl-click) toggle, `shiftKey` true is a shift-range select. Range
+  // selection computes ids between the anchor and `index` (inclusive) over
+  // the loaded `items` array; without an anchor it degrades to a plain
+  // toggle, per the brief.
+  //
+  // `useCallback` here is load-bearing, not just tidy: `VirtualGrid` is
+  // wrapped in `React.memo`, and an inline function identity that changes
+  // every render (as this closes over `items`/`anchorIndex`) would defeat
+  // that memoization on every `GalleryPage` render, not just on selection
+  // changes.
+  const handleToggle = useCallback(
+    (index: number, shiftKey: boolean) => {
+      if (shiftKey && anchorIndex !== null) {
+        const [lo, hi] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex];
+        const ids = items.slice(lo, hi + 1).map((it) => it.row.id);
+        selectRange(ids);
+        return;
+      }
+      const item = items[index];
+      if (!item) return;
+      toggleSelected(item.row.id, index);
+    },
+    [anchorIndex, items, selectRange, toggleSelected],
+  );
+
+  // Same reasoning as `handleToggle` above — kept stable so it doesn't
+  // defeat `VirtualGrid`'s memoization on every render.
+  const handleNearEnd = useCallback(() => {
+    if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
+  }, [media]);
+
+  // Clear the selection when the page unmounts (e.g. navigating away), so a
+  // stale selection doesn't linger for the next visit.
+  useEffect(() => {
+    return () => clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Escape clears a non-empty selection instead of falling through to
+  // Radix's `Dialog.Content`, which also closes the lightbox on Escape via
+  // its own `document`-level, capture-phase listener (see
+  // `@radix-ui/react-dismissable-layer`). Registering our listener here —
+  // on `document`, in the capture phase, as soon as `GalleryPage` mounts —
+  // guarantees it runs before that one (same-node capture listeners fire in
+  // registration order, and this mounts well before any `Lightbox` can).
+  // `stopImmediatePropagation` then keeps the keystroke from reaching Radix's
+  // listener, so a selected + open lightbox stays open while the selection
+  // clears; with no selection, the event passes through untouched and
+  // Escape closes the lightbox as before.
+  //
+  // Either `TagPanel` (the selection one, or `MetaPanel`'s single-id one
+  // nested in the lightbox) being open takes priority over all of that: we
+  // yield immediately, without touching the selection, so the keystroke
+  // reaches that dialog's own Radix `DismissableLayer` and closes only the
+  // topmost (nested-most) open dialog — the `TagPanel` — leaving the
+  // background selection and, when applicable, the lightbox itself intact.
+  //
+  // `selectedIds` is read via a ref (updated every render, no dependency
+  // array of its own) rather than as an effect dependency, so the
+  // `document` listener isn't torn down and re-added on every toggle —
+  // only when `clearSelection`'s identity would ever change. The two
+  // panel-open flags are cheap to flip (far less often than a selection
+  // toggle) so they're plain effect dependencies instead.
+  const selectedIdsRef = useRef(selectedIds);
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      if (tagPanelOpen || metaTagPanelOpen) return;
+      if (selectedIdsRef.current.length === 0) return;
+      e.stopImmediatePropagation();
+      clearSelection();
+    }
+    document.addEventListener("keydown", handleKeyDown, { capture: true });
+    return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
+  }, [clearSelection, tagPanelOpen, metaTagPanelOpen]);
 
   // `items` can shrink out from under an open lightbox (e.g. a refetch after
   // a scan removes media) — clamp `openIndex` back into range, or close it
@@ -66,22 +163,33 @@ export function GalleryPage() {
             items={items}
             targetRowHeight={DENSITY_ROW_HEIGHT[density]}
             onOpen={setOpenIndex}
-            onNearEnd={() => {
-              if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
-            }}
+            onNearEnd={handleNearEnd}
+            selectedIds={selectedIdSet}
+            onToggle={handleToggle}
           />
         )}
       </div>
+      <SelectionBar count={selectedIds.length} onTag={() => setTagPanelOpen(true)} onClear={clearSelection} />
+      <TagPanel mediaIds={selectedIds} open={tagPanelOpen} onClose={() => setTagPanelOpen(false)} />
       {openIndex !== null && (
         <Lightbox
           items={items}
           index={openIndex}
-          onClose={() => setOpenIndex(null)}
+          onClose={() => {
+            setOpenIndex(null);
+            // Guards against a stale `true` outliving the `MetaPanel` that
+            // set it (e.g. if the lightbox is ever closed by something
+            // other than its own Escape/CLOSE path while the nested panel
+            // was left open), which would otherwise permanently block the
+            // Escape-clears-selection behavior above.
+            setMetaTagPanelOpen(false);
+          }}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
           onNext={() => {
             if (openIndex < items.length - 1) setOpenIndex(openIndex + 1);
             else if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
           }}
+          onTagPanelOpenChange={setMetaTagPanelOpen}
         />
       )}
     </div>

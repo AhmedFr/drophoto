@@ -36,6 +36,7 @@ pub async fn start_scan(state: State<'_, AppState>, drive_id: i64) -> Result<Str
         metadata: state.metadata.clone(),
         thumbs: state.thumbs.clone(),
         store: state.store.clone(),
+        sidecars: state.sidecars.clone(),
         home: state.home.clone(),
     };
 

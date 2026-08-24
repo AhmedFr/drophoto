@@ -60,7 +60,7 @@ export function useRevertRun(jobIds: number[]): UseRevertRunResult {
 
   const advance = useCallback(
     (currentIndex: number, event: JobEvent) => {
-      if (event.kind === "finished") {
+      if (event.kind === "finished" || event.kind === "cancelled") {
         setFailed((f) => f + event.failed);
       }
 

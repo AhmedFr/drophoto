@@ -8,6 +8,7 @@ mod prune;
 mod revert;
 mod runner;
 mod scan;
+mod sidecar_sync;
 
 pub use detect::{detect_folders, detect_folders_with_progress};
 pub use organize::{OrganizeDeps, OrganizeJob};
@@ -15,6 +16,7 @@ pub use prune::prune_denied_legacy_rows;
 pub use revert::RevertJob;
 pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};
+pub use sidecar_sync::{SidecarSyncDeps, SidecarSyncJob};
 
 use async_trait::async_trait;
 use dp_core::{DpError, DpResult};
@@ -49,6 +51,9 @@ pub enum JobEvent {
     },
     Cancelled {
         job_id: String,
+        ok: u64,
+        failed: u64,
+        skipped: u64,
     },
 }
 
@@ -93,4 +98,16 @@ pub(crate) fn error_code(e: &DpError) -> &'static str {
         DpError::Db { .. } => "db",
         DpError::Unsupported { .. } => "unsupported",
     }
+}
+
+/// Whether `a` and `b` contain the same names, ignoring order, duplicates,
+/// and case. Shared by `sidecar_sync.rs` (detecting a lost update between
+/// reading a row's tags and its sidecar write completing) and `scan.rs`
+/// (deciding whether a row's catalog tag set now exactly mirrors what was
+/// just imported from its sidecar) — kept in one place so the two call
+/// sites can't drift on what "same tag set" means.
+pub(crate) fn tag_sets_match(a: &[String], b: &[String]) -> bool {
+    let a: std::collections::HashSet<String> = a.iter().map(|s| s.to_lowercase()).collect();
+    let b: std::collections::HashSet<String> = b.iter().map(|s| s.to_lowercase()).collect();
+    a == b
 }

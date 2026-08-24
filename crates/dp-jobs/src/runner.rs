@@ -78,14 +78,24 @@ impl JobRunner {
             lock_tokens(&tokens).remove(&id);
 
             let final_event = match outcome {
-                Ok(Ok(outcome)) if outcome.cancelled => JobEvent::Cancelled { job_id: id.clone() },
+                Ok(Ok(outcome)) if outcome.cancelled => JobEvent::Cancelled {
+                    job_id: id.clone(),
+                    ok: outcome.ok,
+                    failed: outcome.failed,
+                    skipped: outcome.skipped,
+                },
                 Ok(Ok(outcome)) => JobEvent::Finished {
                     job_id: id.clone(),
                     ok: outcome.ok,
                     failed: outcome.failed,
                     skipped: outcome.skipped,
                 },
-                Ok(Err(_)) if token.is_cancelled() => JobEvent::Cancelled { job_id: id.clone() },
+                Ok(Err(_)) if token.is_cancelled() => JobEvent::Cancelled {
+                    job_id: id.clone(),
+                    ok: 0,
+                    failed: 0,
+                    skipped: 0,
+                },
                 Ok(Err(e)) => {
                     let _ = events
                         .send(JobEvent::ItemError {

@@ -40,6 +40,7 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
     let height: Option<i64> = row.try_get("height").map_err(db)?;
     let duration_ms: Option<i64> = row.try_get("duration_ms").map_err(db)?;
     let iso: Option<i64> = row.try_get("iso").map_err(db)?;
+    let sidecar_pending: i64 = row.try_get("sidecar_pending").map_err(db)?;
     Ok(MediaRow {
         id: row.try_get("id").map_err(db)?,
         drive_id: row.try_get("drive_id").map_err(db)?,
@@ -63,6 +64,7 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
         missing_at: from_rfc3339(missing_at)?,
         organized_at: from_rfc3339(organized_at)?,
         source_id: row.try_get("source_id").map_err(db)?,
+        sidecar_pending: sidecar_pending != 0,
     })
 }
 

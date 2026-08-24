@@ -59,3 +59,69 @@ it("removes the listener on unmount", () => {
   expect(removeSpy).toHaveBeenCalledWith("keydown", expect.any(Function));
   removeSpy.mockRestore();
 });
+
+// `keydown` is bound on `window`, so every keystroke anywhere in the app
+// reaches it — including one typed into a text field. Navigating the
+// lightbox because someone moved the caret inside a tag filter would be
+// baffling, so the tests below pin that typed-into elements are left alone.
+function fireKeyFrom(target: Element, key: string) {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+}
+
+function mountTarget(el: HTMLElement) {
+  document.body.appendChild(el);
+  return el;
+}
+
+afterEach(() => {
+  document.body.innerHTML = "";
+});
+
+it("ignores arrow keys typed into an input", () => {
+  const onPrev = vi.fn();
+  const onNext = vi.fn();
+  renderHook(() => useKeyboardNav({ enabled: true, onClose: vi.fn(), onPrev, onNext }));
+  const input = mountTarget(document.createElement("input"));
+
+  fireKeyFrom(input, "ArrowLeft");
+  fireKeyFrom(input, "ArrowRight");
+
+  expect(onPrev).not.toHaveBeenCalled();
+  expect(onNext).not.toHaveBeenCalled();
+});
+
+it("ignores keys typed into a textarea", () => {
+  const onClose = vi.fn();
+  const onPrev = vi.fn();
+  renderHook(() => useKeyboardNav({ enabled: true, onClose, onPrev, onNext: vi.fn() }));
+  const textarea = mountTarget(document.createElement("textarea"));
+
+  fireKeyFrom(textarea, "ArrowLeft");
+  fireKeyFrom(textarea, "Escape");
+
+  expect(onPrev).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it("ignores keys typed into a contenteditable element", () => {
+  const onNext = vi.fn();
+  renderHook(() => useKeyboardNav({ enabled: true, onClose: vi.fn(), onPrev: vi.fn(), onNext }));
+  const editable = mountTarget(document.createElement("div"));
+  editable.contentEditable = "true";
+  // jsdom doesn't implement `isContentEditable` off the attribute.
+  Object.defineProperty(editable, "isContentEditable", { value: true });
+
+  fireKeyFrom(editable, "ArrowRight");
+
+  expect(onNext).not.toHaveBeenCalled();
+});
+
+it("still navigates for keys pressed on a non-editable element", () => {
+  const onNext = vi.fn();
+  renderHook(() => useKeyboardNav({ enabled: true, onClose: vi.fn(), onPrev: vi.fn(), onNext }));
+  const button = mountTarget(document.createElement("button"));
+
+  fireKeyFrom(button, "ArrowRight");
+
+  expect(onNext).toHaveBeenCalledTimes(1);
+});

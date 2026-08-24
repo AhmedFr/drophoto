@@ -239,7 +239,7 @@ it("CANCEL during a multi-drive run stops the whole queue — the second drive's
 
   const cancelButtons = await screen.findAllByRole("button", { name: "CANCEL" });
   fireEvent.click(cancelButtons[cancelButtons.length - 1]);
-  emit("job", { kind: "cancelled", job_id: "job-1" });
+  emit("job", { kind: "cancelled", job_id: "job-1", ok: 0, failed: 0, skipped: 0 });
 
   expect(await screen.findByText("CANCELLED")).toBeInTheDocument();
   expect(startOrganizeSpy).toHaveBeenCalledTimes(1);
@@ -257,7 +257,7 @@ it("a cancelled run shows the CANCELLED screen, not the success one", async () =
   fireEvent.click(await screen.findByRole("button", { name: "ORGANIZE 1 →" }));
   const cancelButtons = await screen.findAllByRole("button", { name: "CANCEL" });
   fireEvent.click(cancelButtons[cancelButtons.length - 1]);
-  emit("job", { kind: "cancelled", job_id: "job-1" });
+  emit("job", { kind: "cancelled", job_id: "job-1", ok: 0, failed: 0, skipped: 0 });
 
   expect(await screen.findByText("CANCELLED")).toBeInTheDocument();
   expect(screen.queryByText("ORGANIZED")).not.toBeInTheDocument();

@@ -6,6 +6,13 @@
 //! what makes that automatic.
 
 use std::path::{Component, Path};
+use std::sync::Arc;
+
+use dp_catalog::Catalog;
+use dp_metadata::sidecar_path;
+use dp_organize::MoveStrategy;
+
+use crate::{JobCtx, JobEvent};
 
 /// How many items are applied between two checks that the drive is still
 /// mounted. A drive yanked mid-run would otherwise have every single
@@ -87,6 +94,82 @@ pub(crate) async fn mount_online(mount_path: &str) -> bool {
     tokio::task::spawn_blocking(move || mount_is_online(&mount_path))
         .await
         .unwrap_or(true)
+}
+
+/// After a media move `from → to` has already succeeded and the catalog
+/// already reflects it, moves that item's `.xmp` sidecar (if any) along
+/// with it — best-effort, and never a reason to undo or reclassify the
+/// media move itself: the caller has already committed to `Moved` by the
+/// time this runs. `old_rel_path`/`new_rel_path` are the *media* item's
+/// own rel paths (relative to `mount`); the sidecar's rel paths are
+/// derived by appending `.xmp` to each, which is cheaper than re-deriving
+/// them from `from`/`to` and is exactly equivalent since [`sidecar_path`]
+/// only ever appends `.xmp` to the file name.
+///
+/// Nothing happens if there's no sidecar to move (`sc_from` doesn't
+/// exist). Otherwise, if the sidecar's own [`escapes_mount`] /
+/// [`destination_stays_on_drive`] guards refuse it, or `strategy.move_file`
+/// itself fails, the failure is reported exactly the same way: an
+/// `ItemError` with code `"sidecar"` on `ctx.events`, and the row is
+/// marked `sidecar_pending` so a later sync job recreates the sidecar at
+/// its new location. A failure in `mark_sidecar_pending` itself is only
+/// logged — this whole function is best-effort and must never fail the
+/// item it was called for.
+///
+/// Shared by [`crate::OrganizeJob::apply_move`] and
+/// [`crate::RevertJob::apply_revert`] so the two jobs can't drift on how
+/// a sidecar tags along with its file.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn move_sidecar_along(
+    ctx: &JobCtx,
+    job_id: &str,
+    catalog: &Arc<dyn Catalog>,
+    strategy: &Arc<dyn MoveStrategy>,
+    media_id: i64,
+    from: &Path,
+    to: &Path,
+    old_rel_path: &str,
+    new_rel_path: &str,
+    mount: &Path,
+) {
+    let sc_from = sidecar_path(from);
+    if std::fs::symlink_metadata(&sc_from).is_err() {
+        return;
+    }
+    let sc_to = sidecar_path(to);
+    let old_sc_rel = format!("{old_rel_path}.xmp");
+    let new_sc_rel = format!("{new_rel_path}.xmp");
+
+    let refused = escapes_mount(&old_sc_rel, &sc_from, mount)
+        || escapes_mount(&new_sc_rel, &sc_to, mount)
+        || !destination_stays_on_drive(&sc_to, mount).await;
+
+    let message = if refused {
+        Some("sidecar path escapes the drive root".to_string())
+    } else {
+        match strategy.move_file(&sc_from, &sc_to).await {
+            Ok(()) => None,
+            Err(e) => Some(e.to_string()),
+        }
+    };
+
+    let Some(message) = message else {
+        return;
+    };
+
+    let _ = ctx
+        .events
+        .send(JobEvent::ItemError {
+            job_id: job_id.to_string(),
+            path: sc_from.display().to_string(),
+            code: "sidecar".to_string(),
+            message,
+        })
+        .await;
+
+    if let Err(e) = catalog.mark_sidecar_pending(media_id).await {
+        tracing::warn!(error = %e, media_id, "failed to mark sidecar pending after a sidecar move failure");
+    }
 }
 
 #[cfg(test)]

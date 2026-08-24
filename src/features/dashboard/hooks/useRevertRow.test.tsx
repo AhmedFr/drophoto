@@ -101,7 +101,7 @@ it("clears the in-flight state when the revert is cancelled", async () => {
   act(() => result.current.confirmRevert());
   await waitFor(() => expect(result.current.revertingJobId).toBe(7));
 
-  emit({ kind: "cancelled", job_id: "revert-1" });
+  emit({ kind: "cancelled", job_id: "revert-1", ok: 0, failed: 0, skipped: 0 });
   await waitFor(() => expect(result.current.revertingJobId).toBeNull());
 });
 

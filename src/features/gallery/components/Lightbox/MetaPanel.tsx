@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { revealInFinder } from "@/lib/api/opener";
@@ -12,16 +13,49 @@ import {
   formatTakenAt,
 } from "@/lib/media/format";
 import type { MediaItem } from "@/lib/api/media";
+import { TagPanel } from "../TagPanel";
+import { useTags } from "../../hooks/useTags";
 import { MetaRow } from "./MetaRow";
 import { MetaSection } from "./MetaSection";
 
-export type MetaPanelProps = { item: MediaItem };
+export type MetaPanelProps = {
+  item: MediaItem;
+  /** See `LightboxProps.onTagPanelOpenChange` — forwarded through unchanged. */
+  onTagPanelOpenChange?: (open: boolean) => void;
+};
 
-export function MetaPanel({ item }: MetaPanelProps) {
+export function MetaPanel({ item, onTagPanelOpenChange }: MetaPanelProps) {
   const { row } = item;
   const coords = formatCoords(row.lat, row.lon);
   const canReveal = item.online && item.original_path != null;
   const [revealError, setRevealError] = useState<string | null>(null);
+  const [tagPanelOpen, setTagPanelOpenState] = useState(false);
+
+  // Wraps the local open flag so `GalleryPage` also learns about this
+  // nested `TagPanel`'s open state (its document-level Escape handler
+  // needs to yield to Radix while this dialog is open — see
+  // `Lightbox.types.ts`).
+  function setTagPanelOpen(next: boolean) {
+    setTagPanelOpenState(next);
+    onTagPanelOpenChange?.(next);
+  }
+
+  // This panel is keyed on `item.row.id` by the lightbox, so navigating
+  // to another photo unmounts it — without this cleanup, an open
+  // TagPanel's `true` would outlive the panel and permanently disable
+  // GalleryPage's Escape-clears-selection branch for the session.
+  const notifyClosed = onTagPanelOpenChange;
+  useEffect(() => {
+    return () => {
+      notifyClosed?.(false);
+    };
+  }, [notifyClosed]);
+
+  // A single-id `states` map can only ever read "all" (has the tag) or be
+  // absent (doesn't) — "some" needs more than one id — so this doubles as
+  // the item's own tag list without a separate `tagsForMedia` call.
+  const { allTags, states, apply, isApplying, error } = useTags([row.id]);
+  const tags = allTags.filter((tag) => states[tag.id] === "all");
 
   const handleReveal = async () => {
     setRevealError(null);
@@ -67,7 +101,33 @@ export function MetaPanel({ item }: MetaPanelProps) {
         </MetaSection>
 
         <MetaSection title="TAGS">
-          <p className="py-1.5 font-mono text-[11px] text-dim">No tags</p>
+          <div className="flex flex-wrap items-center gap-1.5 py-1.5">
+            {tags.length === 0 && <p className="font-mono text-[11px] text-dim">No tags</p>}
+            {tags.map((tag) => (
+              <Badge key={tag.id} variant="outline" className="gap-1 font-mono text-[10px]">
+                {tag.name}
+                <button
+                  type="button"
+                  aria-label={`Remove ${tag.name}`}
+                  onClick={() => apply({ add: [], remove: [tag.id] })}
+                  disabled={isApplying}
+                  className="text-dim hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                >
+                  <XIcon size={10} />
+                </button>
+              </Badge>
+            ))}
+            <button
+              type="button"
+              aria-label="Add tag"
+              onClick={() => setTagPanelOpen(true)}
+              disabled={isApplying}
+              className="flex size-4 items-center justify-center rounded-full border border-border text-dim hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              +
+            </button>
+          </div>
+          {error && <p className="font-mono text-[10px] text-red-400">{error}</p>}
         </MetaSection>
       </div>
 
@@ -75,6 +135,8 @@ export function MetaPanel({ item }: MetaPanelProps) {
         Reveal in Finder
       </Button>
       {revealError && <p className="mt-2 font-mono text-[10px] text-red-400">{revealError}</p>}
+
+      <TagPanel mediaIds={[row.id]} open={tagPanelOpen} onClose={() => setTagPanelOpen(false)} />
     </div>
   );
 }

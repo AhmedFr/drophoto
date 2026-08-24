@@ -13,7 +13,9 @@ use dp_core::{DpError, DpResult, Drive, OrganizeItemRow, OrganizePlanItem, PlanS
 use dp_organize::MoveStrategy;
 use futures::FutureExt;
 
-use crate::move_guards::{destination_stays_on_drive, escapes_mount, mount_online, MOUNT_RECHECK_INTERVAL};
+use crate::move_guards::{
+    destination_stays_on_drive, escapes_mount, mount_online, move_sidecar_along, MOUNT_RECHECK_INTERVAL,
+};
 use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
 
 /// External dependencies an [`OrganizeJob`] needs, injected so tests can
@@ -267,6 +269,19 @@ impl OrganizeJob {
             {
                 Ok(()) => {
                     self.insert_item(item, PlanStatus::Moved, None).await;
+                    move_sidecar_along(
+                        ctx,
+                        &self.id,
+                        &self.deps.catalog,
+                        &self.deps.strategy,
+                        item.media_id,
+                        &from,
+                        &to,
+                        &item.old_rel_path,
+                        &item.new_rel_path,
+                        mount,
+                    )
+                    .await;
                     true
                 }
                 Err(e) => {

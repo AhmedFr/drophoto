@@ -287,10 +287,18 @@ async fn cancelling_via_runner_emits_cancelled() {
     runner.cancel(&job_id);
 
     let (_events, terminal) = drain_until_terminal(&mut rx).await;
-    assert!(
-        matches!(terminal, JobEvent::Cancelled { .. }),
-        "expected Cancelled, got {terminal:?}"
-    );
+    match terminal {
+        JobEvent::Cancelled {
+            ok, failed, skipped, ..
+        } => {
+            assert_eq!(
+                (ok, failed, skipped),
+                (0, 0, 0),
+                "no item was processed before the cancel landed, so the tallies should be zero"
+            );
+        }
+        other => panic!("expected Cancelled, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -816,6 +824,38 @@ impl Catalog for FailingCatalog {
     async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64> {
         self.0.count_legacy_unorganized(drive_id, root).await
     }
+
+    async fn list_tags(&self) -> DpResult<Vec<dp_core::Tag>> {
+        self.0.list_tags().await
+    }
+
+    async fn tags_for_media(&self, ids: &[i64]) -> DpResult<Vec<(i64, dp_core::Tag)>> {
+        self.0.tags_for_media(ids).await
+    }
+
+    async fn tag_media(&self, ids: &[i64], add: &[String], remove: &[i64]) -> DpResult<()> {
+        self.0.tag_media(ids, add, remove).await
+    }
+
+    async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>> {
+        self.0.tag_names_for_media(media_id).await
+    }
+
+    async fn list_sidecar_pending(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        self.0.list_sidecar_pending(drive_id).await
+    }
+
+    async fn has_sidecar_pending(&self, drive_id: i64) -> DpResult<bool> {
+        self.0.has_sidecar_pending(drive_id).await
+    }
+
+    async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
+        self.0.clear_sidecar_pending(media_id).await
+    }
+
+    async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
+        self.0.mark_sidecar_pending(media_id).await
+    }
 }
 
 #[tokio::test]
@@ -1019,4 +1059,187 @@ async fn a_destination_under_a_denied_name_is_failed_and_never_written() {
     let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
     assert_eq!(a_row.rel_path, "a.jpg");
     assert!(a_row.organized_at.is_none());
+}
+
+/// A media move's `.xmp` sidecar must travel with it: created next to
+/// `a.jpg` before the job runs, it must end up next to the moved file
+/// under `archive/...`, with nothing left behind at either original
+/// location.
+#[tokio::test]
+async fn organize_moves_the_sidecar_with_the_file() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg.xmp"), b"<xmp/>").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg")];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("organize");
+    let job = Arc::new(OrganizeJob::new(
+        job_id.clone(),
+        drive,
+        job_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 1, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert!(
+        events.iter().all(|e| !matches!(e, JobEvent::ItemError { .. })),
+        "unexpected ItemError: {events:?}"
+    );
+
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg")).unwrap(),
+        b"content-a"
+    );
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg.xmp")).unwrap(),
+        b"<xmp/>"
+    );
+    assert!(!drive_dir.path().join("a.jpg").exists());
+    assert!(!drive_dir.path().join("a.jpg.xmp").exists());
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert!(!a_row.sidecar_pending);
+}
+
+/// A media item with no `.xmp` sidecar must produce no sidecar-related
+/// events or catalog side effects at all — `move_sidecar_along` is a
+/// no-op the moment `symlink_metadata(sc_from)` fails.
+#[tokio::test]
+async fn organize_without_a_sidecar_emits_no_sidecar_events() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg")];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("organize");
+    let job = Arc::new(OrganizeJob::new(
+        job_id.clone(),
+        drive,
+        job_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 1, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert!(
+        events.iter().all(|e| !matches!(e, JobEvent::ItemError { .. })),
+        "unexpected ItemError: {events:?}"
+    );
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert!(!a_row.sidecar_pending);
+}
+
+/// If the sidecar's own move fails — here, because something else
+/// already occupies its destination — the media item itself must still
+/// read `Moved` (the media move already succeeded), the job's own
+/// moved/failed tallies must be unaffected by the sidecar failure, and
+/// the row must be left `sidecar_pending` so a later sync job recreates
+/// the sidecar at the new path.
+#[tokio::test]
+async fn sidecar_move_failure_marks_pending_not_failed() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg.xmp"), b"<xmp/>").unwrap();
+
+    // Pre-create a *directory* at the sidecar's destination path so the
+    // sidecar's own move_file fails, while the destination directory for
+    // the media file itself is left free.
+    std::fs::create_dir_all(drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg.xmp")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+
+    let items = vec![planned(a_id, "a.jpg", "archive/2025/Q3/2025-09-12_a.jpg")];
+    let job_row_id = catalog
+        .create_organize_job(drive.id, items.len() as u64)
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("organize");
+    let job = Arc::new(OrganizeJob::new(
+        job_id.clone(),
+        drive,
+        job_row_id,
+        items,
+        deps(catalog.clone()),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed) = match terminal {
+        JobEvent::Finished { ok, failed, .. } => (ok, failed),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    // The tallies reflect only the media move, unaffected by the
+    // sidecar's own failure.
+    assert_eq!(ok, 1, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+
+    let saw_sidecar_error = events
+        .iter()
+        .any(|e| matches!(e, JobEvent::ItemError { code, .. } if code == "sidecar"));
+    assert!(
+        saw_sidecar_error,
+        "expected a \"sidecar\" ItemError, got {events:?}"
+    );
+
+    // The media file itself was moved.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("archive/2025/Q3/2025-09-12_a.jpg")).unwrap(),
+        b"content-a"
+    );
+    assert!(!drive_dir.path().join("a.jpg").exists());
+
+    // The sidecar was left behind, since the move failed.
+    assert_eq!(
+        std::fs::read(drive_dir.path().join("a.jpg.xmp")).unwrap(),
+        b"<xmp/>"
+    );
+
+    let item_rows = catalog.list_organize_items(job_row_id, 10).await.unwrap();
+    assert_eq!(item_rows.len(), 1);
+    assert_eq!(item_rows[0].status, PlanStatus::Moved);
+
+    let (a_row, _) = catalog.get_media_with_drive(a_id).await.unwrap();
+    assert!(a_row.sidecar_pending);
 }

@@ -5,6 +5,8 @@ const initial = {
   typeFilter: "ALL" as const,
   sort: "NEWEST" as const,
   density: "Comfortable" as const,
+  selectedIds: [] as number[],
+  anchorIndex: null as number | null,
 };
 
 beforeEach(() => {
@@ -58,6 +60,107 @@ describe("useGalleryStore", () => {
     expect(state.typeFilter).toBe("ALL");
     expect(state.sort).toBe("NEWEST");
     expect(state.density).toBe("Comfortable");
+  });
+});
+
+describe("selection", () => {
+  it("defaults to an empty selection with no anchor", () => {
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("toggleSelected adds an id and sets the anchor to its index", () => {
+    useGalleryStore.getState().toggleSelected(5, 2);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([5]);
+    expect(state.anchorIndex).toBe(2);
+  });
+
+  it("toggleSelected removes an already-selected id and still updates the anchor", () => {
+    useGalleryStore.getState().toggleSelected(5, 2);
+    useGalleryStore.getState().toggleSelected(7, 4);
+    useGalleryStore.getState().toggleSelected(5, 2);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([7]);
+    expect(state.anchorIndex).toBe(2);
+  });
+
+  it("toggleSelected keeps selectedIds insertion-ordered", () => {
+    useGalleryStore.getState().toggleSelected(9, 0);
+    useGalleryStore.getState().toggleSelected(3, 1);
+    useGalleryStore.getState().toggleSelected(6, 2);
+    expect(useGalleryStore.getState().selectedIds).toEqual([9, 3, 6]);
+  });
+
+  it("selectRange adds ids without clearing the existing selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().selectRange([2, 3, 4]);
+    expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3, 4]);
+  });
+
+  it("selectRange does not duplicate already-selected ids", () => {
+    useGalleryStore.getState().toggleSelected(2, 1);
+    useGalleryStore.getState().selectRange([1, 2, 3]);
+    expect(useGalleryStore.getState().selectedIds).toEqual([2, 1, 3]);
+  });
+
+  it("selectRange does not change the anchor", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().selectRange([2, 3]);
+    expect(useGalleryStore.getState().anchorIndex).toBe(0);
+  });
+
+  it("clearSelection empties selectedIds and resets the anchor", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().selectRange([2, 3]);
+    useGalleryStore.getState().clearSelection();
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("does not persist the selection to localStorage", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTypeFilter("RAW");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    const persisted = JSON.parse(raw as string);
+    expect(persisted.state).not.toHaveProperty("selectedIds");
+    expect(persisted.state).not.toHaveProperty("anchorIndex");
+  });
+
+  it("setTypeFilter clears the selection when the filter actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTypeFilter("RAW");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("setTypeFilter to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTypeFilter("ALL");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("setSort clears the selection when the sort actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setSort("OLDEST");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("setSort to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setSort("NEWEST");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
   });
 });
 

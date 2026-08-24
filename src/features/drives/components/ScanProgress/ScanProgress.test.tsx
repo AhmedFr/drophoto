@@ -29,7 +29,7 @@ it("shows ok/failed counts when finished, and hides the cancel button", () => {
 });
 
 it("hides the cancel button when cancelled", () => {
-  const event: JobEvent = { kind: "cancelled", job_id: "scan-0" };
+  const event: JobEvent = { kind: "cancelled", job_id: "scan-0", ok: 3, failed: 0, skipped: 0 };
   render(<ScanProgress event={event} onCancel={vi.fn()} />);
   expect(screen.queryByRole("button", { name: /cancel/i })).not.toBeInTheDocument();
 });

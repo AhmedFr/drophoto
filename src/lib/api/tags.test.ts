@@ -1,0 +1,74 @@
+import { mockIPC } from "@tauri-apps/api/mocks";
+import { listTags, tagsForMedia, tagMedia } from "./tags";
+import { ApiError } from "./client";
+
+it("lists every tag", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_tags") {
+      return [
+        { id: 1, name: "Family" },
+        { id: 2, name: "Trip" },
+      ];
+    }
+    return undefined;
+  });
+  await expect(listTags()).resolves.toEqual([
+    { id: 1, name: "Family" },
+    { id: 2, name: "Trip" },
+  ]);
+});
+
+it("wraps structured errors from list_tags", async () => {
+  mockIPC(() => {
+    throw { code: "db", message: "boom" };
+  });
+  await expect(listTags()).rejects.toBeInstanceOf(ApiError);
+});
+
+it("gets the tags for a set of media ids", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "tags_for_media") {
+      received = args;
+      return [
+        [10, { id: 1, name: "Family" }],
+        [11, { id: 2, name: "Trip" }],
+      ];
+    }
+    return undefined;
+  });
+  await expect(tagsForMedia([10, 11])).resolves.toEqual([
+    [10, { id: 1, name: "Family" }],
+    [11, { id: 2, name: "Trip" }],
+  ]);
+  expect(received).toEqual({ mediaIds: [10, 11] });
+});
+
+it("wraps structured errors from tags_for_media", async () => {
+  mockIPC(() => {
+    throw { code: "db", message: "boom" };
+  });
+  await expect(tagsForMedia([1])).rejects.toBeInstanceOf(ApiError);
+});
+
+it("tags and untags media, passing input through as-is", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "tag_media") {
+      received = args;
+      return null;
+    }
+    return undefined;
+  });
+  await tagMedia({ mediaIds: [1, 2], add: ["Family", ""], remove: [9] });
+  expect(received).toEqual({ mediaIds: [1, 2], add: ["Family", ""], remove: [9] });
+});
+
+it("wraps structured errors from tag_media", async () => {
+  mockIPC(() => {
+    throw { code: "unsupported", message: "tag name too long (max 64 characters)" };
+  });
+  await expect(tagMedia({ mediaIds: [1], add: ["x".repeat(65)], remove: [] })).rejects.toBeInstanceOf(
+    ApiError,
+  );
+});

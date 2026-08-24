@@ -101,7 +101,7 @@ it("marks done when a revert job is cancelled", async () => {
   act(() => result.current.start());
   await waitFor(() => expect(result.current.running).toBe(true));
 
-  emit({ kind: "cancelled", job_id: "revert-1" });
+  emit({ kind: "cancelled", job_id: "revert-1", ok: 0, failed: 0, skipped: 0 });
   await waitFor(() => expect(result.current.done).toBe(true));
   expect(result.current.running).toBe(false);
 });

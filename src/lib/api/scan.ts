@@ -5,7 +5,7 @@ export type JobEvent =
   | { kind: "progress"; job_id: string; done: number; total: number; current: string | null }
   | { kind: "item_error"; job_id: string; path: string; code: string; message: string }
   | { kind: "finished"; job_id: string; ok: number; failed: number; skipped: number }
-  | { kind: "cancelled"; job_id: string };
+  | { kind: "cancelled"; job_id: string; ok: number; failed: number; skipped: number };
 
 export const startScan = (driveId: number) => invokeApi<string>("start_scan", { driveId });
 

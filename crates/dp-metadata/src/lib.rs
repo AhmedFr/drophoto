@@ -1,8 +1,10 @@
 mod exiftool;
 mod parse;
+mod sidecar;
 
 pub use exiftool::ExiftoolProvider;
 pub use parse::parse_exiftool_json;
+pub use sidecar::{sidecar_path, ExiftoolSidecars, Sidecars};
 
 use std::path::Path;
 

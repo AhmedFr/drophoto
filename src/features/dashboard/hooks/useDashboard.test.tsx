@@ -133,7 +133,7 @@ it("invalidates jobs, unorganized, and media-count-kind queries when a job is ca
   });
 
   await waitFor(() => expect(jobHandler).toBeDefined());
-  jobHandler?.({ payload: { kind: "cancelled", job_id: "1" } });
+  jobHandler?.({ payload: { kind: "cancelled", job_id: "1", ok: 0, failed: 0, skipped: 0 } });
 
   await waitFor(() => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["jobs"] });

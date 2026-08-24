@@ -45,6 +45,7 @@ describe("jobKindFromId", () => {
     ["scan-12", "Scan"],
     ["organize-0", "Organize"],
     ["revert-3", "Revert"],
+    ["sidecar-0", "Sidecar sync"],
     ["mystery-1", "Job"],
   ])("derives %s -> %s", (jobId, expected) => {
     expect(jobKindFromId(jobId)).toBe(expected);
@@ -79,7 +80,7 @@ describe("activeJobs", () => {
     const state = {
       events: {
         "scan-0": { kind: "finished", job_id: "scan-0", ok: 1, failed: 0, skipped: 0 },
-        "scan-1": { kind: "cancelled", job_id: "scan-1" },
+        "scan-1": { kind: "cancelled", job_id: "scan-1", ok: 0, failed: 0, skipped: 0 },
       } as Record<string, JobEvent>,
       labels: {},
     };

@@ -74,6 +74,14 @@ it("links a revert job to /organize", async () => {
   expect(await screen.findByRole("link")).toHaveAttribute("href", "/organize");
 });
 
+it("links a sidecar sync job to /drives", async () => {
+  useJobsStore.getState().applyEvent({ kind: "started", job_id: "sidecar-0" });
+  renderWithRouter(<ActiveJobs />);
+
+  expect(await screen.findByRole("link")).toHaveAttribute("href", "/drives");
+  expect(await screen.findByText("Sidecar sync")).toBeInTheDocument();
+});
+
 it("renders one row per active job", async () => {
   useJobsStore.getState().applyEvent({ kind: "started", job_id: "scan-0" });
   useJobsStore.getState().applyEvent({ kind: "started", job_id: "organize-0" });

@@ -2,7 +2,7 @@ use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{DpError, DpResult};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobRunner};
-use dp_metadata::{ExiftoolProvider, MetadataProvider};
+use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, MetadataProvider, Sidecars};
 use dp_organize::{default_strategy, MoveStrategy};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use dp_volumes::{SysinfoVolumes, VolumeProvider};
@@ -23,6 +23,7 @@ pub struct AppState {
     pub metadata: Arc<dyn MetadataProvider>,
     pub thumbs: Arc<ThumbChain>,
     pub store: Arc<ThumbStore>,
+    pub sidecars: Arc<dyn Sidecars>,
     pub strategy: Arc<dyn MoveStrategy>,
     pub runner: JobRunner,
     /// The current user's home directory (`$HOME`), resolved once at
@@ -83,6 +84,7 @@ impl AppState {
             metadata: Arc::new(ExiftoolProvider::from_path()),
             thumbs: Arc::new(ThumbChain::default_chain()),
             store: Arc::new(ThumbStore::new(thumbs_root)),
+            sidecars: Arc::new(ExiftoolSidecars::from_path()),
             runner,
             home,
             active_jobs: Mutex::new(HashMap::new()),
@@ -113,6 +115,19 @@ impl AppState {
         make_job: impl FnOnce(String) -> Arc<dyn Job>,
     ) -> DpResult<String> {
         self.start_job("organize", drive_id, make_job)
+    }
+
+    /// Starts a sidecar-sync job for `drive_id`, unless a job is already
+    /// running for it — in which case the existing sync's id is returned
+    /// instead of starting a duplicate, or an error if the running job is
+    /// of a *different* kind (see [`job_admission`]). `make_job` builds
+    /// the [`Job`] given the id it will run under.
+    pub fn start_sidecar_sync(
+        &self,
+        drive_id: i64,
+        make_job: impl FnOnce(String) -> Arc<dyn Job>,
+    ) -> DpResult<String> {
+        self.start_job("sidecar", drive_id, make_job)
     }
 
     /// Starts a revert job for `drive_id`, admitted under the exact same
@@ -271,6 +286,8 @@ enum Resolution {
 /// generic message revert wants for either sub-case.
 fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> Resolution {
     const GENERIC_CONFLICT: &str = "another job is running on this drive";
+    const SIDECAR_CONFLICT: &str =
+        "a background sidecar sync is finishing on this drive — try again in a moment";
 
     match decision {
         Admission::Start => Resolution::Spawn,
@@ -284,6 +301,14 @@ fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> R
         Admission::Blocked { other_kind } => {
             if exclusive {
                 Resolution::Refuse(GENERIC_CONFLICT.into())
+            } else if other_kind == "sidecar" {
+                // A sidecar sync is the one job kind the user never
+                // started — it's a background sweep triggered by their
+                // own tag edits. Naming it the way the other kinds are
+                // named ("a sidecar job is already running") reads like
+                // they did something wrong, and says nothing about what
+                // to do. It's also always short, so say that instead.
+                Resolution::Refuse(SIDECAR_CONFLICT.into())
             } else {
                 Resolution::Refuse(format!("a {other_kind} job is already running on this drive"))
             }
@@ -454,6 +479,26 @@ mod tests {
                 true
             ),
             Resolution::Refuse("another job is running on this drive".into())
+        );
+    }
+
+    /// A sidecar sync is a background sweep the user never asked for, so
+    /// "a sidecar job is already running on this drive" reads like an
+    /// accusation about something they did. It's also always brief —
+    /// hence the wording, and the nudge to just try again.
+    #[test]
+    fn resolve_admission_explains_a_blocking_sidecar_sync_in_plain_words() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "sidecar".into()
+                },
+                "organize",
+                false
+            ),
+            Resolution::Refuse(
+                "a background sidecar sync is finishing on this drive — try again in a moment".into()
+            )
         );
     }
 }
