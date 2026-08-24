@@ -4,6 +4,7 @@ import { vi } from "vitest";
 import { toast } from "sonner";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { startSidecarSyncAll } from "@/lib/api/sidecars";
+import { startGeocode } from "@/lib/api/places";
 import { JobEventsBridge } from "./JobEventsBridge";
 
 vi.mock("@tauri-apps/api/event");
@@ -13,6 +14,9 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/api/sidecars", () => ({
   startSidecarSyncAll: vi.fn(),
 }));
+vi.mock("@/lib/api/places", () => ({
+  startGeocode: vi.fn(),
+}));
 
 beforeEach(async () => {
   useJobsStore.setState({ events: {}, labels: {} });
@@ -20,6 +24,7 @@ beforeEach(async () => {
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
   vi.mocked(startSidecarSyncAll).mockReset().mockResolvedValue([]);
+  vi.mocked(startGeocode).mockReset().mockResolvedValue("geocode-0");
   const { listen } = await import("@tauri-apps/api/event");
   vi.mocked(listen).mockResolvedValue(vi.fn());
 });
@@ -128,16 +133,19 @@ it("uses the recorded drive label in the toast when one was set", async () => {
   await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Scan Kodachrome finished — 1 file"));
 });
 
-it("triggers a sidecar sync sweep when a scan job finishes", async () => {
+it("triggers both a sidecar sync sweep and a geocode sweep when a scan job finishes", async () => {
   const { emit } = await mockListen();
   renderBridge();
 
   await emit("job", { kind: "finished", job_id: "scan-0", ok: 1, failed: 0, skipped: 0 });
 
-  await waitFor(() => expect(startSidecarSyncAll).toHaveBeenCalledTimes(1));
+  await waitFor(() => {
+    expect(startSidecarSyncAll).toHaveBeenCalledTimes(1);
+    expect(startGeocode).toHaveBeenCalledTimes(1);
+  });
 });
 
-it("does not trigger a sidecar sync sweep when an organize job finishes", async () => {
+it("does not trigger either sweep when an organize job finishes", async () => {
   const { emit } = await mockListen();
   renderBridge();
 
@@ -146,18 +154,20 @@ it("does not trigger a sidecar sync sweep when an organize job finishes", async 
   // Give any (wrongly) fired async trigger a chance to run before asserting its absence.
   await waitFor(() => expect(useJobsStore.getState().events["organize-0"]).toBeDefined());
   expect(startSidecarSyncAll).not.toHaveBeenCalled();
+  expect(startGeocode).not.toHaveBeenCalled();
 });
 
-it("triggers a sidecar sync sweep when a drives:changed event arrives", async () => {
+it("triggers a sidecar sync sweep (but not a geocode sweep) when a drives:changed event arrives", async () => {
   const { emit } = await mockListen();
   renderBridge();
 
   await emit("drives:changed", null);
 
   await waitFor(() => expect(startSidecarSyncAll).toHaveBeenCalledTimes(1));
+  expect(startGeocode).not.toHaveBeenCalled();
 });
 
-it("does not re-trigger a sidecar sync sweep when a sidecar sync job itself finishes (loop guard)", async () => {
+it("does not re-trigger either sweep when a sidecar sync job itself finishes (loop guard)", async () => {
   const { emit } = await mockListen();
   renderBridge();
 
@@ -166,4 +176,17 @@ it("does not re-trigger a sidecar sync sweep when a sidecar sync job itself fini
   // Give any (wrongly) fired async trigger a chance to run before asserting its absence.
   await waitFor(() => expect(useJobsStore.getState().events["sidecar-0"]).toBeDefined());
   expect(startSidecarSyncAll).not.toHaveBeenCalled();
+  expect(startGeocode).not.toHaveBeenCalled();
+});
+
+it("does not re-trigger either sweep when a geocode job itself finishes (loop guard)", async () => {
+  const { emit } = await mockListen();
+  renderBridge();
+
+  await emit("job", { kind: "finished", job_id: "geocode-0", ok: 1, failed: 0, skipped: 0 });
+
+  // Give any (wrongly) fired async trigger a chance to run before asserting its absence.
+  await waitFor(() => expect(useJobsStore.getState().events["geocode-0"]).toBeDefined());
+  expect(startSidecarSyncAll).not.toHaveBeenCalled();
+  expect(startGeocode).not.toHaveBeenCalled();
 });

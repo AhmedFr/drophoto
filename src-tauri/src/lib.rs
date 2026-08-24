@@ -46,6 +46,10 @@ pub fn run() {
             commands::organize::list_jobs,
             commands::organize::list_job_items,
             commands::organize::revert_organize,
+            commands::places::start_geocode,
+            commands::places::list_place_counts,
+            commands::places::search_cities,
+            commands::places::set_media_place,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

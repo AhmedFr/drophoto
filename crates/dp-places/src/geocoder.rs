@@ -2,6 +2,7 @@ use std::io::Read;
 
 use dp_core::{DpError, DpResult};
 use flate2::read::GzDecoder;
+use serde::{Deserialize, Serialize};
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 
@@ -33,7 +34,7 @@ const EARTH_RADIUS_KM: f64 = 6371.0088;
 const TIE_EPSILON_KM: f64 = 2.0;
 
 /// A single named place.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct City {
     pub name: String,
     pub admin: Option<String>,

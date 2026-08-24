@@ -10,6 +10,7 @@ dp-hash = { path = "../dp-hash" }
 dp-metadata = { path = "../dp-metadata" }
 dp-thumbs = { path = "../dp-thumbs" }
 dp-organize = { path = "../dp-organize" }
+dp-places = { path = "../dp-places" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

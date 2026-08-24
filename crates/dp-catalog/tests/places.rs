@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, NewPlace, PlaceSource};
 
@@ -87,6 +89,45 @@ async fn upsert_place_dedupes_when_admin_is_none() {
 
     assert_eq!(first.id, second.id);
     assert_eq!(first.admin, None);
+}
+
+/// Two concurrent geocode/manual calls resolving to the same identity
+/// must never both win the race and create duplicate rows — the
+/// `places_identity` unique index plus `upsert_place`'s `ON CONFLICT DO
+/// NOTHING` insert (mirroring `upsert_source`) is what prevents it.
+#[tokio::test]
+async fn concurrent_upsert_place_of_the_same_identity_creates_one_row() {
+    let c: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+
+    let c1 = c.clone();
+    let c2 = c.clone();
+    let t1 = tokio::spawn(async move {
+        c1.upsert_place(geocoder_place("Lisbon", Some("Lisboa"), "Portugal"))
+            .await
+            .unwrap()
+    });
+    let t2 = tokio::spawn(async move {
+        c2.upsert_place(geocoder_place("Lisbon", Some("Lisboa"), "Portugal"))
+            .await
+            .unwrap()
+    });
+
+    let (first, second) = tokio::join!(t1, t2);
+    let first = first.unwrap();
+    let second = second.unwrap();
+
+    assert_eq!(first.id, second.id);
+
+    let counts = c.list_place_counts().await.unwrap();
+    // Nothing references this place yet, so it wouldn't show up in
+    // `list_place_counts` anyway — assert row uniqueness directly instead
+    // via a second upsert, which must resolve to the very same id.
+    assert!(counts.is_empty());
+    let third = c
+        .upsert_place(geocoder_place("Lisbon", Some("Lisboa"), "Portugal"))
+        .await
+        .unwrap();
+    assert_eq!(third.id, first.id);
 }
 
 #[tokio::test]

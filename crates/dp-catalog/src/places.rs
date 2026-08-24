@@ -68,21 +68,34 @@ async fn find_place_id(pool: &SqlitePool, p: &NewPlace, source: &str) -> DpResul
 /// creates one from `p`. This is how the reverse-geocode job avoids
 /// creating a fresh `places` row for every media row that resolves to the
 /// same location — repeat lookups return the same id.
+///
+/// The insert itself is `ON CONFLICT DO NOTHING` against the
+/// `places_identity` unique index (mirroring `sources::upsert_source`),
+/// rather than a plain `SELECT`-then-`INSERT`: two callers racing to
+/// upsert the same identity (e.g. the geocode job resolving two media
+/// rows to the same city concurrently) could otherwise both pass the
+/// initial `find_place_id` check and both insert, producing duplicate
+/// rows. The conflicting insert simply does nothing and the follow-up
+/// `find_place_id` picks up whichever row — this caller's or the other
+/// racer's — ended up committed first.
 pub(crate) async fn upsert_place(pool: &SqlitePool, p: NewPlace) -> DpResult<Place> {
     let source = source_to_str(p.source);
     if let Some(id) = find_place_id(pool, &p, source).await? {
         return get_place(pool, id).await;
     }
-    sqlx::query("INSERT INTO places (lat, lon, name, admin, country, source) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(p.lat)
-        .bind(p.lon)
-        .bind(&p.name)
-        .bind(&p.admin)
-        .bind(&p.country)
-        .bind(source)
-        .execute(pool)
-        .await
-        .map_err(db)?;
+    sqlx::query(
+        "INSERT INTO places (lat, lon, name, admin, country, source) VALUES (?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (name, IFNULL(admin, ''), country, source) DO NOTHING",
+    )
+    .bind(p.lat)
+    .bind(p.lon)
+    .bind(&p.name)
+    .bind(&p.admin)
+    .bind(&p.country)
+    .bind(source)
+    .execute(pool)
+    .await
+    .map_err(db)?;
     let id = find_place_id(pool, &p, source)
         .await?
         .ok_or_else(|| DpError::Db {

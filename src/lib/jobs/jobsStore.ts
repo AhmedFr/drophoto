@@ -20,12 +20,13 @@ export function applyJobEvent(
   return { ...events, [event.job_id]: event };
 }
 
-/** Derives a job's kind from its id prefix (`"scan-3"` → `"Scan"`, `"organize-1"` → `"Organize"`, `"revert-0"` → `"Revert"`, `"sidecar-0"` → `"Sidecar sync"`). */
+/** Derives a job's kind from its id prefix (`"scan-3"` → `"Scan"`, `"organize-1"` → `"Organize"`, `"revert-0"` → `"Revert"`, `"sidecar-0"` → `"Sidecar sync"`, `"geocode-0"` → `"Geocode"`). */
 export function jobKindFromId(jobId: string): string {
   if (jobId.startsWith("scan-")) return "Scan";
   if (jobId.startsWith("organize-")) return "Organize";
   if (jobId.startsWith("revert-")) return "Revert";
   if (jobId.startsWith("sidecar-")) return "Sidecar sync";
+  if (jobId.startsWith("geocode-")) return "Geocode";
   return "Job";
 }
 

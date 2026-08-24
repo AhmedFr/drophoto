@@ -159,3 +159,35 @@ it("refreshes only the tag queries even when a sidecar sync fails", () => {
 
   expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["tags"], ["media-tags"]]);
 });
+
+it("is silent and refreshes only places, search, and media for a clean geocode sweep", () => {
+  const { queryClient, invalidateSpy } = client();
+  onTerminalEvent({ kind: "finished", job_id: "geocode-0", ok: 3, failed: 0, skipped: 1 }, queryClient, "Geocode");
+
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["places"], ["search"], ["media"]]);
+  expect(toast).not.toHaveBeenCalled();
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("refreshes only places, search, and media for a cancelled geocode sweep", () => {
+  const { queryClient, invalidateSpy } = client();
+  onTerminalEvent({ kind: "cancelled", job_id: "geocode-0", ok: 1, failed: 0, skipped: 0 }, queryClient, "Geocode");
+
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["places"], ["search"], ["media"]]);
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it("still shows an error toast for a geocode sweep that finishes with failures", () => {
+  const { queryClient } = client();
+  onTerminalEvent({ kind: "finished", job_id: "geocode-0", ok: 1, failed: 2, skipped: 0 }, queryClient, "Geocode");
+
+  expect(toast.error).toHaveBeenCalledWith("Geocode finished with 2 errors");
+});
+
+it("refreshes only places, search, and media even when a geocode sweep fails", () => {
+  const { queryClient, invalidateSpy } = client();
+  onTerminalEvent({ kind: "finished", job_id: "geocode-0", ok: 1, failed: 2, skipped: 0 }, queryClient, "Geocode");
+
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["places"], ["search"], ["media"]]);
+});

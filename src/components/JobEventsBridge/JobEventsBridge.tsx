@@ -3,6 +3,7 @@ import { useTauriEvent } from "@/lib/hooks/useTauriEvent";
 import { jobLabel, useJobsStore } from "@/lib/jobs/jobsStore";
 import { onTerminalEvent } from "@/lib/jobs/onTerminalEvent";
 import { startSidecarSyncAll } from "@/lib/api/sidecars";
+import { startGeocode } from "@/lib/api/places";
 import type { JobEvent } from "@/lib/api/scan";
 
 /**
@@ -19,6 +20,18 @@ function triggerSidecarSync(): void {
 }
 
 /**
+ * Fire-and-forget global reverse-geocode sweep, triggered alongside
+ * `triggerSidecarSync` after a scan finishes (freshly imported media may
+ * carry GPS with no place yet). A sweep with nothing to geocode finishes
+ * near-instantly, so this is cheap to fire unconditionally. Errors are
+ * swallowed for the same reason as the sidecar sweep — a background
+ * nicety, not a user-initiated action.
+ */
+function triggerGeocode(): void {
+  startGeocode().catch(() => {});
+}
+
+/**
  * Renderless, mounted exactly once in `AppShell` — the single place the
  * app subscribes to the `"job"` Tauri event, so progress keeps tracking
  * (and completion gets toasted) no matter which page is on screen,
@@ -26,9 +39,13 @@ function triggerSidecarSync(): void {
  * is applied to `useJobsStore`; a terminal one (`finished`/`cancelled`)
  * is also handed to `onTerminalEvent` for query invalidation + a toast.
  *
- * Also owns the sidecar-sync sweep trigger (see [`triggerSidecarSync`]) —
- * this is as good a single, always-mounted place for it as the job event
- * subscription itself.
+ * Also owns the sidecar-sync and geocode sweep triggers (see
+ * [`triggerSidecarSync`], [`triggerGeocode`]) — this is as good a single,
+ * always-mounted place for them as the job event subscription itself.
+ * Unlike the sidecar sweep, the geocode sweep is *not* also triggered by
+ * `"drives:changed"` — a drive coming back online doesn't retroactively
+ * give its existing rows new GPS data the way it can surface newly-pending
+ * tags, so there's nothing for a fresh geocode sweep to find there.
  */
 export function JobEventsBridge() {
   const queryClient = useQueryClient();
@@ -40,6 +57,7 @@ export function JobEventsBridge() {
 
     if (event.kind === "finished" && event.job_id.startsWith("scan-")) {
       triggerSidecarSync();
+      triggerGeocode();
     }
   });
 

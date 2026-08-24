@@ -1064,6 +1064,7 @@ dependencies = [
  "dp-hash",
  "dp-metadata",
  "dp-organize",
+ "dp-places",
  "dp-thumbs",
  "futures",
  "serde",
@@ -1109,6 +1110,7 @@ version = "0.1.0"
 dependencies = [
  "dp-core",
  "flate2",
+ "serde",
  "unicode-normalization",
 ]
 
@@ -1155,6 +1157,7 @@ dependencies = [
  "dp-jobs",
  "dp-metadata",
  "dp-organize",
+ "dp-places",
  "dp-thumbs",
  "dp-volumes",
  "serde",
