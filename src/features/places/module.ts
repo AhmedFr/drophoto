@@ -6,6 +6,6 @@ export const placesModule: FeatureModule = {
   title: "Places",
   path: "/places",
   icon: MapPin,
-  order: 8,
+  order: 6,
   Page: PlacesPage,
 };

@@ -6,6 +6,6 @@ export const settingsModule: FeatureModule = {
   title: "Settings",
   path: "/settings",
   icon: Settings,
-  order: 7,
+  order: 8,
   Page: SettingsPage,
 };
