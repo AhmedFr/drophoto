@@ -28,6 +28,7 @@ pub fn run() {
             commands::media::get_media,
             commands::scan::start_scan,
             commands::scan::cancel_job,
+            commands::search::search_media,
             commands::sidecars::start_sidecar_sync_all,
             commands::sources::detect_sources,
             commands::sources::list_sources,
