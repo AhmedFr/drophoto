@@ -1,4 +1,5 @@
 mod drives;
+mod fts;
 mod media;
 mod organize;
 mod organize_jobs;
@@ -91,6 +92,17 @@ pub trait Catalog: Send + Sync {
     async fn has_sidecar_pending(&self, drive_id: i64) -> DpResult<bool>;
     async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
     async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
+    /// Rebuilds one media row's FTS text (stem, tags, place, camera) from
+    /// current catalog state; deletes the FTS row when the media row is gone.
+    /// `media.rs`/`tags.rs` never propagate this method's errors to the
+    /// caller of a media/tag write — see Global Constraints — they only
+    /// `tracing::warn!` on failure. This method itself still returns errors.
+    async fn sync_fts(&self, media_id: i64) -> DpResult<()>;
+    /// Drops and refills the whole index. Recovery path.
+    async fn rebuild_fts(&self) -> DpResult<()>;
+    /// FTS search: every whitespace token AND-ed, the last one prefix-matched
+    /// (`tok*`), ranked by bm25, joined back to media+drives like query_media.
+    async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>>;
 }
 
 #[async_trait]
@@ -268,5 +280,17 @@ impl Catalog for SqliteCatalog {
 
     async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
         tags::mark_sidecar_pending(&self.pool, media_id).await
+    }
+
+    async fn sync_fts(&self, media_id: i64) -> DpResult<()> {
+        fts::sync_fts(&self.pool, media_id).await
+    }
+
+    async fn rebuild_fts(&self) -> DpResult<()> {
+        fts::rebuild_fts(&self.pool).await
+    }
+
+    async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>> {
+        fts::search_media(&self.pool, query, limit).await
     }
 }

@@ -112,7 +112,14 @@ pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64
         .fetch_one(pool)
         .await
         .map_err(db)?;
-    row.try_get("id").map_err(db)
+    let id: i64 = row.try_get("id").map_err(db)?;
+
+    // FTS is derived data — never fail the write over a sync problem.
+    if let Err(e) = crate::fts::sync_fts(pool, id).await {
+        tracing::warn!(media_id = id, error = %e, "failed to sync FTS index after upsert_media");
+    }
+
+    Ok(id)
 }
 
 pub(crate) async fn list_media(pool: &SqlitePool, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>> {
@@ -170,7 +177,16 @@ pub(crate) async fn delete_media(pool: &SqlitePool, id: i64) -> DpResult<bool> {
     .execute(pool)
     .await
     .map_err(db)?;
-    Ok(result.rows_affected() > 0)
+    let deleted = result.rows_affected() > 0;
+
+    if deleted {
+        // FTS is derived data — never fail the write over a sync problem.
+        if let Err(e) = crate::fts::sync_fts(pool, id).await {
+            tracing::warn!(media_id = id, error = %e, "failed to sync FTS index after delete_media");
+        }
+    }
+
+    Ok(deleted)
 }
 
 pub(crate) async fn media_hash_exists(pool: &SqlitePool, hash: &str) -> DpResult<bool> {

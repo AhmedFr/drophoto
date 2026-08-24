@@ -339,13 +339,55 @@ async fn job_lifecycle() {
 async fn mark_media_organized_sets_path_and_timestamp() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
-    let media_id = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let media_id = c
+        .upsert_media(nm(drive_id, "inbox/beforestem.jpg", "h-a"))
+        .await
+        .unwrap();
 
-    c.mark_media_organized(media_id, "archive/a.jpg").await.unwrap();
+    c.mark_media_organized(media_id, "archive/afterstem.jpg")
+        .await
+        .unwrap();
 
     let (row, _) = c.get_media_with_drive(media_id).await.unwrap();
-    assert_eq!(row.rel_path, "archive/a.jpg");
+    assert_eq!(row.rel_path, "archive/afterstem.jpg");
     assert!(row.organized_at.is_some());
+
+    // I1: the FTS index must follow the rename — searchable by the new
+    // stem, no longer by the old one.
+    let by_new_stem = c.search_media("afterstem", 10).await.unwrap();
+    assert_eq!(by_new_stem.len(), 1);
+    assert_eq!(by_new_stem[0].0.id, media_id);
+    assert!(c.search_media("beforestem", 10).await.unwrap().is_empty());
+}
+
+/// I1: `mark_media_reverted` restores `rel_path`, and the FTS index must
+/// follow that rename back too — searchable by the restored stem, no
+/// longer by the organized one.
+#[tokio::test]
+async fn mark_media_reverted_updates_the_fts_index() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let media_id = c
+        .upsert_media(nm(drive_id, "inbox/origstem.jpg", "h-a"))
+        .await
+        .unwrap();
+    c.mark_media_organized(media_id, "archive/organizedstem.jpg")
+        .await
+        .unwrap();
+    assert_eq!(c.search_media("organizedstem", 10).await.unwrap().len(), 1);
+
+    c.mark_media_reverted(media_id, "inbox/origstem.jpg")
+        .await
+        .unwrap();
+
+    let (row, _) = c.get_media_with_drive(media_id).await.unwrap();
+    assert_eq!(row.rel_path, "inbox/origstem.jpg");
+    assert!(row.organized_at.is_none());
+
+    let by_orig_stem = c.search_media("origstem", 10).await.unwrap();
+    assert_eq!(by_orig_stem.len(), 1);
+    assert_eq!(by_orig_stem[0].0.id, media_id);
+    assert!(c.search_media("organizedstem", 10).await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -190,6 +190,13 @@ pub(crate) async fn mark_media_organized(
         .execute(pool)
         .await
         .map_err(db)?;
+
+    // FTS is derived data — never fail the write over a sync problem.
+    // `rel_path` just changed, so the indexed stem must be refreshed too.
+    if let Err(e) = crate::fts::sync_fts(pool, media_id).await {
+        tracing::warn!(media_id, error = %e, "failed to sync FTS index after mark_media_organized");
+    }
+
     Ok(())
 }
 
@@ -212,6 +219,13 @@ pub(crate) async fn mark_media_reverted(
         // happened — but a media row that no longer exists (or never
         // did) is worth knowing about rather than silently no-op'ing.
         tracing::warn!(media_id, "mark_media_reverted affected no rows");
+    } else {
+        // FTS is derived data — never fail the write over a sync
+        // problem. `rel_path` just changed back, so the indexed stem
+        // must be refreshed too.
+        if let Err(e) = crate::fts::sync_fts(pool, media_id).await {
+            tracing::warn!(media_id, error = %e, "failed to sync FTS index after mark_media_reverted");
+        }
     }
     Ok(())
 }

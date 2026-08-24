@@ -34,6 +34,25 @@ impl SqliteCatalog {
             );
         }
 
+        // `media_fts` is derived data (see `fts` module docs) — if a
+        // previous process crashed mid-rebuild, was upgraded from before
+        // migration 0006 without a backfill, or otherwise left the index
+        // empty while `media` has rows, no future write will ever notice
+        // and repair it on its own (writes only ever sync the one row
+        // they touch). Catch that here, once, at startup.
+        let has_media: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media)")
+            .fetch_one(&catalog.pool)
+            .await
+            .map_err(db)?;
+        let has_fts: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media_fts)")
+            .fetch_one(&catalog.pool)
+            .await
+            .map_err(db)?;
+        if has_media && !has_fts {
+            tracing::info!("media_fts is empty but media has rows; backfilling the search index");
+            crate::fts::rebuild_fts(&catalog.pool).await?;
+        }
+
         Ok(catalog)
     }
 

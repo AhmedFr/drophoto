@@ -131,6 +131,14 @@ pub(crate) async fn tag_media(
     }
 
     tx.commit().await.map_err(db)?;
+
+    // FTS is derived data — never fail the write over a sync problem.
+    for &media_id in ids {
+        if let Err(e) = crate::fts::sync_fts(pool, media_id).await {
+            tracing::warn!(media_id, error = %e, "failed to sync FTS index after tag_media");
+        }
+    }
+
     Ok(())
 }
 
