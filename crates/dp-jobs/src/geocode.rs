@@ -19,7 +19,6 @@
 //! whole app, and it never conflicts with (or is blocked by) any per-drive
 //! job, which are tracked under their own real drive ids.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -35,9 +34,14 @@ use crate::{error_code, Job, JobCtx, JobEvent, JobOutcome};
 /// ungeocoded rather than assigned to a distant "nearest" match.
 const MAX_REVERSE_KM: f64 = 50.0;
 
-/// How many ungeocoded rows to fetch per drain pass — mirrors
-/// `SidecarSyncJob`'s per-pass batching via `list_sidecar_pending`.
-const BATCH_SIZE: u32 = 500;
+/// Default number of ungeocoded rows to fetch per drain pass — mirrors
+/// `SidecarSyncJob`'s per-pass batching via `list_sidecar_pending`, though
+/// unlike that job's re-fetch-the-same-query loop, each pass here advances
+/// a cursor (see [`GeocodeJob::run_inner`]) rather than re-fetching the
+/// same window. Overridable via [`GeocodeJob::with_batch_size`], mainly so
+/// tests can exercise multi-batch draining without needing a
+/// `DEFAULT_BATCH_SIZE`-sized fixture.
+const DEFAULT_BATCH_SIZE: u32 = 500;
 
 /// External dependencies a [`GeocodeJob`] needs, injected so tests can
 /// swap in a fake, deterministic [`Geocoder`].
@@ -52,6 +56,7 @@ pub struct GeocodeDeps {
 pub struct GeocodeJob {
     id: String,
     deps: GeocodeDeps,
+    batch_size: u32,
     ok: AtomicU64,
     failed: AtomicU64,
     skipped: AtomicU64,
@@ -62,10 +67,19 @@ impl GeocodeJob {
         Self {
             id,
             deps,
+            batch_size: DEFAULT_BATCH_SIZE,
             ok: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
         }
+    }
+
+    /// Overrides the per-fetch page size (default [`DEFAULT_BATCH_SIZE`]).
+    /// Exposed publicly mainly for tests, so a multi-batch drain can be
+    /// exercised against a handful of rows instead of hundreds.
+    pub fn with_batch_size(mut self, batch_size: u32) -> Self {
+        self.batch_size = batch_size;
+        self
     }
 }
 
@@ -94,17 +108,22 @@ impl Job for GeocodeJob {
 
 impl GeocodeJob {
     async fn run_inner(&self, ctx: &JobCtx) -> DpResult<JobOutcome> {
-        // Same re-fetch-until-empty shape as `SidecarSyncJob::run_inner`:
-        // a row that gains GPS (or is newly imported) while this sweep is
-        // in flight is picked up in the same run rather than waiting for
-        // the next trigger.
-        //
-        // `attempted` is what keeps a row with no city in range — which
-        // never gains a `place_id` and so never leaves
-        // `list_ungeocoded`'s result set — from spinning the loop
-        // forever: it's looked at exactly once per run, tallied
-        // `skipped`, and filtered out of every subsequent fetch.
-        let mut attempted: HashSet<i64> = HashSet::new();
+        // Cursor-paginated drain, *not* a re-fetch-the-same-query loop
+        // like `SidecarSyncJob::run_inner`: `list_ungeocoded` is ordered
+        // by `id`, and each pass asks for `id > last_seen_id` rather than
+        // re-running the same `LIMIT batch_size` window. That distinction
+        // matters because a row this job can't place (no city in range)
+        // never gains a `place_id` and so never leaves the underlying
+        // predicate — a naive re-fetch-the-same-window loop would see that
+        // row again on every pass and either loop forever or (with an
+        // attempted-set filtering it back out) stop as soon as one page is
+        // entirely unplaceable, silently stranding every row past it,
+        // this run *and* every future run. Advancing the cursor past a
+        // row the moment it's been looked at — regardless of outcome —
+        // means the loop always makes forward progress and terminates
+        // exactly when a fetch comes back empty, with no separate
+        // "already tried this one" bookkeeping needed.
+        let mut last_seen_id = 0i64;
         let mut done = 0u64;
         let mut cancelled = false;
 
@@ -117,15 +136,17 @@ impl GeocodeJob {
             let rows: Vec<MediaRow> = self
                 .deps
                 .catalog
-                .list_ungeocoded(BATCH_SIZE)
-                .await?
-                .into_iter()
-                .filter(|row| !attempted.contains(&row.id))
-                .collect();
+                .list_ungeocoded(last_seen_id, self.batch_size)
+                .await?;
             if rows.is_empty() {
                 break;
             }
 
+            // `total` only ever covers what's been fetched so far, then
+            // grows by a batch each pass — there's no cheap way to know
+            // the true total up front without a separate count query, so
+            // progress here reports "at least this many" rather than a
+            // stable final total; same trade-off `SidecarSyncJob` makes.
             let total = done + rows.len() as u64;
             for row in &rows {
                 if ctx.cancel.is_cancelled() {
@@ -133,7 +154,7 @@ impl GeocodeJob {
                     break 'sweep;
                 }
 
-                attempted.insert(row.id);
+                last_seen_id = row.id;
                 self.geocode_row(ctx, row).await;
 
                 done += 1;

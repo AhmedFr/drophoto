@@ -93,8 +93,9 @@ impl Geocoder for FakeGeocoder {
 
 /// A [`Geocoder`] that never finds a city — every row it sees comes back
 /// `None`, so it can never gain a `place_id` and always shows back up in
-/// `list_ungeocoded` — used to prove the drain loop's attempted-set stops
-/// the sweep instead of looping forever.
+/// `list_ungeocoded`'s predicate — used to prove the drain loop's cursor
+/// still advances past a row it can't place, instead of looping forever
+/// re-fetching the same window.
 struct NeverFindsGeocoder;
 
 impl Geocoder for NeverFindsGeocoder {
@@ -245,12 +246,14 @@ async fn a_manually_placed_row_is_never_seen_by_the_job_and_keeps_its_place() {
     assert_eq!(counts[0].place.id, manual_place.id);
 }
 
-/// A row with no city in range never gains a `place_id`, so a naive
-/// re-fetch loop would see it again on every pass and spin forever. The
-/// attempted-set (mirroring `SidecarSyncJob`) must stop the sweep after
-/// looking at it exactly once.
+/// A row with no city in range never gains a `place_id`, so a loop that
+/// kept re-fetching the same window would see it again on every pass and
+/// spin forever. The cursor (`last_seen_id`, advanced past every row the
+/// moment it's looked at — see `GeocodeJob::run_inner`) must stop the
+/// sweep after looking at each row exactly once, by advancing past it
+/// regardless of outcome.
 #[tokio::test]
-async fn drains_with_an_attempted_set_instead_of_looping_forever_on_unplaceable_rows() {
+async fn drains_via_the_cursor_instead_of_looping_forever_on_unplaceable_rows() {
     let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
     let drive_id = drive(&catalog).await;
     catalog
@@ -271,9 +274,59 @@ async fn drains_with_an_attempted_set_instead_of_looping_forever_on_unplaceable_
         other => panic!("expected Finished, got {other:?} (events: {events:?})"),
     };
     // Exactly one attempt per row, even though both remain forever
-    // eligible for `list_ungeocoded` — proves the loop terminated via the
-    // attempted-set, not because the catalog ran out of candidates.
+    // eligible for `list_ungeocoded` — proves the loop terminated because
+    // the cursor ran off the end of the table, not because the catalog
+    // ran out of candidates.
     assert_eq!((ok, failed, skipped), (0, 0, 2), "events: {events:?}");
+}
+
+/// Regression for the bug where a fixed-window drain (re-fetching
+/// `list_ungeocoded(500)` and filtering by an in-memory attempted-set)
+/// could permanently strand every row past the first entirely-unplaceable
+/// batch: as soon as one page came back all-skipped, the attempted-set
+/// would empty the *next* fetch and the loop would exit — never reaching
+/// row 501+, this run or any future one. With `batch_size` shrunk to 2
+/// via `with_batch_size`, the first page here is two mid-ocean rows (no
+/// city within range of either) and the third row is a perfectly
+/// placeable one — it must still be reached and geocoded.
+#[tokio::test]
+async fn a_later_row_is_still_geocoded_past_an_entirely_unplaceable_first_batch() {
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive_id = drive(&catalog).await;
+
+    catalog
+        .upsert_media(nm(drive_id, "ocean-a.jpg", "h-oa", Some(0.0), Some(-140.0)))
+        .await
+        .unwrap();
+    catalog
+        .upsert_media(nm(drive_id, "ocean-b.jpg", "h-ob", Some(0.0), Some(-141.0)))
+        .await
+        .unwrap();
+    let placeable_id = catalog
+        .upsert_media(nm(drive_id, "lisbon.jpg", "h-lis", Some(38.73), Some(-9.14)))
+        .await
+        .unwrap();
+
+    let geocoder: Arc<dyn Geocoder> = Arc::new(FakeGeocoder::new(lisbon()));
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("geocode");
+    let job = Arc::new(GeocodeJob::new(job_id.clone(), deps(catalog.clone(), geocoder)).with_batch_size(2));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    // The two mid-ocean rows (first batch, entirely unplaceable) tally as
+    // skipped; the third row (second batch) is still reached and placed.
+    assert_eq!((ok, failed, skipped), (1, 0, 2), "events: {events:?}");
+
+    let (row, _) = catalog.get_media_with_drive(placeable_id).await.unwrap();
+    assert!(row.place_id.is_some());
 }
 
 #[tokio::test]
@@ -301,5 +354,5 @@ async fn cancel_stops_the_sweep_early() {
     assert_eq!((outcome.ok, outcome.failed, outcome.skipped), (0, 0, 0));
 
     // Nothing was touched — cancellation was observed before the first row.
-    assert!(catalog.list_ungeocoded(10).await.unwrap().len() == 2);
+    assert!(catalog.list_ungeocoded(0, 10).await.unwrap().len() == 2);
 }

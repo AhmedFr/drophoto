@@ -165,11 +165,22 @@ pub(crate) async fn set_media_place(pool: &SqlitePool, ids: &[i64], place_id: Op
 /// rows the user already assigned a *manual* place to, since assigning
 /// any place (geocoder or manual) fills `place_id` and takes the row out
 /// of this set. There is no separate "manual-skip" flag to check.
-pub(crate) async fn list_ungeocoded(pool: &SqlitePool, limit: u32) -> DpResult<Vec<MediaRow>> {
+///
+/// Cursor-paginated by `id` rather than offset-paginated: `after_id` (`0`
+/// for the first page) plus `id > ?, ORDER BY id LIMIT ?` means a row that
+/// gains a `place_id` between pages (and so drops out of this predicate)
+/// can never shift a later page's window and cause a not-yet-seen row to
+/// be skipped — the classic failure mode of `OFFSET`-based pagination
+/// over a set that shrinks while it's being paged through. The geocode
+/// job relies on this: a page of rows it can't place at all still lets it
+/// advance past them on the next fetch, rather than re-fetching the same
+/// stuck page forever.
+pub(crate) async fn list_ungeocoded(pool: &SqlitePool, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
     let rows = sqlx::query(
         "SELECT * FROM media WHERE lat IS NOT NULL AND lon IS NOT NULL AND place_id IS NULL \
-         ORDER BY id LIMIT ?",
+         AND id > ? ORDER BY id LIMIT ?",
     )
+    .bind(after_id)
     .bind(limit)
     .fetch_all(pool)
     .await

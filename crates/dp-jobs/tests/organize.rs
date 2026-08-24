@@ -881,8 +881,8 @@ impl Catalog for FailingCatalog {
         self.0.set_media_place(ids, place_id).await
     }
 
-    async fn list_ungeocoded(&self, limit: u32) -> DpResult<Vec<MediaRow>> {
-        self.0.list_ungeocoded(limit).await
+    async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
+        self.0.list_ungeocoded(after_id, limit).await
     }
 }
 

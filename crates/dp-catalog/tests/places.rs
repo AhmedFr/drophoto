@@ -238,7 +238,7 @@ async fn list_ungeocoded_excludes_no_gps_has_place_and_manual_skipped() {
         .await
         .unwrap();
 
-    let ungeocoded = c.list_ungeocoded(100).await.unwrap();
+    let ungeocoded = c.list_ungeocoded(0, 100).await.unwrap();
     let ids: Vec<i64> = ungeocoded.iter().map(|r| r.id).collect();
     assert_eq!(ids, vec![needs_geocode]);
 }
@@ -259,6 +259,37 @@ async fn list_ungeocoded_respects_limit() {
         .unwrap();
     }
 
-    let limited = c.list_ungeocoded(2).await.unwrap();
+    let limited = c.list_ungeocoded(0, 2).await.unwrap();
     assert_eq!(limited.len(), 2);
+}
+
+/// The pagination contract the geocode job's drain loop depends on:
+/// `after_id` excludes every row with `id <= after_id`, so paging by the
+/// max id seen in the previous page can never re-show (or skip) a row.
+#[tokio::test]
+async fn list_ungeocoded_after_id_excludes_rows_at_or_below_the_cursor() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let id = c
+            .upsert_media(nm(
+                drive_id,
+                &format!("{i}.jpg"),
+                &format!("h-{i}"),
+                Some(1.0),
+                Some(2.0),
+            ))
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+
+    let page = c.list_ungeocoded(ids[0], 100).await.unwrap();
+    let page_ids: Vec<i64> = page.iter().map(|r| r.id).collect();
+    assert_eq!(page_ids, vec![ids[1], ids[2]]);
+
+    // Paging past the last row's id returns nothing — the drain loop's
+    // termination condition.
+    assert!(c.list_ungeocoded(ids[2], 100).await.unwrap().is_empty());
 }

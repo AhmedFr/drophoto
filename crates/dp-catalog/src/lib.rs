@@ -111,7 +111,12 @@ pub trait Catalog: Send + Sync {
     /// Sets place_id on every id + syncs FTS per row (log-only, like tags).
     async fn set_media_place(&self, ids: &[i64], place_id: Option<i64>) -> DpResult<()>;
     /// Rows with GPS, no place, and NOT manual-skipped — for the geocode job.
-    async fn list_ungeocoded(&self, limit: u32) -> DpResult<Vec<MediaRow>>;
+    /// Cursor-paginated: only rows with `id > after_id` (ascending, `LIMIT
+    /// limit`) — pass `0` for the first page, then the max `id` seen in the
+    /// previous page. Unlike an offset, this can never skip or re-show a
+    /// row when earlier rows in the same run gain a `place_id` (and so drop
+    /// out of the result set) between pages.
+    async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>>;
 }
 
 #[async_trait]
@@ -315,7 +320,7 @@ impl Catalog for SqliteCatalog {
         places::set_media_place(&self.pool, ids, place_id).await
     }
 
-    async fn list_ungeocoded(&self, limit: u32) -> DpResult<Vec<MediaRow>> {
-        places::list_ungeocoded(&self.pool, limit).await
+    async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
+        places::list_ungeocoded(&self.pool, after_id, limit).await
     }
 }
