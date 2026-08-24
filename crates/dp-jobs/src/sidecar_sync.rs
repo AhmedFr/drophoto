@@ -260,11 +260,20 @@ impl SidecarSyncJob {
             }
         };
 
+        // A sidecar that exists but can't be parsed (corrupt, truncated,
+        // hand-edited into invalid XML) is treated as having no external
+        // subjects rather than failing the row: before the merge existed,
+        // such a file was simply overwritten with catalog truth — the one
+        // way it heals. Failing here would instead leave the row pending
+        // forever, erroring on every sweep.
         let subjects = match self.deps.sidecars.read_subjects(abs).await {
             Ok(subjects) => subjects,
             Err(e) => {
-                self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
-                return None;
+                tracing::warn!(
+                    "unreadable sidecar for {} — overwriting with catalog tags: {e}",
+                    row.rel_path
+                );
+                Vec::new()
             }
         };
 
