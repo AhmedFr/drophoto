@@ -29,6 +29,7 @@ fn row(id: i64, rel_path: &str, hash: &str, taken_at: Option<&str>) -> MediaRow 
         organized_at: None,
         source_id: None,
         sidecar_pending: false,
+        place_id: None,
     }
 }
 

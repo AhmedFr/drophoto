@@ -26,6 +26,7 @@ const item: MediaItem = {
     missing_at: null,
     organized_at: null,
     source_id: null,
+    place_id: null,
   },
   thumb_path: "/tmp/thumbs/hash1/400.webp",
   preview_path: "/tmp/thumbs/hash1/2000.webp",

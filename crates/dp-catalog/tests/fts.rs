@@ -1,5 +1,5 @@
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia};
+use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, NewPlace, PlaceSource};
 use sqlx::SqlitePool;
 
 fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
@@ -117,6 +117,33 @@ async fn last_token_is_prefix_matched() {
     let combined = c.search_media("canon bea", 10).await.unwrap();
     assert_eq!(combined.len(), 1);
     assert_eq!(combined[0].0.id, a);
+}
+
+/// The `place` FTS column is `name admin country`, joined from `places`
+/// via `media.place_id` — so a media row is searchable by any piece of
+/// its place, not just the id.
+#[tokio::test]
+async fn place_is_searchable_by_name_admin_and_country() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+
+    let place = c
+        .upsert_place(NewPlace {
+            lat: 38.7,
+            lon: -9.1,
+            name: "Lisbon".into(),
+            admin: Some("Lisboa".into()),
+            country: "Portugal".into(),
+            source: PlaceSource::Geocoder,
+        })
+        .await
+        .unwrap();
+    c.set_media_place(&[a], Some(place.id)).await.unwrap();
+
+    assert_eq!(c.search_media("lisbon", 10).await.unwrap().len(), 1);
+    assert_eq!(c.search_media("lisboa", 10).await.unwrap().len(), 1);
+    assert_eq!(c.search_media("portugal", 10).await.unwrap().len(), 1);
 }
 
 #[tokio::test]

@@ -102,6 +102,51 @@ pub struct Tag {
     pub name: String,
 }
 
+/// Where a [`Place`] came from: `Geocoder` rows are found-or-created by
+/// `Catalog::upsert_place` (deduped by name/admin/country) as the reverse
+/// geocode job resolves GPS coordinates; `Manual` rows are the user's own
+/// pick and are never touched by that job again — see
+/// `Catalog::list_ungeocoded`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Copy, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceSource {
+    Geocoder,
+    Manual,
+}
+
+/// A named location — reverse-geocoded from a media row's `lat`/`lon`, or
+/// entered manually — that one or more media rows can be tagged with via
+/// [`MediaRow::place_id`].
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Place {
+    pub id: i64,
+    pub lat: f64,
+    pub lon: f64,
+    pub name: String,
+    pub admin: Option<String>,
+    pub country: String,
+    pub source: PlaceSource,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NewPlace {
+    pub lat: f64,
+    pub lon: f64,
+    pub name: String,
+    pub admin: Option<String>,
+    pub country: String,
+    pub source: PlaceSource,
+}
+
+/// A [`Place`] paired with how many media rows currently reference it —
+/// the shape the map/list view of places needs. `Catalog::list_place_counts`
+/// only ever returns places with `count >= 1`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PlaceCount {
+    pub place: Place,
+    pub count: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MediaRow {
     pub id: i64,
@@ -134,6 +179,11 @@ pub struct MediaRow {
     /// actually changes, cleared by `Catalog::clear_sidecar_pending` once
     /// the sidecar has been rewritten.
     pub sidecar_pending: bool,
+    /// The resolved [`Place`] for this row's `lat`/`lon`, if any — set by
+    /// `Catalog::set_media_place` (either the reverse-geocode job or a
+    /// manual pick). `None` here also means "not yet geocoded"; see
+    /// [`Catalog::list_ungeocoded`] for how that state is detected.
+    pub place_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -292,6 +342,7 @@ pub struct MediaQuery {
     pub sort: MediaSort,
     pub limit: u32,
     pub offset: u32,
+    pub place_id: Option<i64>,
 }
 
 impl MediaQuery {

@@ -1,6 +1,6 @@
 use chrono::{TimeZone, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, MediaKind, MediaQuery, MediaSort, NewDrive, NewMedia};
+use dp_core::{DriveRole, MediaKind, MediaQuery, MediaSort, NewDrive, NewMedia, NewPlace, PlaceSource};
 
 async fn seed() -> (SqliteCatalog, i64) {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
@@ -145,6 +145,44 @@ async fn paging_and_count() {
     assert_eq!(
         c.count_media_query(&MediaQuery {
             kinds: vec![MediaKind::Video],
+            ..q()
+        })
+        .await
+        .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn filter_by_place_id() {
+    let (c, _) = seed().await;
+    let place = c
+        .upsert_place(NewPlace {
+            lat: 38.7,
+            lon: -9.1,
+            name: "Lisbon".into(),
+            admin: Some("Lisboa".into()),
+            country: "Portugal".into(),
+            source: PlaceSource::Geocoder,
+        })
+        .await
+        .unwrap();
+    let target = c.query_media(&q()).await.unwrap()[0].0.id;
+    c.set_media_place(&[target], Some(place.id)).await.unwrap();
+
+    let r = c
+        .query_media(&MediaQuery {
+            place_id: Some(place.id),
+            ..q()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].0.id, target);
+
+    assert_eq!(
+        c.count_media_query(&MediaQuery {
+            place_id: Some(place.id),
             ..q()
         })
         .await

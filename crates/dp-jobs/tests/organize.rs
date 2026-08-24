@@ -868,6 +868,22 @@ impl Catalog for FailingCatalog {
     async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>> {
         self.0.search_media(query, limit).await
     }
+
+    async fn upsert_place(&self, p: dp_core::NewPlace) -> DpResult<dp_core::Place> {
+        self.0.upsert_place(p).await
+    }
+
+    async fn list_place_counts(&self) -> DpResult<Vec<dp_core::PlaceCount>> {
+        self.0.list_place_counts().await
+    }
+
+    async fn set_media_place(&self, ids: &[i64], place_id: Option<i64>) -> DpResult<()> {
+        self.0.set_media_place(ids, place_id).await
+    }
+
+    async fn list_ungeocoded(&self, limit: u32) -> DpResult<Vec<MediaRow>> {
+        self.0.list_ungeocoded(limit).await
+    }
 }
 
 #[tokio::test]

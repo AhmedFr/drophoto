@@ -42,20 +42,32 @@ async fn tag_names_for_media_conn(conn: &mut SqliteConnection, media_id: i64) ->
 /// directly so callers can share one transaction across the delete +
 /// insert (or the whole rebuild loop).
 async fn insert_fts_row(conn: &mut SqliteConnection, media_id: i64) -> DpResult<()> {
-    let row = sqlx::query("SELECT rel_path, camera FROM media WHERE id = ?")
-        .bind(media_id)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(db)?;
+    let row = sqlx::query(
+        "SELECT m.rel_path AS rel_path, m.camera AS camera, \
+         p.name AS p_name, p.admin AS p_admin, p.country AS p_country \
+         FROM media m LEFT JOIN places p ON p.id = m.place_id WHERE m.id = ?",
+    )
+    .bind(media_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(db)?;
     let Some(row) = row else {
         return Ok(());
     };
     let rel_path: String = row.try_get("rel_path").map_err(db)?;
     let camera: Option<String> = row.try_get("camera").map_err(db)?;
+    let place_name: Option<String> = row.try_get("p_name").map_err(db)?;
+    let place_admin: Option<String> = row.try_get("p_admin").map_err(db)?;
+    let place_country: Option<String> = row.try_get("p_country").map_err(db)?;
 
     let stem = stem_of(&rel_path);
     let tags = tag_names_for_media_conn(&mut *conn, media_id).await?.join(" ");
-    let place = ""; // populated from media.place_id starting Phase 4c
+    let place = place_name.map(|name| {
+        let admin = place_admin.unwrap_or_default();
+        let country = place_country.unwrap_or_default();
+        format!("{name} {admin} {country}")
+    });
+    let place = place.unwrap_or_default();
     let camera = camera.unwrap_or_default();
 
     sqlx::query("INSERT INTO media_fts (rowid, stem, tags, place, camera) VALUES (?, ?, ?, ?, ?)")
