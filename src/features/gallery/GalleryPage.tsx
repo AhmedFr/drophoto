@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { PageHeader } from "@/components/PageHeader";
+import { PlacePanel } from "@/features/places/components/PlacePanel";
 import { GalleryToolbar } from "./components/GalleryToolbar";
 import { Lightbox } from "./components/Lightbox";
 import { SelectionBar } from "./components/SelectionBar";
@@ -30,9 +31,14 @@ export function GalleryPage() {
   // Opened by `SelectionBar`'s TAG button, for the current selection.
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
 
+  // Opened by `SelectionBar`'s PLACE button, for the current selection.
+  const [placePanelOpen, setPlacePanelOpen] = useState(false);
+
   // Mirrors whether `Lightbox`'s `MetaPanel` currently has its own
-  // (single-id) `TagPanel` open — see the Escape handler below.
+  // (single-id) `TagPanel`/`PlacePanel` open — see the Escape handler
+  // below.
   const [metaTagPanelOpen, setMetaTagPanelOpen] = useState(false);
+  const [metaPlacePanelOpen, setMetaPlacePanelOpen] = useState(false);
 
   // `onToggle` from `Tile`/`VirtualGrid`: `shiftKey` false is a plain
   // (cmd/ctrl-click) toggle, `shiftKey` true is a shift-range select. Range
@@ -85,11 +91,11 @@ export function GalleryPage() {
   // clears; with no selection, the event passes through untouched and
   // Escape closes the lightbox as before.
   //
-  // Either `TagPanel` (the selection one, or `MetaPanel`'s single-id one
-  // nested in the lightbox) being open takes priority over all of that: we
-  // yield immediately, without touching the selection, so the keystroke
-  // reaches that dialog's own Radix `DismissableLayer` and closes only the
-  // topmost (nested-most) open dialog — the `TagPanel` — leaving the
+  // Either `TagPanel`/`PlacePanel` (the selection ones, or `MetaPanel`'s
+  // single-id ones nested in the lightbox) being open takes priority over
+  // all of that: we yield immediately, without touching the selection, so
+  // the keystroke reaches that dialog's own Radix `DismissableLayer` and
+  // closes only the topmost (nested-most) open dialog — leaving the
   // background selection and, when applicable, the lightbox itself intact.
   //
   // `selectedIds` is read via a ref (updated every render, no dependency
@@ -106,14 +112,14 @@ export function GalleryPage() {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      if (tagPanelOpen || metaTagPanelOpen) return;
+      if (tagPanelOpen || metaTagPanelOpen || placePanelOpen || metaPlacePanelOpen) return;
       if (selectedIdsRef.current.length === 0) return;
       e.stopImmediatePropagation();
       clearSelection();
     }
     document.addEventListener("keydown", handleKeyDown, { capture: true });
     return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
-  }, [clearSelection, tagPanelOpen, metaTagPanelOpen]);
+  }, [clearSelection, tagPanelOpen, metaTagPanelOpen, placePanelOpen, metaPlacePanelOpen]);
 
   // `items` can shrink out from under an open lightbox (e.g. a refetch after
   // a scan removes media) — clamp `openIndex` back into range, or close it
@@ -169,8 +175,14 @@ export function GalleryPage() {
           />
         )}
       </div>
-      <SelectionBar count={selectedIds.length} onTag={() => setTagPanelOpen(true)} onClear={clearSelection} />
+      <SelectionBar
+        count={selectedIds.length}
+        onTag={() => setTagPanelOpen(true)}
+        onPlace={() => setPlacePanelOpen(true)}
+        onClear={clearSelection}
+      />
       <TagPanel mediaIds={selectedIds} open={tagPanelOpen} onClose={() => setTagPanelOpen(false)} />
+      <PlacePanel mediaIds={selectedIds} open={placePanelOpen} onClose={() => setPlacePanelOpen(false)} />
       {openIndex !== null && (
         <Lightbox
           items={items}
@@ -183,6 +195,7 @@ export function GalleryPage() {
             // was left open), which would otherwise permanently block the
             // Escape-clears-selection behavior above.
             setMetaTagPanelOpen(false);
+            setMetaPlacePanelOpen(false);
           }}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
           onNext={() => {
@@ -190,6 +203,7 @@ export function GalleryPage() {
             else if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
           }}
           onTagPanelOpenChange={setMetaTagPanelOpen}
+          onPlacePanelOpenChange={setMetaPlacePanelOpen}
         />
       )}
     </div>

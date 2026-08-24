@@ -46,6 +46,8 @@ export type MediaQuery = {
   sort: MediaSort;
   limit: number;
   offset: number;
+  /** Restrict to media assigned to this place — see `dp_core::MediaQuery::place_id`. Omitted/`undefined` behaves the same as `null` (no restriction), since the Rust side defaults a missing field to `None`. */
+  place_id?: number | null;
 };
 
 export const queryMedia = (query: MediaQuery) => invokeApi<MediaItem[]>("query_media", { query });

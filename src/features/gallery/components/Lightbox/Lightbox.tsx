@@ -10,7 +10,15 @@ import type { LightboxProps } from "./Lightbox.types";
 const navButtonClass =
   "flex size-[38px] shrink-0 items-center justify-center border border-border text-dim outline-none hover:text-foreground focus-visible:border-ring";
 
-export function Lightbox({ items, index, onClose, onPrev, onNext, onTagPanelOpenChange }: LightboxProps) {
+export function Lightbox({
+  items,
+  index,
+  onClose,
+  onPrev,
+  onNext,
+  onTagPanelOpenChange,
+  onPlacePanelOpenChange,
+}: LightboxProps) {
   const item = items[index];
 
   // Escape is already handled by Radix's `Dialog.Content` (via its
@@ -102,6 +110,7 @@ export function Lightbox({ items, index, onClose, onPrev, onNext, onTagPanelOpen
               key={item.row.id}
               item={item}
               onTagPanelOpenChange={onTagPanelOpenChange}
+              onPlacePanelOpenChange={onPlacePanelOpenChange}
             />
           </aside>
         </DialogPrimitive.Content>
