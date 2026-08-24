@@ -856,6 +856,18 @@ impl Catalog for FailingCatalog {
     async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
         self.0.mark_sidecar_pending(media_id).await
     }
+
+    async fn sync_fts(&self, media_id: i64) -> DpResult<()> {
+        self.0.sync_fts(media_id).await
+    }
+
+    async fn rebuild_fts(&self) -> DpResult<()> {
+        self.0.rebuild_fts().await
+    }
+
+    async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>> {
+        self.0.search_media(query, limit).await
+    }
 }
 
 #[tokio::test]
