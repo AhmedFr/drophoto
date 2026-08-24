@@ -107,6 +107,14 @@ def main():
                 skipped += 1
                 continue
 
+            # Deliberate fallback, not a fail-loud case: `population` is only
+            # ever used at runtime to rank/tie-break, never to accept or
+            # reject a row (unlike lat/lon or name, which are load-bearing
+            # and cause a skip above). GeoNames' documented population field
+            # defaults to "0" for unknown, so an unparseable value here would
+            # be an upstream format change we still don't want to lose an
+            # otherwise-valid city row over -- default to 0 (lowest ranking
+            # preference) and keep the row.
             try:
                 population = int(population_s)
             except ValueError:

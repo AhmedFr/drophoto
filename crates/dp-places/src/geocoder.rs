@@ -132,7 +132,17 @@ impl Geocoder for BundledGeocoder {
         // `+ 1.0` slack absorbs the mean-radius rounding used below.
         let lat_slack_deg = max_km / 111.0 + 1.0;
 
-        let mut best: Option<(&Entry, f64)> = None;
+        // Pass 1: collect every in-range candidate and find the TRUE
+        // minimum distance among them. A single running-best fold that
+        // re-centers its tie-break window on whatever is currently "best"
+        // lets population repeatedly buy a few more km each step (a closer
+        // tiny place loses to a farther big place, which then loses to an
+        // even farther, even bigger place, ...), so the final pick can end
+        // up arbitrarily far from the actual nearest city. Anchoring the
+        // window to the fixed true minimum (computed once, before any
+        // population comparison) prevents that drift.
+        let mut candidates: Vec<(&Entry, f64)> = Vec::new();
+        let mut min_distance = f64::INFINITY;
 
         for entry in &self.entries {
             if (entry.city.lat - lat).abs() > lat_slack_deg {
@@ -144,23 +154,30 @@ impl Geocoder for BundledGeocoder {
                 continue;
             }
 
-            best = match best {
-                None => Some((entry, distance)),
-                Some((best_entry, best_distance)) => {
-                    let closer = distance < best_distance - TIE_EPSILON_KM;
-                    let near_tie_more_populous = (distance - best_distance).abs() <= TIE_EPSILON_KM
-                        && entry.population > best_entry.population;
-
-                    if closer || near_tie_more_populous {
-                        Some((entry, distance))
-                    } else {
-                        Some((best_entry, best_distance))
-                    }
-                }
-            };
+            if distance < min_distance {
+                min_distance = distance;
+            }
+            candidates.push((entry, distance));
         }
 
-        best.map(|(entry, _)| &entry.city)
+        if !min_distance.is_finite() {
+            return None;
+        }
+
+        // Pass 2: among candidates within the tie-break window of the true
+        // minimum, prefer the most populous; break remaining ties by
+        // smaller distance (then by dataset order).
+        let threshold = min_distance + TIE_EPSILON_KM;
+        candidates
+            .into_iter()
+            .filter(|(_, distance)| *distance <= threshold)
+            .max_by(|(a_entry, a_distance), (b_entry, b_distance)| {
+                a_entry
+                    .population
+                    .cmp(&b_entry.population)
+                    .then_with(|| b_distance.total_cmp(a_distance))
+            })
+            .map(|(entry, _)| &entry.city)
     }
 
     fn search(&self, query: &str, limit: usize) -> Vec<&City> {
@@ -282,6 +299,35 @@ Nowhere\t\tTestland\t10.0\t10.0\t5
         BundledGeocoder::from_tsv(FIXTURE_TSV).expect("fixture should parse")
     }
 
+    /// Builds an [`Entry`] at exact great-circle `distance_km` due north (or
+    /// south, for negative values) of the origin (0, 0), using the same
+    /// [`EARTH_RADIUS_KM`]/haversine math the implementation uses, so the
+    /// distance `reverse` computes back is exact (no float-rounding slop
+    /// between test setup and the code under test).
+    fn entry_at_distance(name: &str, distance_km: f64, population: u64) -> Entry {
+        let lat = (distance_km / EARTH_RADIUS_KM).to_degrees();
+        let city = City {
+            name: name.to_string(),
+            admin: None,
+            country: "Testland".to_string(),
+            lat,
+            lon: 0.0,
+        };
+        let folded_name = fold_diacritics(&city.name);
+        Entry {
+            city,
+            population,
+            folded_name,
+        }
+    }
+
+    fn geocoder_from_entries(entries: Vec<Entry>) -> BundledGeocoder {
+        BundledGeocoder {
+            entries,
+            skipped_lines: 0,
+        }
+    }
+
     #[test]
     fn from_tsv_rejects_empty_dataset() {
         let err = BundledGeocoder::from_tsv("").unwrap_err();
@@ -298,6 +344,11 @@ Lisbon\tLisbon\tPortugal\tnot-a-number\t-9.1393\t517802
         let geocoder = BundledGeocoder::from_tsv(tsv).expect("should parse the one valid row");
         assert_eq!(geocoder.len(), 1);
         assert_eq!(geocoder.skipped_lines(), 2);
+    }
+
+    #[test]
+    fn parse_line_rejects_too_many_columns() {
+        assert!(parse_line("Paris\tÎle-de-France\tFrance\t48.8566\t2.3522\t2148000\textra").is_none());
     }
 
     #[test]
@@ -331,6 +382,55 @@ Twin\t\tLand\t1.0\t1.0\t9999
         // "Twin"/"Land"), but this at least exercises the tie-break path
         // without panicking or picking arbitrarily by iteration order only.
         assert_eq!(city.country, "Land");
+    }
+
+    #[test]
+    fn reverse_prefers_more_populous_candidate_within_epsilon() {
+        // Closer-tiny (0.1 km, pop 10) vs. farther-big (1.9 km, pop 1M).
+        // 1.9 km is within min_distance (0.1) + TIE_EPSILON_KM (2.0) = 2.1,
+        // so the more populous candidate should win.
+        let geocoder = geocoder_from_entries(vec![
+            entry_at_distance("Tiny", 0.1, 10),
+            entry_at_distance("Big", 1.9, 1_000_000),
+        ]);
+        let city = geocoder.reverse(0.0, 0.0, 10.0).unwrap();
+        assert_eq!(city.name, "Big");
+    }
+
+    #[test]
+    fn reverse_ignores_populous_candidate_just_outside_epsilon() {
+        // Closer-tiny (0.1 km, pop 10) vs. farther-big (2.2 km, pop 1M).
+        // Threshold is 0.1 + 2.0 = 2.1 km, so 2.2 km is JUST outside the
+        // window and must not be picked over the true nearest.
+        let geocoder = geocoder_from_entries(vec![
+            entry_at_distance("Tiny", 0.1, 10),
+            entry_at_distance("Big", 2.2, 1_000_000),
+        ]);
+        let city = geocoder.reverse(0.0, 0.0, 10.0).unwrap();
+        assert_eq!(city.name, "Tiny");
+    }
+
+    #[test]
+    fn reverse_two_pass_window_prevents_chain_drift_past_epsilon() {
+        // Regression for the single-fold running-best bug: a naive fold
+        // that re-centers its tie-break window on the current "best" lets
+        // population chain past the true minimum in successive replace
+        // steps (B replaces A because B is "close enough" to A, then D
+        // replaces B because D is "close enough" to B — even though D is
+        // nowhere near the true nearest, A). The two-pass algorithm anchors
+        // the window to the fixed true minimum (A, 0.1 km) instead, so only
+        // candidates within 0.1 + 2.0 = 2.1 km are eligible: A and B, not D.
+        let geocoder = geocoder_from_entries(vec![
+            entry_at_distance("A", 0.1, 10),
+            entry_at_distance("B", 2.05, 1_000_000),
+            entry_at_distance("D", 4.0, 2_000_000),
+        ]);
+        let city = geocoder.reverse(0.0, 0.0, 10.0).unwrap();
+        assert_ne!(
+            city.name, "D",
+            "D is outside the true-minimum tie-break window and must not win"
+        );
+        assert_eq!(city.name, "B");
     }
 
     #[test]

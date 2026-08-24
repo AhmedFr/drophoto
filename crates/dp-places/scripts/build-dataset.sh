@@ -15,16 +15,21 @@
 # reverse-geocode ties; it is not exposed on the `City` struct.
 #
 # Usage:
-#   scripts/build-dataset.sh            # download + build (skips re-download
-#                                        # if the raw files are already cached)
-#   scripts/build-dataset.sh --force    # always re-download raw sources
+#   scripts/build-dataset.sh    # download + build
+#
+# There is no cache: every run downloads all three raw sources fresh into a
+# scratch temp directory (removed on exit) and rebuilds cities.tsv.gz from
+# scratch. There is no --force flag because there is nothing to force past.
 #
 # Data source: https://www.geonames.org/ (GeoNames dump), CC BY 4.0.
 #
-# Idempotent: re-running with the same upstream data produces a byte-identical
-# cities.tsv (gzip metadata/timestamps aside). Raw downloads are cached under
-# a temp work directory that is removed on success; use --force to bypass
-# the cache and re-fetch everything.
+# Idempotent in the sense that running this twice back-to-back against the
+# same upstream snapshot reproduces the same cities.tsv content (gzip
+# metadata/timestamps aside). Caveat: the GeoNames URLs above serve live,
+# continuously-updated dumps rather than pinned releases, so re-running this
+# script at a later date can pick up different population figures or
+# added/removed cities — it is NOT guaranteed to be byte-reproducible across
+# time, only within a single run of the same upstream data.
 #
 # Fallback: if cities1000.zip is unreachable after retries, this script
 # retries against cities5000.zip. If GeoNames is unreachable entirely, it
@@ -40,11 +45,6 @@ OUT_TSV_GZ="${DATA_DIR}/cities.tsv.gz"
 BASE_URL="https://download.geonames.org/export/dump"
 CITIES_PRIMARY="cities1000"
 CITIES_FALLBACK="cities5000"
-
-FORCE=0
-if [ "${1:-}" = "--force" ]; then
-  FORCE=1
-fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dp-places-dataset.XXXXXX")"
 cleanup() { rm -rf "${WORK_DIR}"; }
@@ -85,10 +85,6 @@ fetch_cities_zip() {
 
 main() {
   mkdir -p "${DATA_DIR}"
-
-  if [ "${FORCE}" -eq 0 ] && [ -f "${OUT_TSV_GZ}" ]; then
-    log "note: ${OUT_TSV_GZ} already exists; rebuilding in place (use --force to also re-download raw sources)"
-  fi
 
   cities_inner_name="$(fetch_cities_zip)" || {
     log "ERROR: could not download cities1000.zip or cities5000.zip from GeoNames after retries. BLOCKED."
