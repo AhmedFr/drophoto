@@ -1,0 +1,9 @@
+[package]
+name = "dp-places"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+dp-core = { path = "../dp-core" }
+flate2 = "1"
+unicode-normalization = "0.1"

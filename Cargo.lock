@@ -1104,6 +1104,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dp-places"
+version = "0.1.0"
+dependencies = [
+ "dp-core",
+ "flate2",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "dp-thumbs"
 version = "0.1.0"
 dependencies = [
