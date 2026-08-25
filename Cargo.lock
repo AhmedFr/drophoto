@@ -1064,6 +1064,7 @@ dependencies = [
  "dp-hash",
  "dp-metadata",
  "dp-organize",
+ "dp-places",
  "dp-thumbs",
  "futures",
  "serde",
@@ -1101,6 +1102,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "dp-places"
+version = "0.1.0"
+dependencies = [
+ "dp-core",
+ "flate2",
+ "serde",
+ "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -1146,6 +1158,7 @@ dependencies = [
  "dp-jobs",
  "dp-metadata",
  "dp-organize",
+ "dp-places",
  "dp-thumbs",
  "dp-volumes",
  "serde",

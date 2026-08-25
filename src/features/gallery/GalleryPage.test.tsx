@@ -83,6 +83,7 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
       missing_at: null,
       organized_at: null,
       source_id: null,
+      place_id: null,
     },
     thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
     preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
@@ -445,6 +446,76 @@ it("Escape while MetaPanel's +-opened TagPanel is open keeps the background sele
 
   await waitFor(() =>
     expect(screen.queryByRole("dialog", { name: /tags/i })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+it("PLACE opens the PlacePanel for the current selection", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(screen.getByRole("button", { name: "PLACE" }));
+
+  expect(await screen.findByRole("dialog", { name: /place/i })).toBeInTheDocument();
+});
+
+it("Escape while the selection PlacePanel is open closes only the panel and keeps the selection", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(screen.getByRole("button", { name: "PLACE" }));
+  const placeDialog = await screen.findByRole("dialog", { name: /place/i });
+
+  fireEvent.keyDown(placeDialog, { key: "Escape" });
+
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: /place/i })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
+});
+
+it("Escape while MetaPanel's Change-opened PlacePanel is open keeps the background selection and the lightbox", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2)];
+    if (cmd === "count_media") return 2;
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(tiles[1]);
+  const lightboxDialog = await screen.findByRole("dialog");
+
+  await user.click(within(lightboxDialog).getByRole("button", { name: /change/i }));
+  const placeDialog = await screen.findByRole("dialog", { name: /place/i });
+
+  fireEvent.keyDown(placeDialog, { key: "Escape" });
+
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: /place/i })).not.toBeInTheDocument(),
   );
   expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
   expect(screen.getByRole("dialog")).toBeInTheDocument();

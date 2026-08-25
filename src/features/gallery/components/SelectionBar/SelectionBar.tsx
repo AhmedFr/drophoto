@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import type { SelectionBarProps } from "./SelectionBar.types";
 
-export function SelectionBar({ count, onTag, onClear }: SelectionBarProps) {
+export function SelectionBar({ count, onTag, onPlace, onClear }: SelectionBarProps) {
   if (count === 0) return null;
 
   return (
@@ -10,6 +10,9 @@ export function SelectionBar({ count, onTag, onClear }: SelectionBarProps) {
       <div className="flex-1" />
       <Button variant="outline" size="sm" className="font-mono text-[10.5px] tracking-[1.5px]" onClick={onTag}>
         TAG
+      </Button>
+      <Button variant="outline" size="sm" className="font-mono text-[10.5px] tracking-[1.5px]" onClick={onPlace}>
+        PLACE
       </Button>
       <Button variant="outline" size="sm" className="font-mono text-[10.5px] tracking-[1.5px]" onClick={onClear}>
         CLEAR

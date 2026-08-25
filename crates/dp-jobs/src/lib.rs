@@ -2,6 +2,7 @@
 //! `ScanJob` (drive scanning with progress events).
 
 pub mod detect;
+mod geocode;
 mod move_guards;
 mod organize;
 mod prune;
@@ -11,6 +12,7 @@ mod scan;
 mod sidecar_sync;
 
 pub use detect::{detect_folders, detect_folders_with_progress};
+pub use geocode::{GeocodeDeps, GeocodeJob};
 pub use organize::{OrganizeDeps, OrganizeJob};
 pub use prune::prune_denied_legacy_rows;
 pub use revert::RevertJob;

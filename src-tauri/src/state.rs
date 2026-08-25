@@ -4,6 +4,7 @@ use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobRunner};
 use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, MetadataProvider, Sidecars};
 use dp_organize::{default_strategy, MoveStrategy};
+use dp_places::{BundledGeocoder, Geocoder};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use dp_volumes::{SysinfoVolumes, VolumeProvider};
 use std::collections::HashMap;
@@ -25,6 +26,7 @@ pub struct AppState {
     pub store: Arc<ThumbStore>,
     pub sidecars: Arc<dyn Sidecars>,
     pub strategy: Arc<dyn MoveStrategy>,
+    pub geocoder: Arc<dyn Geocoder>,
     pub runner: JobRunner,
     /// The current user's home directory (`$HOME`), resolved once at
     /// startup and reused by every command that needs it (the scan and
@@ -76,6 +78,8 @@ impl AppState {
             tracing::warn!("$HOME is not set; the home/Library deny-list rule will be skipped");
         }
 
+        let geocoder: Arc<dyn Geocoder> = Arc::new(BundledGeocoder::load()?);
+
         Ok(Self {
             volumes: Arc::new(SysinfoVolumes),
             catalog: Arc::new(catalog),
@@ -85,6 +89,7 @@ impl AppState {
             thumbs: Arc::new(ThumbChain::default_chain()),
             store: Arc::new(ThumbStore::new(thumbs_root)),
             sidecars: Arc::new(ExiftoolSidecars::from_path()),
+            geocoder,
             runner,
             home,
             active_jobs: Mutex::new(HashMap::new()),
@@ -128,6 +133,23 @@ impl AppState {
         make_job: impl FnOnce(String) -> Arc<dyn Job>,
     ) -> DpResult<String> {
         self.start_job("sidecar", drive_id, make_job)
+    }
+
+    /// Starts a reverse-geocode sweep, unless one is already running — in
+    /// which case its id is returned instead of starting a duplicate.
+    ///
+    /// Unlike every other `start_*` method here, a [`dp_jobs::GeocodeJob`]
+    /// is GLOBAL — one sweep covers every drive's media in a single run —
+    /// so there is no real `drive_id` to admit it under. It's tracked
+    /// under the sentinel drive id `0` instead: no real drive ever has
+    /// this id (SQLite's `INTEGER PRIMARY KEY` autoincrement starts real
+    /// drive ids at `1`), so [`job_admission`]'s per-`(kind, drive_id)`
+    /// bucketing has the effect of serializing geocode sweeps globally
+    /// (at most one running at a time, app-wide) while never blocking, or
+    /// being blocked by, any per-drive job — those are all tracked under
+    /// their own real drive ids and never collide with `0`.
+    pub fn start_geocode(&self, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> DpResult<String> {
+        self.start_job("geocode", 0, make_job)
     }
 
     /// Starts a revert job for `drive_id`, admitted under the exact same

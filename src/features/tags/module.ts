@@ -6,6 +6,6 @@ export const tagsModule: FeatureModule = {
   title: "Tags",
   path: "/tags",
   icon: Tag,
-  order: 6,
+  order: 7,
   Page: TagsPage,
 };

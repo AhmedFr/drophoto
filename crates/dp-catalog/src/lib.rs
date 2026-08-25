@@ -3,6 +3,7 @@ mod fts;
 mod media;
 mod organize;
 mod organize_jobs;
+mod places;
 mod query;
 mod sources;
 mod sqlite;
@@ -10,8 +11,8 @@ mod tags;
 
 use async_trait::async_trait;
 use dp_core::{
-    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewSource, OrganizeItemRow, OrganizeJobRow,
-    OrganizeRule, Source, Tag, UnorganizedSummary,
+    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewPlace, NewSource, OrganizeItemRow,
+    OrganizeJobRow, OrganizeRule, Place, PlaceCount, Source, Tag, UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -103,6 +104,19 @@ pub trait Catalog: Send + Sync {
     /// FTS search: every whitespace token AND-ed, the last one prefix-matched
     /// (`tok*`), ranked by bm25, joined back to media+drives like query_media.
     async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>>;
+    /// Find-or-create by (name, admin, country, source) — geocoder places dedupe.
+    async fn upsert_place(&self, p: NewPlace) -> DpResult<Place>;
+    /// Every place with at least one media row pointing at it.
+    async fn list_place_counts(&self) -> DpResult<Vec<PlaceCount>>;
+    /// Sets place_id on every id + syncs FTS per row (log-only, like tags).
+    async fn set_media_place(&self, ids: &[i64], place_id: Option<i64>) -> DpResult<()>;
+    /// Rows with GPS, no place, and NOT manual-skipped — for the geocode job.
+    /// Cursor-paginated: only rows with `id > after_id` (ascending, `LIMIT
+    /// limit`) — pass `0` for the first page, then the max `id` seen in the
+    /// previous page. Unlike an offset, this can never skip or re-show a
+    /// row when earlier rows in the same run gain a `place_id` (and so drop
+    /// out of the result set) between pages.
+    async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>>;
 }
 
 #[async_trait]
@@ -292,5 +306,21 @@ impl Catalog for SqliteCatalog {
 
     async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>> {
         fts::search_media(&self.pool, query, limit).await
+    }
+
+    async fn upsert_place(&self, p: NewPlace) -> DpResult<Place> {
+        places::upsert_place(&self.pool, p).await
+    }
+
+    async fn list_place_counts(&self) -> DpResult<Vec<PlaceCount>> {
+        places::list_place_counts(&self.pool).await
+    }
+
+    async fn set_media_place(&self, ids: &[i64], place_id: Option<i64>) -> DpResult<()> {
+        places::set_media_place(&self.pool, ids, place_id).await
+    }
+
+    async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
+        places::list_ungeocoded(&self.pool, after_id, limit).await
     }
 }

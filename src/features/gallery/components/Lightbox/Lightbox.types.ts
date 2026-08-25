@@ -13,4 +13,6 @@ export type LightboxProps = {
    * background selection. Optional since most `Lightbox` tests don't care.
    */
   onTagPanelOpenChange?: (open: boolean) => void;
+  /** Same as `onTagPanelOpenChange`, for `MetaPanel`'s single-id `PlacePanel`. */
+  onPlacePanelOpenChange?: (open: boolean) => void;
 };

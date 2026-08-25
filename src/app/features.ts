@@ -3,6 +3,7 @@ import { dashboardModule } from "@/features/dashboard";
 import { drivesModule } from "@/features/drives";
 import { galleryModule } from "@/features/gallery";
 import { organizeModule } from "@/features/organize";
+import { placesModule } from "@/features/places";
 import { searchModule } from "@/features/search";
 import { tagsModule } from "@/features/tags";
 import { settingsModule } from "@/features/settings";
@@ -14,4 +15,5 @@ export const FEATURES = buildRegistry([
   searchModule,
   tagsModule,
   settingsModule,
+  placesModule,
 ]);

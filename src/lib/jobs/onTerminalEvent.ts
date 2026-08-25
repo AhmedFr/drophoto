@@ -18,19 +18,23 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
  * `started`/`progress`/`item_error` events are no-ops; only a job's own
  * terminal event should invalidate or toast, never a per-item one.
  *
- * A sidecar sync (`job_id` prefixed `"sidecar-"`) is handled first and
- * quite differently, because it's a background sweep nobody explicitly
- * asked for. It writes `.xmp` files on disk, clears a flag no query here
- * reads, and can import externally-edited subjects into the catalog — so
- * only the tag queries are refreshed; refetching the whole gallery after
- * every sweep would be pure churn and is skipped. Its success is silent, so it never interrupts
- * whatever the user's actually doing; a failure still surfaces as the
- * usual error toast, the one outcome worth knowing about unprompted.
+ * A sidecar sync or geocode sweep (`job_id` prefixed `"sidecar-"` or
+ * `"geocode-"`) is handled first and quite differently, because both are
+ * background sweeps nobody explicitly asked for. A sidecar sync writes
+ * `.xmp` files on disk, clears a flag no query here reads, and can import
+ * externally-edited subjects into the catalog — so only the tag queries
+ * are refreshed. A geocode sweep assigns `place_id`s — so only the place,
+ * search, and media queries are refreshed. Either way, refetching the
+ * whole gallery after every sweep would be pure churn and is skipped. Both
+ * are silent on success, so neither interrupts whatever the user's
+ * actually doing; a failure still surfaces as the usual error toast, the
+ * one outcome worth knowing about unprompted.
  */
 export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label: string): void {
   if (event.kind !== "finished" && event.kind !== "cancelled") return;
 
   const isSidecarSync = event.job_id.startsWith("sidecar-");
+  const isGeocode = event.job_id.startsWith("geocode-");
 
   if (isSidecarSync) {
     // The sweep can import externally-added subjects into the catalog
@@ -38,6 +42,14 @@ export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label
     // those — are refreshed; the gallery grid itself is untouched.
     queryClient.invalidateQueries({ queryKey: ["tags"] });
     queryClient.invalidateQueries({ queryKey: ["media-tags"] });
+    if (event.failed === 0) return;
+  } else if (isGeocode) {
+    // The sweep only ever assigns `place_id`s (never touches tags or
+    // anything else), so just the place, search, and media queries are
+    // refreshed.
+    queryClient.invalidateQueries({ queryKey: ["places"] });
+    queryClient.invalidateQueries({ queryKey: ["search"] });
+    queryClient.invalidateQueries({ queryKey: ["media"] });
     if (event.failed === 0) return;
   } else {
     for (const queryKey of INVALIDATE_KEYS) {

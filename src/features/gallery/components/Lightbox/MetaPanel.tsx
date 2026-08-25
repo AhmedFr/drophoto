@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PlacePanel } from "@/features/places/components/PlacePanel";
+import { usePlaces } from "@/features/places/hooks/usePlaces";
 import { revealInFinder } from "@/lib/api/opener";
 import { formatBytes } from "@/lib/format/bytes";
 import {
@@ -22,14 +24,17 @@ export type MetaPanelProps = {
   item: MediaItem;
   /** See `LightboxProps.onTagPanelOpenChange` — forwarded through unchanged. */
   onTagPanelOpenChange?: (open: boolean) => void;
+  /** See `LightboxProps.onPlacePanelOpenChange` — forwarded through unchanged. */
+  onPlacePanelOpenChange?: (open: boolean) => void;
 };
 
-export function MetaPanel({ item, onTagPanelOpenChange }: MetaPanelProps) {
+export function MetaPanel({ item, onTagPanelOpenChange, onPlacePanelOpenChange }: MetaPanelProps) {
   const { row } = item;
   const coords = formatCoords(row.lat, row.lon);
   const canReveal = item.online && item.original_path != null;
   const [revealError, setRevealError] = useState<string | null>(null);
   const [tagPanelOpen, setTagPanelOpenState] = useState(false);
+  const [placePanelOpen, setPlacePanelOpenState] = useState(false);
 
   // Wraps the local open flag so `GalleryPage` also learns about this
   // nested `TagPanel`'s open state (its document-level Escape handler
@@ -40,16 +45,40 @@ export function MetaPanel({ item, onTagPanelOpenChange }: MetaPanelProps) {
     onTagPanelOpenChange?.(next);
   }
 
+  // Same wrapping, for the PLACE row's own single-id `PlacePanel`.
+  function setPlacePanelOpen(next: boolean) {
+    setPlacePanelOpenState(next);
+    onPlacePanelOpenChange?.(next);
+  }
+
   // This panel is keyed on `item.row.id` by the lightbox, so navigating
   // to another photo unmounts it — without this cleanup, an open
-  // TagPanel's `true` would outlive the panel and permanently disable
-  // GalleryPage's Escape-clears-selection branch for the session.
+  // TagPanel's/PlacePanel's `true` would outlive the panel and permanently
+  // disable GalleryPage's Escape-clears-selection branch for the session.
   const notifyClosed = onTagPanelOpenChange;
   useEffect(() => {
     return () => {
       notifyClosed?.(false);
     };
   }, [notifyClosed]);
+
+  const notifyPlaceClosed = onPlacePanelOpenChange;
+  useEffect(() => {
+    return () => {
+      notifyPlaceClosed?.(false);
+    };
+  }, [notifyPlaceClosed]);
+
+  // `MediaRow` only carries `place_id`; a place with any media attached
+  // always shows up in `listPlaceCounts` (that's what makes it a place
+  // with a count in the first place), so this client-side lookup avoids a
+  // separate `getPlace` round trip for what's otherwise already cached
+  // data from `usePlaces`.
+  const { placeCounts } = usePlaces();
+  const place = placeCounts.find((pc) => pc.place.id === row.place_id)?.place ?? null;
+  const placeLabel = place
+    ? [place.name, place.admin, place.country].filter(Boolean).join(", ")
+    : "—";
 
   // A single-id `states` map can only ever read "all" (has the tag) or be
   // absent (doesn't) — "some" needs more than one id — so this doubles as
@@ -96,6 +125,19 @@ export function MetaPanel({ item, onTagPanelOpenChange }: MetaPanelProps) {
           <p className="py-1.5 font-mono text-[11px] text-dim">{coords || "No location data"}</p>
         </MetaSection>
 
+        <MetaSection title="PLACE">
+          <div className="flex items-center justify-between py-1.5 font-mono text-[11px]">
+            <span className="text-dim">{placeLabel}</span>
+            <button
+              type="button"
+              onClick={() => setPlacePanelOpen(true)}
+              className="text-dim hover:text-foreground"
+            >
+              Change
+            </button>
+          </div>
+        </MetaSection>
+
         <MetaSection title="PEOPLE">
           <p className="py-1.5 font-mono text-[11px] text-dim">No people tagged</p>
         </MetaSection>
@@ -137,6 +179,7 @@ export function MetaPanel({ item, onTagPanelOpenChange }: MetaPanelProps) {
       {revealError && <p className="mt-2 font-mono text-[10px] text-red-400">{revealError}</p>}
 
       <TagPanel mediaIds={[row.id]} open={tagPanelOpen} onClose={() => setTagPanelOpen(false)} />
+      <PlacePanel mediaIds={[row.id]} open={placePanelOpen} onClose={() => setPlacePanelOpen(false)} />
     </div>
   );
 }

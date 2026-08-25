@@ -26,6 +26,7 @@ const item: MediaItem = {
     missing_at: null,
     organized_at: null,
     source_id: null,
+    place_id: null,
   },
   thumb_path: "/tmp/thumbs/hash1/400.webp",
   preview_path: "/tmp/thumbs/hash1/2000.webp",
@@ -73,6 +74,22 @@ it("invokes count_media with the query and returns the count", async () => {
 
   expect(args).toEqual({ query });
   expect(result).toBe(42);
+});
+
+it("round-trips place_id in the query sent to query_media", async () => {
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "query_media") {
+      args = a;
+      return [];
+    }
+    return undefined;
+  });
+
+  const placeQuery: MediaQuery = { ...query, place_id: 7 };
+  await queryMedia(placeQuery);
+
+  expect(args).toEqual({ query: placeQuery });
 });
 
 it("invokes get_media with the id and returns the item", async () => {

@@ -65,6 +65,7 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
         organized_at: from_rfc3339(organized_at)?,
         source_id: row.try_get("source_id").map_err(db)?,
         sidecar_pending: sidecar_pending != 0,
+        place_id: row.try_get("place_id").map_err(db)?,
     })
 }
 

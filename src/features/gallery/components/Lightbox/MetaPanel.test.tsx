@@ -50,6 +50,7 @@ function item(overrides: Partial<MediaItem> = {}): MediaItem {
       missing_at: null,
       organized_at: null,
       source_id: null,
+      place_id: null,
     },
     thumb_path: "/tmp/thumbs/hash1/400.webp",
     preview_path: "/tmp/thumbs/hash1/2000.webp",
@@ -240,6 +241,53 @@ it("notifies the tag panel closed when unmounting (lightbox item change)", async
     </QueryClientProvider>,
   );
   await userEvent.click(await screen.findByRole("button", { name: "Add tag" }));
+  expect(onOpenChange).toHaveBeenLastCalledWith(true);
+  unmount();
+  expect(onOpenChange).toHaveBeenLastCalledWith(false);
+});
+
+it("shows '—' for PLACE when the item has no place assigned", () => {
+  renderPanel(item());
+  expect(screen.getByText("—")).toBeInTheDocument();
+});
+
+it("shows the place's name when place_id matches a place from list_place_counts", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_tags") return [];
+    if (cmd === "tags_for_media") return [];
+    if (cmd === "list_place_counts") {
+      return [
+        {
+          place: { id: 5, lat: 38.7, lon: -9.1, name: "Lisbon", admin: "Lisboa", country: "Portugal", source: "geocoder" },
+          count: 1,
+        },
+      ];
+    }
+    return undefined;
+  });
+  renderPanel(item({ row: { ...item().row, place_id: 5 } }));
+
+  expect(await screen.findByText("Lisbon, Lisboa, Portugal")).toBeInTheDocument();
+});
+
+it("the Change button opens the PlacePanel for this item", async () => {
+  const user = userEvent.setup();
+  renderPanel(item());
+
+  await user.click(screen.getByRole("button", { name: /change/i }));
+
+  expect(await screen.findByRole("dialog", { name: /place/i })).toBeInTheDocument();
+});
+
+it("notifies the place panel closed when unmounting (lightbox item change)", async () => {
+  const onOpenChange = vi.fn();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { unmount } = render(
+    <QueryClientProvider client={queryClient}>
+      <MetaPanel item={item()} onPlacePanelOpenChange={onOpenChange} />
+    </QueryClientProvider>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /change/i }));
   expect(onOpenChange).toHaveBeenLastCalledWith(true);
   unmount();
   expect(onOpenChange).toHaveBeenLastCalledWith(false);

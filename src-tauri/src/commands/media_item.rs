@@ -53,6 +53,7 @@ mod tests {
             organized_at: None,
             source_id: None,
             sidecar_pending: false,
+            place_id: None,
         }
     }
 
