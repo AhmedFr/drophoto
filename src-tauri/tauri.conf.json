@@ -36,7 +36,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "Developer ID Application: Ahmed ABOUELLEIL SAYED (82S6RGN448)"
     }
   }
 }
