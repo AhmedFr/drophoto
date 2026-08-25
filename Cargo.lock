@@ -1111,6 +1111,7 @@ dependencies = [
  "dp-core",
  "flate2",
  "serde",
+ "tracing",
  "unicode-normalization",
 ]
 

@@ -91,7 +91,7 @@ export function PlacePanel({ mediaIds, open, onClose }: PlacePanelProps) {
           )}
           {cities.map((city) => (
             <button
-              key={`${city.name}-${city.admin}-${city.country}`}
+              key={`${city.name}-${city.admin}-${city.country}-${city.lat}-${city.lon}`}
               type="button"
               onClick={() => mutation.mutate(city)}
               disabled={mutation.isPending}

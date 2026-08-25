@@ -15,3 +15,12 @@ CREATE TABLE places (
 -- admin-less place create duplicate rows) — matches `upsert_place`'s own
 -- `admin IS ?` dedupe comparison in `places.rs`.
 CREATE UNIQUE INDEX places_identity ON places(name, IFNULL(admin, ''), country, source);
+
+-- Tracks a row the user explicitly cleared (`set_media_place(ids, None)`)
+-- so `list_ungeocoded` can leave it alone rather than treating the clear
+-- as "never looked at" and immediately re-geocoding it back to a place.
+-- Set back to 0 whenever any place (geocoder or manual) is assigned —
+-- only an explicit clear should ever set it. `NOT NULL DEFAULT 0` so
+-- every pre-existing row (and every row inserted before this migration
+-- existed) reads as "not cleared" without a backfill.
+ALTER TABLE media ADD COLUMN place_cleared INTEGER NOT NULL DEFAULT 0;

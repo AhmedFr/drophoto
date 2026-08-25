@@ -263,6 +263,108 @@ async fn list_ungeocoded_respects_limit() {
     assert_eq!(limited.len(), 2);
 }
 
+/// C1 regression: clearing a place (`set_media_place(ids, None)`) must be
+/// durable — the row must not silently come back into
+/// `list_ungeocoded`'s result set, which would let the geocode job
+/// immediately re-assign a place the user explicitly removed.
+#[tokio::test]
+async fn cleared_place_stays_out_of_list_ungeocoded() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    let lisbon = c
+        .upsert_place(geocoder_place("Lisbon", Some("Lisboa"), "Portugal"))
+        .await
+        .unwrap();
+    let a = c
+        .upsert_media(nm(drive_id, "a.jpg", "h-a", Some(38.7), Some(-9.1)))
+        .await
+        .unwrap();
+    c.set_media_place(&[a], Some(lisbon.id)).await.unwrap();
+
+    // Clearing must not put the row back into the ungeocoded set.
+    c.set_media_place(&[a], None).await.unwrap();
+    let ungeocoded = c.list_ungeocoded(0, 100).await.unwrap();
+    assert!(ungeocoded.iter().all(|r| r.id != a));
+}
+
+/// Re-assigning a place (geocoder or manual) after a clear must reset the
+/// cleared flag — a subsequent clear-then-assign-then-clear cycle should
+/// behave the same way every time, not "stick" cleared forever.
+#[tokio::test]
+async fn reassigning_after_a_clear_clears_the_cleared_flag() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    let lisbon = c
+        .upsert_place(geocoder_place("Lisbon", Some("Lisboa"), "Portugal"))
+        .await
+        .unwrap();
+    let a = c
+        .upsert_media(nm(drive_id, "a.jpg", "h-a", Some(38.7), Some(-9.1)))
+        .await
+        .unwrap();
+
+    c.set_media_place(&[a], Some(lisbon.id)).await.unwrap();
+    c.set_media_place(&[a], None).await.unwrap();
+    // Manually re-assign a place after the clear.
+    c.set_media_place(&[a], Some(lisbon.id)).await.unwrap();
+    // Clear again — must take effect again, not be a no-op because the
+    // flag was never reset by the re-assignment above.
+    c.set_media_place(&[a], None).await.unwrap();
+
+    let ungeocoded = c.list_ungeocoded(0, 100).await.unwrap();
+    assert!(ungeocoded.iter().all(|r| r.id != a));
+}
+
+/// A geocode-job run after a user clear must leave the row placeless —
+/// simulated here without the job itself (that's `dp-jobs`'s concern):
+/// `list_ungeocoded` excluding the row is what makes the job skip it,
+/// which this test asserts directly.
+#[tokio::test]
+async fn cleared_row_is_not_picked_up_by_a_subsequent_geocode_pass() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    let lisbon = c
+        .upsert_place(geocoder_place("Lisbon", Some("Lisboa"), "Portugal"))
+        .await
+        .unwrap();
+    let a = c
+        .upsert_media(nm(drive_id, "a.jpg", "h-a", Some(38.7), Some(-9.1)))
+        .await
+        .unwrap();
+    c.set_media_place(&[a], Some(lisbon.id)).await.unwrap();
+    c.set_media_place(&[a], None).await.unwrap();
+
+    // First "pass": row must not show up.
+    assert!(c.list_ungeocoded(0, 100).await.unwrap().iter().all(|r| r.id != a));
+    // Second "pass" (simulating the job running again later): still not
+    // picked up — the exclusion isn't a one-shot side effect of the
+    // clear call itself.
+    assert!(c.list_ungeocoded(0, 100).await.unwrap().iter().all(|r| r.id != a));
+    let (row, _) = c.get_media_with_drive(a).await.unwrap();
+    assert_eq!(row.place_id, None);
+}
+
+/// A row with GPS that has never been touched by `set_media_place` at all
+/// must still geocode normally — the new `place_cleared` column defaults
+/// to 0 for every row, so plain never-placed rows aren't accidentally
+/// excluded by the C1 fix.
+#[tokio::test]
+async fn never_placed_gps_row_still_geocodes() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    let a = c
+        .upsert_media(nm(drive_id, "a.jpg", "h-a", Some(38.7), Some(-9.1)))
+        .await
+        .unwrap();
+
+    let ungeocoded = c.list_ungeocoded(0, 100).await.unwrap();
+    assert_eq!(ungeocoded.iter().map(|r| r.id).collect::<Vec<_>>(), vec![a]);
+}
+
 /// The pagination contract the geocode job's drain loop depends on:
 /// `after_id` excludes every row with `id <= after_id`, so paging by the
 /// max id seen in the previous page can never re-show (or skip) a row.

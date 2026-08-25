@@ -119,6 +119,13 @@ impl BundledGeocoder {
             });
         }
 
+        if skipped_lines > 0 {
+            tracing::warn!(
+                skipped_lines,
+                "bundled places dataset skipped malformed lines while loading"
+            );
+        }
+
         Ok(Self {
             entries,
             skipped_lines,

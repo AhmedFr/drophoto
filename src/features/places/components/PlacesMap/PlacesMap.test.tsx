@@ -49,6 +49,15 @@ it("labels each marker's element with the place name and count", () => {
   expect(marker.getElement().textContent).toBe("5");
 });
 
+it("styles the marker element so it renders as a visible, clickable badge (not bare text)", () => {
+  render(<PlacesMap placeCounts={[pc(1, "Lisbon", 38.7, -9.1, 5)]} onSelectPlace={() => {}} onError={() => {}} />);
+
+  const [marker] = maplibreSpies.markers;
+  const classList = marker.getElement().className;
+  expect(classList.split(/\s+/).filter(Boolean).length).toBeGreaterThan(1);
+  expect(classList).toContain("cursor-pointer");
+});
+
 it("calls onSelectPlace with the place id when a marker is clicked", () => {
   const onSelectPlace = vi.fn();
   render(<PlacesMap placeCounts={[pc(7, "Lisbon", 38.7, -9.1, 5)]} onSelectPlace={onSelectPlace} onError={() => {}} />);

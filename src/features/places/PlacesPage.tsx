@@ -86,8 +86,8 @@ export function PlacesPage() {
           )}
           {isEmpty && (
             <div className="p-5 font-mono text-[11px] tracking-[0.8px] text-faint">
-              NO PLACES YET — photos with GPS get placed automatically after a scan; or select photos and
-              press PLACE.
+              NO PLACES YET — photos with GPS are placed automatically after a scan. Press GEOCODE NOW to
+              place existing photos, or select photos and press PLACE.
             </div>
           )}
           {!isLoading &&
@@ -97,6 +97,15 @@ export function PlacesPage() {
             ) : (
               <PlaceList placeCounts={placeCounts} onSelectPlace={setSelectedPlaceId} />
             ))}
+          {!isLoading && !isEmpty && (
+            // I1: GeoNames (place names/coords) and OpenFreeMap/OpenStreetMap
+            // (map tiles) both require attribution wherever their data is
+            // shown — one line, present regardless of which view (map or
+            // offline list) is active. See THIRD-PARTY.md for the full notice.
+            <div className="border-t border-border p-2 text-center font-mono text-[9.5px] tracking-[0.8px] text-faint">
+              PLACE DATA © GEONAMES (CC BY 4.0) · MAP © OPENFREEMAP / OPENSTREETMAP
+            </div>
+          )}
         </div>
         {selectedPlaceId !== null && (
           <aside className="w-[420px] shrink-0 overflow-y-auto border-l border-border">

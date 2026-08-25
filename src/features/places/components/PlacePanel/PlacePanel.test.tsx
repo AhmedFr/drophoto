@@ -69,6 +69,33 @@ it("debounces search_cities by 200ms as the user types", async () => {
   expect(received).toEqual({ query: "lisb" });
 });
 
+// M4: two distinct GeoNames rows can legitimately share
+// name/admin/country (e.g. a duplicated or re-surveyed entry) — the list
+// key must fold in lat/lon too, or React logs a duplicate-key warning
+// and can misrender/merge the rows.
+it("does not warn about duplicate keys when two results share name/admin/country but differ in lat/lon", async () => {
+  const warnSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  mockIPC((cmd) => {
+    if (cmd === "search_cities") {
+      return [
+        { name: "Springfield", admin: "Illinois", country: "United States", lat: 39.78, lon: -89.65 },
+        { name: "Springfield", admin: "Illinois", country: "United States", lat: 39.79, lon: -89.66 },
+      ];
+    }
+    return undefined;
+  });
+  renderPanel({ mediaIds: [1], open: true });
+
+  fireEvent.change(screen.getByPlaceholderText(/search a city/i), { target: { value: "spring" } });
+
+  expect(await screen.findAllByText(/springfield, illinois, united states/i)).toHaveLength(2);
+  const duplicateKeyWarning = warnSpy.mock.calls.some((args) =>
+    args.some((arg) => typeof arg === "string" && arg.includes("same key")),
+  );
+  expect(duplicateKeyWarning).toBe(false);
+  warnSpy.mockRestore();
+});
+
 it("shows city results and 'No cities found' when empty", async () => {
   mockIPC((cmd) => {
     if (cmd === "search_cities") return [];

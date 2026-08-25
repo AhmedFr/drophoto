@@ -133,15 +133,24 @@ pub(crate) async fn list_place_counts(pool: &SqlitePool) -> DpResult<Vec<PlaceCo
 /// afterward — mirrors `Catalog::tag_media`'s split between the
 /// transactional write and the log-only FTS sync (FTS is derived data;
 /// see the `fts` module docs).
+///
+/// A clear (`place_id: None`) also sets `place_cleared = 1`, and any
+/// assignment (`place_id: Some(_)`) resets it back to `0` — see
+/// `0007_places.sql`'s column comment. Without this, `list_ungeocoded`
+/// would treat a just-cleared row exactly like a never-placed one (both
+/// have `place_id IS NULL`) and hand it right back to the geocode job,
+/// silently undoing the user's clear on the very next sweep.
 pub(crate) async fn set_media_place(pool: &SqlitePool, ids: &[i64], place_id: Option<i64>) -> DpResult<()> {
     if ids.is_empty() {
         return Ok(());
     }
 
+    let place_cleared = place_id.is_none();
     let mut tx = pool.begin().await.map_err(db)?;
     for &id in ids {
-        sqlx::query("UPDATE media SET place_id = ? WHERE id = ?")
+        sqlx::query("UPDATE media SET place_id = ?, place_cleared = ? WHERE id = ?")
             .bind(place_id)
+            .bind(place_cleared)
             .bind(id)
             .execute(&mut *tx)
             .await
@@ -161,10 +170,14 @@ pub(crate) async fn set_media_place(pool: &SqlitePool, ids: &[i64], place_id: Op
 
 /// Media rows worth handing to the reverse-geocode job: they have GPS
 /// coordinates but no place yet. `lat IS NOT NULL AND lon IS NOT NULL AND
-/// place_id IS NULL` is the whole predicate — it also correctly excludes
-/// rows the user already assigned a *manual* place to, since assigning
-/// any place (geocoder or manual) fills `place_id` and takes the row out
-/// of this set. There is no separate "manual-skip" flag to check.
+/// place_id IS NULL AND place_cleared = 0` is the whole predicate — the
+/// `place_id IS NULL` half correctly excludes rows the user already
+/// assigned a *manual* place to, since assigning any place (geocoder or
+/// manual) fills `place_id` and takes the row out of this set; the
+/// `place_cleared = 0` half excludes rows the user explicitly cleared
+/// (`set_media_place(ids, None)`), which also leaves `place_id` NULL but
+/// must NOT be treated as "never placed" — see that function's doc
+/// comment.
 ///
 /// Cursor-paginated by `id` rather than offset-paginated: `after_id` (`0`
 /// for the first page) plus `id > ?, ORDER BY id LIMIT ?` means a row that
@@ -178,7 +191,7 @@ pub(crate) async fn set_media_place(pool: &SqlitePool, ids: &[i64], place_id: Op
 pub(crate) async fn list_ungeocoded(pool: &SqlitePool, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
     let rows = sqlx::query(
         "SELECT * FROM media WHERE lat IS NOT NULL AND lon IS NOT NULL AND place_id IS NULL \
-         AND id > ? ORDER BY id LIMIT ?",
+         AND place_cleared = 0 AND id > ? ORDER BY id LIMIT ?",
     )
     .bind(after_id)
     .bind(limit)

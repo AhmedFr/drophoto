@@ -106,10 +106,12 @@ it("renders the Places header", async () => {
   expect(await screen.findByRole("heading")).toHaveTextContent("PLACES");
 });
 
-it("shows the empty state when there are no places", async () => {
+it("shows the empty state when there are no places, mentioning both the GEOCODE NOW and PLACE buttons", async () => {
   mockIPC((cmd) => (cmd === "list_place_counts" ? [] : undefined));
   renderPage();
-  expect(await screen.findByText(/NO PLACES YET/)).toBeInTheDocument();
+  const empty = await screen.findByText(/NO PLACES YET/);
+  expect(empty).toHaveTextContent(/GEOCODE NOW/);
+  expect(empty).toHaveTextContent(/PLACE/);
 });
 
 it("GEOCODE NOW fires start_geocode", async () => {
@@ -136,6 +138,30 @@ it("creates one map marker per place from list_place_counts, while online", asyn
 
   await waitFor(() => expect(maplibreSpies.markers).toHaveLength(2));
   expect(screen.queryByTestId("place-list")).not.toBeInTheDocument();
+});
+
+// I1: GeoNames (place data) and OpenFreeMap/OpenStreetMap (map tiles) both
+// require attribution wherever the data they provide is shown — asserted
+// in both the map view (online) and the list fallback (offline) since the
+// footer must render regardless of which one is active.
+it("credits GeoNames and OpenFreeMap/OpenStreetMap in the map view", async () => {
+  mockIPC((cmd) => (cmd === "list_place_counts" ? [pc(1, "Lisbon", 5)] : undefined));
+  renderPage();
+
+  await waitFor(() => expect(maplibreSpies.maps).toHaveLength(1));
+  expect(screen.getByText(/GEONAMES/i)).toBeInTheDocument();
+  expect(screen.getByText(/OPENFREEMAP/i)).toBeInTheDocument();
+  expect(screen.getByText(/OPENSTREETMAP/i)).toBeInTheDocument();
+});
+
+it("credits GeoNames and OpenFreeMap/OpenStreetMap in the offline list view", async () => {
+  vi.stubGlobal("navigator", { ...navigator, onLine: false });
+  mockIPC((cmd) => (cmd === "list_place_counts" ? [pc(1, "Lisbon", 5)] : undefined));
+  renderPage();
+
+  await screen.findByTestId("place-list");
+  expect(screen.getByText(/GEONAMES/i)).toBeInTheDocument();
+  expect(screen.getByText(/OPENFREEMAP/i)).toBeInTheDocument();
 });
 
 it("falls back to PlaceList when navigator.onLine is false at mount", async () => {

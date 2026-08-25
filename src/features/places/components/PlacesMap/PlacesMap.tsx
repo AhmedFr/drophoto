@@ -63,7 +63,12 @@ export function PlacesMap({ placeCounts, onSelectPlace, onError }: PlacesMapProp
     const markers = placeCounts.map(({ place, count }) => {
       const el = document.createElement("button");
       el.type = "button";
-      el.className = "places-map-marker";
+      // Tailwind classes applied directly to the marker element rather
+      // than a global `.places-map-marker` CSS class (which was
+      // referenced nowhere and so rendered as bare, unstyled text) — a
+      // small monospace count badge that still reads as clickable.
+      el.className =
+        "cursor-pointer rounded-none border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] leading-none text-foreground shadow-sm hover:border-foreground";
       el.setAttribute("aria-label", `${place.name} (${count})`);
       el.textContent = String(count);
       el.addEventListener("click", () => onSelectPlaceRef.current(place.id));
