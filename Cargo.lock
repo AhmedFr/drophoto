@@ -1021,7 +1021,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "dp-catalog"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "dp-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "dp-hash"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "dp-jobs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "dp-metadata"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "dp-organize"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "dp-places"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dp-core",
  "flate2",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "dp-thumbs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "dp-core",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "dp-volumes"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "dp-core",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "drophoto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dp-catalog",
