@@ -144,54 +144,149 @@ fn reset_app_data_at(dir: &Path) -> DpResult<()> {
 }
 
 /// Danger-zone action: moves the running `.app` bundle itself to the Trash
-/// (never a permanent delete) after deleting the app's own data — same
+/// (never a permanent delete) and deletes the app's own data — same
 /// deletion [`reset_app_data`] performs, via the same [`reset_app_data_at`]
 /// helper — then exits. NEVER touches the user's photos, drives, or `.xmp`
 /// sidecar files, and never touches anything outside the app's own data
 /// dir and its own `.app` bundle.
 ///
-/// Order: (1) [`plan_uninstall`] resolves the bundle path from
-/// `current_exe()` — pure, no filesystem access, fails fast before
-/// anything is touched if this isn't an installed `.app` (e.g. `cargo
-/// tauri dev`); (2) delete app data; (3) `trash::delete` the bundle — to
-/// Trash, never `remove_dir_all`; (4) `exit(0)`. Any failure in (1)-(3) is
-/// returned as `Err` instead of exiting, so the frontend can show it (see
-/// `useSettingsData`'s `uninstallError`) rather than the app silently
-/// continuing to run, or exiting having only half-finished.
+/// Order (deliberately trash-then-delete, the strictly safer of the two —
+/// review finding MAJOR-1): (1) [`plan_uninstall`] resolves the bundle path
+/// from a *canonicalized* `current_exe()` — pure, no filesystem access,
+/// fails fast before anything is touched if this isn't an installed `.app`
+/// (e.g. `cargo tauri dev`); (2) [`trash_bundle`] the bundle — to Trash,
+/// never a permanent delete; a failure here (read-only volume, DMG mount,
+/// permissions) leaves the app's data completely untouched, since nothing
+/// has been deleted yet; (3) delete app data; a failure *here* means the
+/// bundle is already gone (safely, in the Trash — recoverable) but some
+/// data survives, so the error message ([`partial_uninstall_message`])
+/// says that explicitly rather than just surfacing a raw io error; (4)
+/// `exit(0)`, reached only once both (2) and (3) succeed.
+///
+/// Trashing first also sidesteps a hazard the previous (delete-then-trash)
+/// order had: deleting `catalog.db` out from under the still-running
+/// process (open sqlx pool, unlinked-but-writable inode) purely to then
+/// hit a *separate* fallible step. Moving the bundle is a same-volume
+/// rename that doesn't touch the running process's open image at all.
 #[tauri::command]
 pub async fn uninstall_app(state: State<'_, AppState>) -> Result<(), DpError> {
-    let exe_path = std::env::current_exe().map_err(|e| DpError::io(&e, None))?;
+    let exe_path = std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .map_err(|e| DpError::io(&e, None))?;
     let bundle_path = plan_uninstall(&exe_path)?;
 
-    reset_app_data_at(&state.app_data_dir)?;
-
-    trash::delete(&bundle_path).map_err(|e| DpError::Io {
-        message: e.to_string(),
+    trash_bundle(&bundle_path).map_err(|e| DpError::Io {
+        message: append_volumes_hint(e.to_string(), &bundle_path),
         path: Some(bundle_path.display().to_string()),
     })?;
+
+    if let Err(data_err) = reset_app_data_at(&state.app_data_dir) {
+        return Err(DpError::Io {
+            message: partial_uninstall_message(&state.app_data_dir, &data_err),
+            path: Some(state.app_data_dir.display().to_string()),
+        });
+    }
 
     std::process::exit(0);
 }
 
+/// Moves `bundle_path` to the Trash using `NSFileManager` rather than
+/// `trash`'s default `Finder`/AppleScript method (review finding
+/// BLOCKER-1). The default method sends the delete as an Apple Event to
+/// Finder, which requires the `com.apple.security.automation.apple-events`
+/// entitlement plus an `NSAppleEventsUsageDescription` under a
+/// hardened-runtime, notarized build (see `scripts/release.sh`) — this app
+/// ships with neither, so the default method would fail with a TCC denial
+/// rather than actually trashing anything. `NSFileManager` needs no extra
+/// permissions at all (the only tradeoff, per `trash::macos::DeleteMethod`'s
+/// own doc comment, is losing Finder's "Put Back" on some systems).
+#[cfg(target_os = "macos")]
+fn trash_bundle(bundle_path: &Path) -> Result<(), trash::Error> {
+    use trash::macos::{DeleteMethod, TrashContextExtMacos};
+    let mut ctx = trash::TrashContext::default();
+    ctx.set_delete_method(DeleteMethod::NsFileManager);
+    ctx.delete(bundle_path)
+}
+
+/// Non-macOS fallback (this app only ships for macOS, but keeps the
+/// workspace buildable elsewhere) — `trash`'s default method, since the
+/// Finder/Apple-Events hazard [`trash_bundle`]'s macOS doc comment
+/// describes is macOS-specific.
+#[cfg(not(target_os = "macos"))]
+fn trash_bundle(bundle_path: &Path) -> Result<(), trash::Error> {
+    trash::delete(bundle_path)
+}
+
+/// Appends a plain-language hint to a trash-failure `message` when
+/// `bundle_path` sits under `/Volumes` — most likely still on the mounted
+/// install DMG rather than dragged to Applications (review finding
+/// MAJOR-2/3). A DMG's volume is read-only, so trashing anything on it can
+/// never succeed; without this hint the user just sees a raw
+/// "Operation not permitted"-style OS error with no idea what to do about
+/// it. Pure (string check only, no filesystem access) so it's directly
+/// unit-testable.
+fn append_volumes_hint(message: String, bundle_path: &Path) -> String {
+    if bundle_path.starts_with("/Volumes") {
+        format!("{message} If you're running from the disk image, install drophoto to Applications first.")
+    } else {
+        message
+    }
+}
+
+/// The error message [`uninstall_app`] returns when the bundle was
+/// already successfully trashed but the subsequent [`reset_app_data_at`]
+/// call then failed (review finding MAJOR-1) — states plainly that the app
+/// itself is gone (moved to Trash, not deleted — recoverable) but its data
+/// was not, and exactly where to find that data, so the user isn't left
+/// guessing whether the uninstall did anything at all.
+fn partial_uninstall_message(data_dir: &Path, data_err: &DpError) -> String {
+    format!(
+        "drophoto was moved to the Trash, but some app data could not be deleted ({data_err}). \
+         You can remove it manually at {}.",
+        data_dir.display()
+    )
+}
+
 /// The pure, unit-testable part of [`uninstall_app`]: finds the nearest
-/// (innermost) `.app` bundle ancestor containing `exe_path` — no
+/// (innermost) `.app` bundle ancestor containing `exe_path`, *and* verifies
+/// `exe_path` actually sits at `<ancestor>/Contents/MacOS/<name>` — the
+/// standard macOS bundle-executable location (review finding MINOR-2). No
 /// filesystem access, so no real bundle needs to exist on disk to test
-/// this. In a normal signed install this is e.g.
-/// `/Applications/drophoto.app` for an exe at
-/// `/Applications/drophoto.app/Contents/MacOS/drophoto`. A dev run's exe
-/// (e.g. `target/debug/drophoto`) has no `.app` path component at all, so
-/// there's nothing to trash — this refuses with [`DpError::Unsupported`]
-/// rather than trashing something arbitrary; [`uninstall_app`] surfaces
-/// that to the UI plainly instead of silently doing nothing.
+/// this. In a normal signed install this is e.g. `/Applications/drophoto.app`
+/// for an exe at `/Applications/drophoto.app/Contents/MacOS/drophoto`. A
+/// dev run's exe (e.g. `target/debug/drophoto`) has no `.app` path
+/// component at all, so there's nothing to trash — this refuses with
+/// [`DpError::Unsupported`] rather than trashing something arbitrary;
+/// [`uninstall_app`] surfaces that to the UI plainly instead of silently
+/// doing nothing. Requiring the exact `Contents/MacOS` shape (rather than
+/// accepting any nearest `.app` ancestor) makes "we only ever trash our
+/// own bundle" structurally true, not just incidentally true.
 fn plan_uninstall(exe_path: &Path) -> DpResult<PathBuf> {
     exe_path
         .ancestors()
-        .find(|p| p.extension().is_some_and(|ext| ext == "app"))
+        .find(|ancestor| is_running_app_bundle(exe_path, ancestor))
         .map(PathBuf::from)
         .ok_or_else(|| DpError::Unsupported {
             message: "not running from an installed .app bundle".to_string(),
             path: Some(exe_path.display().to_string()),
         })
+}
+
+/// Whether `ancestor` is a `.app` bundle directory that `exe_path` sits
+/// inside at exactly `<ancestor>/Contents/MacOS/<name>`.
+fn is_running_app_bundle(exe_path: &Path, ancestor: &Path) -> bool {
+    if ancestor.extension().is_none_or(|ext| ext != "app") {
+        return false;
+    }
+    let Ok(relative) = exe_path.strip_prefix(ancestor) else {
+        return false;
+    };
+    let mut components = relative.components();
+    let is_contents = components.next().is_some_and(|c| c.as_os_str() == "Contents");
+    let is_macos = components.next().is_some_and(|c| c.as_os_str() == "MacOS");
+    let has_exe_name = components.next().is_some();
+    let nothing_after = components.next().is_none();
+    is_contents && is_macos && has_exe_name && nothing_after
 }
 
 /// Walks `thumbs_root` (one level of hash directories, each holding at
@@ -407,6 +502,53 @@ mod tests {
         assert_eq!(
             bundle,
             PathBuf::from("/Applications/Outer.app/Contents/Resources/Inner.app")
+        );
+    }
+
+    // Review finding 5: a `.app` ancestor only counts if the exe actually
+    // sits at `<bundle>/Contents/MacOS/<name>` — an ancestor `.app` whose
+    // exe is buried somewhere else inside it must be refused, not trashed.
+    #[test]
+    fn plan_uninstall_refuses_an_app_ancestor_whose_exe_is_not_under_contents_macos() {
+        let exe = Path::new("/Applications/Other.app/some/weird/place/drophoto");
+        let err = plan_uninstall(exe).unwrap_err();
+        assert!(matches!(err, DpError::Unsupported { .. }));
+    }
+
+    // Review finding 3: when the bundle is on the mounted install DMG
+    // (`/Volumes/...`), append a plain hint rather than just the raw
+    // trash-backend error.
+    #[test]
+    fn append_volumes_hint_adds_a_hint_for_a_dmg_mounted_bundle() {
+        let msg = append_volumes_hint("boom".to_string(), Path::new("/Volumes/drophoto/drophoto.app"));
+        assert!(msg.contains("disk image"), "message was: {msg}");
+    }
+
+    #[test]
+    fn append_volumes_hint_leaves_an_applications_bundle_message_untouched() {
+        let msg = append_volumes_hint("boom".to_string(), Path::new("/Applications/drophoto.app"));
+        assert_eq!(msg, "boom");
+    }
+
+    // Review finding 2: once the bundle is trashed, a subsequent data-
+    // deletion failure must say plainly that the app itself is already
+    // gone (in the Trash, not deleted) and where to find the leftover
+    // data — not just surface the raw io error.
+    #[test]
+    fn partial_uninstall_message_states_the_app_is_gone_but_data_remains() {
+        let data_err = DpError::Io {
+            message: "permission denied".to_string(),
+            path: None,
+        };
+        let data_dir = Path::new("/Users/x/Library/Application Support/drophoto");
+        let msg = partial_uninstall_message(data_dir, &data_err);
+
+        assert!(msg.contains("moved to the Trash"), "message was: {msg}");
+        assert!(msg.contains("could not be deleted"), "message was: {msg}");
+        assert!(msg.contains("permission denied"), "message was: {msg}");
+        assert!(
+            msg.contains("/Users/x/Library/Application Support/drophoto"),
+            "message was: {msg}"
         );
     }
 }

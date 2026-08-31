@@ -16,7 +16,7 @@ it("explains exactly what will and won't happen", () => {
   );
   expect(
     screen.getByText(
-      "Moves drophoto to the Trash and deletes the catalog and every cached thumbnail. Your photos and .xmp sidecar files are NEVER touched — your drives keep every file exactly where it is.",
+      "Moves drophoto to the Trash, then deletes the catalog and every cached thumbnail — drophoto quits immediately once this finishes successfully. Your photos and .xmp sidecar files are NEVER touched — your drives keep every file exactly where it is.",
     ),
   ).toBeInTheDocument();
 });
@@ -108,4 +108,54 @@ it("clears the typed text when the dialog is closed and reopened", async () => {
 
   expect(screen.getByLabelText("Type UNINSTALL to confirm")).toHaveValue("");
   expect(screen.getByRole("button", { name: "Uninstall drophoto" })).toBeDisabled();
+});
+
+// Review finding 7: a stale error from a previous attempt must not
+// resurface just because the dialog is closed and reopened.
+it("hides a stale error after closing and reopening, until a new attempt fails", async () => {
+  const onOpenChange = vi.fn();
+  const { rerender } = render(
+    <UninstallDialog open={true} onOpenChange={onOpenChange} onConfirm={vi.fn()} uninstalling={false} error="boom" />,
+  );
+  expect(screen.getByText("boom")).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(onOpenChange).toHaveBeenCalledWith(false);
+
+  rerender(
+    <UninstallDialog open={false} onOpenChange={onOpenChange} onConfirm={vi.fn()} uninstalling={false} error="boom" />,
+  );
+  rerender(
+    <UninstallDialog open={true} onOpenChange={onOpenChange} onConfirm={vi.fn()} uninstalling={false} error="boom" />,
+  );
+
+  // Still the same (stale) error prop, but the dialog was closed since —
+  // it must stay hidden until a fresh attempt is made.
+  expect(screen.queryByText("boom")).not.toBeInTheDocument();
+});
+
+it("shows a new error once a fresh attempt is confirmed after a reopen", async () => {
+  const onOpenChange = vi.fn();
+  const onConfirm = vi.fn();
+  const { rerender } = render(
+    <UninstallDialog open={true} onOpenChange={onOpenChange} onConfirm={onConfirm} uninstalling={false} error="boom" />,
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  rerender(
+    <UninstallDialog open={false} onOpenChange={onOpenChange} onConfirm={onConfirm} uninstalling={false} error="boom" />,
+  );
+  rerender(
+    <UninstallDialog open={true} onOpenChange={onOpenChange} onConfirm={onConfirm} uninstalling={false} error="boom" />,
+  );
+  expect(screen.queryByText("boom")).not.toBeInTheDocument();
+
+  await userEvent.type(screen.getByLabelText("Type UNINSTALL to confirm"), "UNINSTALL");
+  await userEvent.click(screen.getByRole("button", { name: "Uninstall drophoto" }));
+
+  expect(onConfirm).toHaveBeenCalledTimes(1);
+  // Same error string re-supplied by the hook (a genuinely new failure
+  // would look identical from this component's point of view) — the
+  // point is that a fresh confirm re-arms the display.
+  expect(screen.getByText("boom")).toBeInTheDocument();
 });
