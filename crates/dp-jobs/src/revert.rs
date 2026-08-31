@@ -83,6 +83,10 @@ impl Job for RevertJob {
         &self.id
     }
 
+    fn drive_id(&self) -> Option<i64> {
+        Some(self.drive.id)
+    }
+
     /// See [`crate::OrganizeJob::run`]'s doc comment: the same
     /// data-safety invariant (a failed move is never rolled back or
     /// cleaned up) and the same panic-safety rationale (`catch_unwind`
@@ -165,6 +169,10 @@ impl RevertJob {
             failed,
             skipped,
             cancelled,
+            // Revert only ever renames files back in place — nothing is
+            // read or written byte-for-byte — so these stay 0.
+            bytes_read: 0,
+            bytes_written: 0,
         };
         // A revert that leaves even one item un-reverted must never read
         // as `"done"` (fully successful) — `reverted_by_job_id` (see

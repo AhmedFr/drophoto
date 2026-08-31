@@ -50,6 +50,7 @@ pub fn run() {
             commands::places::list_place_counts,
             commands::places::search_cities,
             commands::places::set_media_place,
+            commands::metrics::list_job_runs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

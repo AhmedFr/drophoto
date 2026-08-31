@@ -1,11 +1,12 @@
 import { PageHeader } from "@/components/PageHeader";
 import { StatTiles } from "./components/StatTiles";
 import { RecentJobs } from "./components/RecentJobs";
+import { RunsCard } from "./components/RunsCard";
 import { DriveCapacity } from "./components/DriveCapacity";
 import { useDashboard } from "./hooks/useDashboard";
 
 export function DashboardPage() {
-  const { drives, jobs, photoCount, videoCount, unorganizedCount, isError, error } = useDashboard();
+  const { drives, jobs, runs, photoCount, videoCount, unorganizedCount, isError, error } = useDashboard();
   const drivesOnline = drives.filter((d) => d.online).length;
 
   return (
@@ -27,6 +28,7 @@ export function DashboardPage() {
           drivesTotal={drives.length}
         />
         <RecentJobs jobs={jobs} />
+        <RunsCard runs={runs} drives={drives} />
         <DriveCapacity drives={drives} />
       </div>
     </div>

@@ -20,7 +20,7 @@ beforeEach(async () => {
   // Tauri event themselves — only `useUnorganized` still listens
   // directly. Reset the store so a job id from one test can't leak
   // into the next.
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
 });
 
 /** Records every `listen(name, cb)` handler so `emit` can broadcast to all of them, matching real Tauri fan-out. */

@@ -81,6 +81,10 @@ impl Job for OrganizeJob {
         &self.id
     }
 
+    fn drive_id(&self) -> Option<i64> {
+        Some(self.drive.id)
+    }
+
     /// Data-safety invariant: a failed `move_file` NEVER triggers a
     /// delete, rollback, or any other touch of `to` — the item is simply
     /// recorded `Failed` with the error message, and the job moves on to
@@ -173,6 +177,10 @@ impl OrganizeJob {
             failed,
             skipped,
             cancelled,
+            // Organize only ever renames files in place — nothing is
+            // read or written byte-for-byte — so these stay 0.
+            bytes_read: 0,
+            bytes_written: 0,
         };
         let status = if cancelled { "cancelled" } else { "done" };
         self.finish_row(status, outcome.ok, outcome.skipped, outcome.failed)

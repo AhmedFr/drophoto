@@ -1,5 +1,6 @@
 mod drives;
 mod fts;
+mod job_runs;
 mod media;
 mod organize;
 mod organize_jobs;
@@ -11,8 +12,8 @@ mod tags;
 
 use async_trait::async_trait;
 use dp_core::{
-    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewPlace, NewSource, OrganizeItemRow,
-    OrganizeJobRow, OrganizeRule, Place, PlaceCount, Source, Tag, UnorganizedSummary,
+    DpResult, Drive, JobRunRow, MediaQuery, MediaRow, NewDrive, NewJobRun, NewMedia, NewPlace, NewSource,
+    OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, Source, Tag, UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -117,6 +118,12 @@ pub trait Catalog: Send + Sync {
     /// row when earlier rows in the same run gain a `place_id` (and so drop
     /// out of the result set) between pages.
     async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>>;
+    /// Records one job's terminal run metrics — called by
+    /// `dp_jobs::JobRunner` on every done/cancelled/failed job.
+    async fn record_job_run(&self, run: NewJobRun) -> DpResult<()>;
+    /// The most recent `limit` job runs, newest first — for the
+    /// dashboard's "LAST RUNS" card.
+    async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<JobRunRow>>;
 }
 
 #[async_trait]
@@ -322,5 +329,13 @@ impl Catalog for SqliteCatalog {
 
     async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
         places::list_ungeocoded(&self.pool, after_id, limit).await
+    }
+
+    async fn record_job_run(&self, run: NewJobRun) -> DpResult<()> {
+        job_runs::record_job_run(&self.pool, run).await
+    }
+
+    async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<JobRunRow>> {
+        job_runs::list_job_runs(&self.pool, limit).await
     }
 }

@@ -269,6 +269,54 @@ pub struct OrganizeJobRow {
     pub reverted_by_job_id: Option<i64>,
 }
 
+/// A finished job's run metrics, as recorded by `dp_jobs::JobRunner` via
+/// `Catalog::record_job_run` on every terminal path (done/cancelled/failed)
+/// of every job kind — see `dp-catalog`'s `job_runs` table.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NewJobRun {
+    /// The runner-assigned job id, e.g. `"scan-3"`.
+    pub job_id: String,
+    /// `job_id`'s prefix before its first `-` (`"scan"`, `"organize"`,
+    /// `"revert"`, `"sidecar"`, `"geocode"`).
+    pub kind: String,
+    /// `None` for a global job (geocode); `Some` for every per-drive job.
+    pub drive_id: Option<i64>,
+    /// `done` | `cancelled` | `failed` — `failed` only for a job-level
+    /// failure (the `Job::run` future itself returned `Err` or panicked);
+    /// item-level failures are folded into `failed` below instead.
+    pub status: String,
+    pub ok: u64,
+    pub failed: u64,
+    pub skipped: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    /// Process-wide `rusage` (user + sys) delta across the job's run,
+    /// milliseconds — "app CPU during this job, including concurrent
+    /// jobs", not an isolated per-job measurement.
+    pub cpu_ms: u64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+}
+
+/// A [`NewJobRun`] as stored, with its assigned id — what
+/// `Catalog::list_job_runs` returns.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct JobRunRow {
+    pub id: i64,
+    pub job_id: String,
+    pub kind: String,
+    pub drive_id: Option<i64>,
+    pub status: String,
+    pub ok: u64,
+    pub failed: u64,
+    pub skipped: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub cpu_ms: u64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OrganizeItemRow {
     pub id: i64,

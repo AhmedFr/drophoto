@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { JobEvent } from "@/lib/api/scan";
-import type { ActiveJob, JobsState } from "./jobsStore.types";
+import type { ActiveJob, JobsState, Sample } from "./jobsStore.types";
+
+/** How far back `applySample`/`jobRate` look for progress readings — a rate computed over a wider window goes stale (reacts too slowly to a job that's sped up or stalled). */
+const SAMPLE_WINDOW_MS = 30_000;
+
+/** Hard cap on samples kept per job, regardless of how many `progress` events land inside `SAMPLE_WINDOW_MS` — a very chatty job (many small files) must never grow this array unbounded. */
+const SAMPLE_CAP = 60;
 
 /**
  * Applies `event` to `events`, keeping the guard `useJobEvents` used to
@@ -37,6 +43,70 @@ export function jobLabel(jobId: string, labels: Record<string, string>): string 
   return drive ? `${kind} ${drive}` : kind;
 }
 
+/**
+ * Updates `samples` for `event`, keyed by job id: a `progress` event
+ * appends `{t: now, done: event.done}`, first pruning entries older than
+ * `SAMPLE_WINDOW_MS` and then capping the result at the `SAMPLE_CAP` most
+ * recent readings; a terminal event (`finished`/`cancelled`) deletes the
+ * job's samples entirely, so a finished job never lingers with a stale
+ * rate if its id is ever reused; any other event (`started`/`item_error`)
+ * leaves `samples` unchanged.
+ */
+export function applySample(
+  samples: Record<string, Sample[]>,
+  event: JobEvent,
+  now: number,
+): Record<string, Sample[]> {
+  if (event.kind === "finished" || event.kind === "cancelled") {
+    if (!(event.job_id in samples)) return samples;
+    const next = { ...samples };
+    delete next[event.job_id];
+    return next;
+  }
+  if (event.kind !== "progress") return samples;
+
+  const cutoff = now - SAMPLE_WINDOW_MS;
+  const existing = samples[event.job_id] ?? [];
+  const pruned = existing.filter((s) => s.t >= cutoff);
+  const next = [...pruned, { t: now, done: event.done }].slice(-SAMPLE_CAP);
+  return { ...samples, [event.job_id]: next };
+}
+
+/**
+ * Files/sec derived from `samples` within the last `SAMPLE_WINDOW_MS` of
+ * `now`: the `done` delta between the oldest and newest reading in that
+ * window, divided by the elapsed time between them. `null` when fewer
+ * than two samples fall in the window (not enough to derive a rate) or
+ * the elapsed time is non-positive (clock oddities, or both readings
+ * landed in the same millisecond).
+ */
+export function jobRate(samples: Sample[], now: number): number | null {
+  const cutoff = now - SAMPLE_WINDOW_MS;
+  const recent = samples.filter((s) => s.t >= cutoff);
+  if (recent.length < 2) return null;
+
+  const first = recent[0];
+  const last = recent[recent.length - 1];
+  const elapsedSeconds = (last.t - first.t) / 1000;
+  if (elapsedSeconds <= 0) return null;
+
+  return (last.done - first.done) / elapsedSeconds;
+}
+
+/**
+ * Seconds remaining to reach `total` from `done` at `rate` files/sec.
+ * `null` when `rate` is `null` or non-positive (no meaningful ETA — a
+ * stalled or reversing rate would otherwise produce a negative or
+ * infinite estimate) or when there's nothing meaningful to count down
+ * (`total <= 0`, i.e. a job that hasn't reported a total yet). `0` once
+ * `done` has already reached (or passed) `total`.
+ */
+export function etaSeconds(rate: number | null, done: number, total: number): number | null {
+  if (rate === null || rate <= 0 || total <= 0) return null;
+  const remaining = total - done;
+  return remaining <= 0 ? 0 : remaining / rate;
+}
+
 /** Jobs still running — i.e. whose latest event is `started` or `progress` — for `ActiveJobs`. */
 export function activeJobs(state: Pick<JobsState, "events" | "labels">): ActiveJob[] {
   return Object.entries(state.events)
@@ -57,7 +127,12 @@ export function activeJobs(state: Pick<JobsState, "events" | "labels">): ActiveJ
 export const useJobsStore = create<JobsState>()((set) => ({
   events: {},
   labels: {},
-  applyEvent: (event) => set((state) => ({ events: applyJobEvent(state.events, event) })),
+  samples: {},
+  applyEvent: (event) =>
+    set((state) => ({
+      events: applyJobEvent(state.events, event),
+      samples: applySample(state.samples, event, Date.now()),
+    })),
   setLabel: (jobId, label) => set((state) => ({ labels: { ...state.labels, [jobId]: label } })),
   clearFinished: () =>
     set((state) => ({

@@ -1,10 +1,11 @@
 import { act, screen } from "@testing-library/react";
+import { vi } from "vitest";
 import { renderWithRouter } from "@/test/renderWithRouter";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { ActiveJobs } from "./ActiveJobs";
 
 beforeEach(() => {
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
 });
 
 it("renders nothing when no jobs are active", async () => {
@@ -88,4 +89,30 @@ it("renders one row per active job", async () => {
   renderWithRouter(<ActiveJobs />);
 
   expect(await screen.findAllByRole("link")).toHaveLength(2);
+});
+
+it("shows no rate/eta with fewer than 2 progress samples", async () => {
+  useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" });
+  renderWithRouter(<ActiveJobs />);
+
+  expect(await screen.findByText("3/10")).toBeInTheDocument();
+  expect(screen.queryByText(/\/s/)).not.toBeInTheDocument();
+});
+
+it("shows a computed rate and eta once enough samples have landed", async () => {
+  // `Date.now` is stubbed rather than reaching for fake timers, so the
+  // router's own async route resolution (which `renderWithRouter`
+  // depends on, via real timers) isn't disturbed.
+  const nowSpy = vi.spyOn(Date, "now");
+  nowSpy.mockReturnValueOnce(0);
+  useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 0, total: 100, current: "a" });
+  nowSpy.mockReturnValueOnce(10_000);
+  useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 20, total: 100, current: "b" });
+  nowSpy.mockReturnValue(10_000);
+
+  renderWithRouter(<ActiveJobs />);
+
+  expect(await screen.findByText(/2\.0\/s/)).toBeInTheDocument();
+  expect(screen.getByText(/left/)).toBeInTheDocument();
+  nowSpy.mockRestore();
 });

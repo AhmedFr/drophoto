@@ -176,6 +176,9 @@ impl GeocodeJob {
             failed,
             skipped,
             cancelled,
+            // Geocoding never touches a file — no bytes read or written.
+            bytes_read: 0,
+            bytes_written: 0,
         })
     }
 

@@ -53,14 +53,14 @@ impl AppState {
         })?;
         std::fs::create_dir_all(&dir).map_err(|e| DpError::io(&e, dir.display().to_string()))?;
         let db_path = dir.join("catalog.db");
-        let catalog = SqliteCatalog::open(&db_path).await?;
+        let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open(&db_path).await?);
 
         let thumbs_root = dir.join("thumbs");
         std::fs::create_dir_all(&thumbs_root)
             .map_err(|e| DpError::io(&e, thumbs_root.display().to_string()))?;
 
         let (tx, mut rx) = mpsc::channel(JOB_EVENT_CHANNEL_CAPACITY);
-        let runner = JobRunner::new(tx);
+        let runner = JobRunner::new(tx).with_recorder(catalog.clone());
 
         let events_app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -82,7 +82,7 @@ impl AppState {
 
         Ok(Self {
             volumes: Arc::new(SysinfoVolumes),
-            catalog: Arc::new(catalog),
+            catalog,
             strategy: default_strategy(hasher.clone()),
             hasher,
             metadata: Arc::new(ExiftoolProvider::from_path()),

@@ -884,6 +884,14 @@ impl Catalog for FailingCatalog {
     async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
         self.0.list_ungeocoded(after_id, limit).await
     }
+
+    async fn record_job_run(&self, run: dp_core::NewJobRun) -> DpResult<()> {
+        self.0.record_job_run(run).await
+    }
+
+    async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<dp_core::JobRunRow>> {
+        self.0.list_job_runs(limit).await
+    }
 }
 
 #[tokio::test]

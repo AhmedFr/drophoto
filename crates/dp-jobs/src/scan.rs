@@ -80,6 +80,10 @@ impl Job for ScanJob {
         &self.id
     }
 
+    fn drive_id(&self) -> Option<i64> {
+        Some(self.drive.id)
+    }
+
     async fn run(&self, ctx: JobCtx) -> DpResult<JobOutcome> {
         let mount_path = self.drive.mount_path.clone().ok_or_else(|| DpError::NotFound {
             message: "drive is offline".into(),
@@ -150,6 +154,8 @@ impl Job for ScanJob {
         let ok = AtomicU64::new(0);
         let failed = AtomicU64::new(0);
         let skipped = AtomicU64::new(0);
+        let bytes_read = AtomicU64::new(0);
+        let bytes_written = AtomicU64::new(0);
         // Set either by the blocking walk noticing cancellation mid-walk, or
         // inside process_file's pre-file cancellation check, so it reflects
         // an actual early exit rather than the token's state at some
@@ -172,6 +178,8 @@ impl Job for ScanJob {
                 let ok = &ok;
                 let failed = &failed;
                 let skipped = &skipped;
+                let bytes_read = &bytes_read;
+                let bytes_written = &bytes_written;
                 let stopped_early = &stopped_early;
                 async move {
                     process_file(
@@ -184,6 +192,8 @@ impl Job for ScanJob {
                         ok,
                         failed,
                         skipped,
+                        bytes_read,
+                        bytes_written,
                         stopped_early,
                     )
                     .await;
@@ -196,6 +206,8 @@ impl Job for ScanJob {
             failed: failed.load(Ordering::SeqCst),
             skipped: skipped.load(Ordering::SeqCst),
             cancelled: stopped_early.load(Ordering::SeqCst),
+            bytes_read: bytes_read.load(Ordering::SeqCst),
+            bytes_written: bytes_written.load(Ordering::SeqCst),
         })
     }
 }
@@ -449,6 +461,8 @@ async fn process_file(
     ok: &AtomicU64,
     failed: &AtomicU64,
     skipped: &AtomicU64,
+    bytes_read: &AtomicU64,
+    bytes_written: &AtomicU64,
     stopped_early: &AtomicBool,
 ) {
     if ctx.cancel.is_cancelled() {
@@ -491,6 +505,10 @@ async fn process_file(
             return;
         }
     };
+    // Counted once the file has actually been read (hashed), not merely
+    // discovered by the walk — a file that fails to hash never reaches
+    // here and so never counts toward `bytes_read`.
+    bytes_read.fetch_add(size, Ordering::SeqCst);
 
     // A thumbnail failure on a very small file usually means the file
     // isn't a real photo/video at all (a corrupt copy, an OS-generated
@@ -513,9 +531,20 @@ async fn process_file(
         match render_result {
             Ok(img) => {
                 any_thumb_ok = true;
-                if let Err(e) = deps.store.write(&hash, size_px, &img).await {
-                    had_error = true;
-                    report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                match deps.store.write(&hash, size_px, &img).await {
+                    Ok(written_path) => {
+                        // `ThumbStore::write` returns the path it wrote,
+                        // not the encoded size, so the size actually
+                        // written is read back off disk rather than
+                        // re-deriving it here.
+                        if let Ok(meta) = tokio::fs::metadata(&written_path).await {
+                            bytes_written.fetch_add(meta.len(), Ordering::SeqCst);
+                        }
+                    }
+                    Err(e) => {
+                        had_error = true;
+                        report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                    }
                 }
             }
             Err(e) => {

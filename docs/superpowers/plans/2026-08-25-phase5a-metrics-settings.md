@@ -92,11 +92,43 @@ CREATE TABLE job_runs (
 - Quality steps (constants shared Rust↔TS by value): `compact` = 800px, `balanced` = 1200px, `max` = 2000px (default `max`, stored in `settings` key `preview_edge` as the integer). The 400px thumb is unaffected. `ThumbStore` filenames: keep `2000.webp` as the PREVIEW SLOT name regardless of edge (the slot is "the preview"; its pixel edge varies) — avoids renaming 16k files and breaking `preview_path`; document this in `dp-thumbs`.
 - `storage_usage() -> { thumbs_400_bytes, previews_bytes, catalog_bytes, total_bytes, file_count }` — walkdir over the thumbs root summing by filename + catalog file size; runs in `spawn_blocking`; UI shows a breakdown bar + per-item rows and a REFRESH button (computed on open, not polled).
 - `QualityPicker`: three labeled steps (radio-style segmented control, matches the flat UI) with estimated total («~2.6 GB» for max, scaled by (edge/2000)² for the others using the CURRENT previews_bytes) and copy: lowering quality frees space after REGENERATE PREVIEWS; raising it needs a FULL RESCAN with drives connected (originals required).
+- **Danger zone — UNINSTALL / RESET**: a red-outlined section at the bottom of Settings with a `RESET APP DATA…` button → confirmation dialog stating exactly what happens ("Deletes the catalog and every cached thumbnail. Your photos, folders and .xmp sidecar files on your drives are NEVER touched.") requiring the user to type `RESET`; on confirm, command `reset_app_data` deletes `catalog.db*` and the `thumbs/` dir inside the app-data dir, then `std::process::exit(0)` (relaunch starts fresh); the dialog also notes "to fully uninstall, quit and drag drophoto to the Trash afterwards". Command unit-tested against a temp dir (never the real app-data path in tests).
 - `RegenJob` (admission kind `"regen"`, global like geocode): iterates thumb store entries with a preview larger than the target edge (decode cached preview WebP → resize to target → re-encode → replace atomically via temp+rename); progress/cancel/tallies (`bytes_written` = new sizes; `bytes_read` = old). Only DOWNscaling — never upscales. Triggered by the settings button when the new edge < old; `set_preview_quality` returns whether a regen is applicable.
 - [ ] Steps: failing settings-catalog tests (get/set round-trip, default) → thumbs param test (chain produces target edge into the preview slot) → RegenJob real-FS test (3 cached previews → downscaled in place, byte sizes shrink, 400px untouched) → storage_usage test (temp store with known files) → UI tests (storage rows render from mocked command; picker stages + applies; regen button fires and disabled states) → implement → gates → commit `feat(settings): storage usage and preview quality`.
 
 ---
 
-### Task 5a.4: Finalize
+### Task 5a.4: UI steadiness — toolbar count, live scan state on Drives (user field reports 2026-08-27)
+
+**Files:**
+- Modify: `src/features/gallery/components/GalleryToolbar/GalleryToolbar.tsx` (count span), `src/lib/jobs/jobsStore.ts` (+types), `src/features/drives/DrivesPage.tsx`
+- Test: alongside each
+
+**Interfaces:**
+- Toolbar: the `{count} items` span gets `tabular-nums` and a stable reserved width (e.g. `inline-block min-w-[9ch] text-right`) so filter changes don't shift the toolbar. Test asserts the class.
+- jobsStore gains `driveIds: Record<string, number>` + `setJobDrive(jobId, driveId)` (cleared with the job's entry on terminal via `clearFinished`); `DrivesPage` calls it in the scan mutation's `onSuccess` (alongside `setLabel`).
+- `DrivesPage` derives each card's scan state from the GLOBAL store instead of its local `scanJobs` map (delete the local state): `scanEvent` = latest event of any active `scan-*` job whose `driveIds[jobId] === d.id`; `onCancelScan` uses that job id. Regression test: mount DrivesPage with a running scan already in the store (simulating navigate-away-and-back) → the card shows progress and CANCEL works.
+
+- [ ] Steps: failing tests → implement → `pnpm lint && pnpm typecheck && pnpm test:coverage` → commit `fix(ui): steady toolbar count; drives page shows running scans after navigation`.
+
+---
+
+### Task 5a.5: drive presence — identity matching + forget drive (user field report 2026-08-27)
+
+**Files:**
+- Modify: `crates/dp-volumes/src/{lib.rs,presence.rs}` (Volume gains `uuid: Option<String>`; `SysinfoVolumes` fills it on macOS via `diskutil info -plist <mount>` parsing `VolumeUUID` — spawn per mounted volume, cache by mount path within the provider instance; non-macOS → None), `crates/dp-core/src/types.rs` (`Drive.volume_label: Option<String>` — migration 0008 adds the column), `crates/dp-catalog` (persist label+uuid at registration; `register_drive` captures the VOLUME's label and uuid, independent of the user's display name), `src-tauri/src/commands/drives.rs` (registration passes them; new `forget_drive` command), `src/features/drives` (Forget action)
+- Test: presence unit tests + catalog tests + command/UI tests
+
+**Interfaces:**
+- **Root cause being fixed** (verified in code): `resolve_presence` matches `volume.name == drive.name`, but `drive.name` is the USER-CHOSEN display name; and the prior-mount-path fallback is empty once a drive is offline (`mount_path = None` was persisted). Reconnecting a renamed-at-registration drive therefore never matches and the volume shows up as "new".
+- New matching order in `resolve_presence(drives, volumes)`: (1) `drive.volume_uuid == volume.uuid` (both Some), (2) `drive.volume_label == volume.name`, (3) legacy `drive.name == volume.name`, (4) prior mount path. First match wins; a volume already claimed by an earlier drive in the list must not match a second drive (track claimed volume indices). Registration back-fills `volume_uuid`+`volume_label` for the CURRENTLY-matched volume of legacy drives on every presence resolve when they're NULL (self-healing for the user's existing drive).
+- Tests: renamed drive (display name ≠ label) reconnect matches by label; uuid beats label; two same-label volumes don't double-claim; legacy row self-heals uuid/label once online.
+- **Forget drive**: command `forget_drive(drive_id)` — deletes the drive row and everything referencing it: sources (FK cascade or explicit), media rows (explicit delete including organize_items/organize_jobs for that drive first, media_tags via cascade, FTS rows via delete path), in ONE transaction; thumbnails are content-addressed and possibly shared across drives → left on disk (the Settings storage panel + a future GC own that; document). UI: `FORGET…` action on `DriveCard` (works offline — that's the point), confirmation dialog listing what goes ("removes N photos from the catalog and all their tags/places; files on the drive itself are never touched") requiring typed `FORGET`. Tests: catalog-level cascade test + dialog flow test.
+
+- [ ] Steps: failing tests → implement → full gates → commit `feat(drives): volume identity matching, self-healing presence, forget drive`.
+
+---
+
+### Task 5a.6: Finalize
 
 - [ ] Full gates; push; PR `Closes #22` titled `feat: job metrics, storage panel, preview quality, incremental rescan (Phase 5a)`; whole-branch review (opus) + one fix wave; merge; release v0.3.0 via `scripts/release.sh 0.3.0` (bump versions first); memory update.

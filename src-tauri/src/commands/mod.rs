@@ -1,6 +1,7 @@
 pub mod drives;
 pub mod media;
 pub mod media_item;
+pub mod metrics;
 pub mod organize;
 mod organize_plan;
 pub mod places;

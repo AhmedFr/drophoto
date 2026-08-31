@@ -188,6 +188,64 @@ async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     assert_eq!(png_before.modified().unwrap(), png_after.modified().unwrap());
 }
 
+/// `JobRunner::with_recorder`'s scan-specific counters: `bytes_read` must
+/// equal the sum of every fixture file's on-disk size (each is hashed
+/// exactly once), and `bytes_written` must be nonzero (every real file
+/// gets thumbnails rendered and written at each of `THUMB_SIZES`).
+#[tokio::test]
+async fn scan_records_bytes_read_and_bytes_written_via_the_recorder() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
+    let jpg_size = std::fs::metadata(drive_dir.path().join("sample.jpg"))
+        .unwrap()
+        .len();
+    let png_size = std::fs::metadata(drive_dir.path().join("sample.png"))
+        .unwrap()
+        .len();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Bytes Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx).with_recorder(catalog.clone());
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    runner.spawn(job_id.clone(), job);
+
+    drain_until_terminal(&mut rx).await;
+
+    let run = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let runs = catalog.list_job_runs(10).await.unwrap();
+            if let Some(run) = runs.into_iter().find(|r| r.job_id == job_id) {
+                return run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the job run to be recorded");
+
+    assert_eq!(
+        run.bytes_read,
+        jpg_size + png_size,
+        "bytes_read should equal the sum of every hashed fixture's size"
+    );
+    assert!(run.bytes_written > 0, "expected thumbnails to have been written");
+    assert_eq!(run.status, "done");
+}
+
 /// A media row scanned before sources existed (`source_id: NULL`) that
 /// points somewhere today's deny-list refuses can never be re-created
 /// *or* resolved by a scan — the walk skips exactly those paths — so a
@@ -274,6 +332,46 @@ async fn cancelling_immediately_emits_cancelled() {
         }
         other => panic!("expected Cancelled, got {other:?}"),
     }
+}
+
+/// The `job_runs` counterpart of [`cancelling_immediately_emits_cancelled`]:
+/// a scan cancelled before it processes anything must be recorded with
+/// `status: "cancelled"`, not `"done"` or `"failed"`.
+#[tokio::test]
+async fn cancelling_immediately_records_status_cancelled() {
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Cancel Recorder Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx).with_recorder(catalog.clone());
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    runner.spawn(job_id.clone(), job);
+    runner.cancel(&job_id);
+
+    drain_until_terminal(&mut rx).await;
+
+    let run = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let runs = catalog.list_job_runs(10).await.unwrap();
+            if let Some(run) = runs.into_iter().find(|r| r.job_id == job_id) {
+                return run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the job run to be recorded");
+
+    assert_eq!(run.status, "cancelled");
 }
 
 #[tokio::test]

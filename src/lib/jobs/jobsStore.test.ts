@@ -1,9 +1,19 @@
 import { beforeEach } from "vitest";
 import type { JobEvent } from "@/lib/api/scan";
-import { activeJobs, applyJobEvent, jobKindFromId, jobLabel, useJobsStore } from "./jobsStore";
+import type { Sample } from "./jobsStore.types";
+import {
+  activeJobs,
+  applyJobEvent,
+  applySample,
+  etaSeconds,
+  jobKindFromId,
+  jobLabel,
+  jobRate,
+  useJobsStore,
+} from "./jobsStore";
 
 beforeEach(() => {
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
 });
 
 describe("applyJobEvent", () => {
@@ -118,5 +128,135 @@ describe("useJobsStore", () => {
     const events = useJobsStore.getState().events;
     expect(events["scan-0"]).toBeDefined();
     expect(events["scan-1"]).toBeUndefined();
+  });
+
+  it("applyEvent maintains samples for progress events", () => {
+    useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a" });
+    expect(useJobsStore.getState().samples["scan-0"]).toHaveLength(1);
+  });
+
+  it("applyEvent clears samples on a terminal event", () => {
+    useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a" });
+    useJobsStore.getState().applyEvent({ kind: "finished", job_id: "scan-0", ok: 3, failed: 0, skipped: 0 });
+    expect(useJobsStore.getState().samples["scan-0"]).toBeUndefined();
+  });
+});
+
+describe("applySample", () => {
+  it("appends a sample for a progress event", () => {
+    const samples = applySample({}, { kind: "progress", job_id: "scan-0", done: 5, total: 10, current: "a" }, 1000);
+    expect(samples["scan-0"]).toEqual([{ t: 1000, done: 5 }]);
+  });
+
+  it("prunes samples older than the 30s window before appending", () => {
+    const existing: Record<string, Sample[]> = {
+      "scan-0": [
+        { t: 0, done: 1 },
+        { t: 10_000, done: 2 },
+      ],
+    };
+    const samples = applySample(
+      existing,
+      { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a" },
+      35_000,
+    );
+    // The window is [35_000 - 30_000, 35_000] = [5_000, 35_000]: t: 0 falls
+    // outside it and is dropped, t: 10_000 is still inside and survives.
+    expect(samples["scan-0"]).toEqual([
+      { t: 10_000, done: 2 },
+      { t: 35_000, done: 3 },
+    ]);
+  });
+
+  it("caps samples at 60 entries", () => {
+    const existing: Record<string, Sample[]> = {
+      "scan-0": Array.from({ length: 60 }, (_, i) => ({ t: i * 100, done: i })),
+    };
+    const samples = applySample(
+      existing,
+      { kind: "progress", job_id: "scan-0", done: 999, total: 1000, current: "a" },
+      6000,
+    );
+    expect(samples["scan-0"]).toHaveLength(60);
+    expect(samples["scan-0"][59]).toEqual({ t: 6000, done: 999 });
+  });
+
+  it("deletes a job's samples on a terminal event", () => {
+    const existing: Record<string, Sample[]> = { "scan-0": [{ t: 0, done: 1 }] };
+    const samples = applySample(
+      existing,
+      { kind: "finished", job_id: "scan-0", ok: 1, failed: 0, skipped: 0 },
+      1000,
+    );
+    expect(samples["scan-0"]).toBeUndefined();
+  });
+
+  it("leaves samples unchanged for a started or item_error event", () => {
+    const existing: Record<string, Sample[]> = { "scan-0": [{ t: 0, done: 1 }] };
+    expect(applySample(existing, { kind: "started", job_id: "scan-0" }, 1000)).toBe(existing);
+    expect(
+      applySample(
+        existing,
+        { kind: "item_error", job_id: "scan-0", path: "a.jpg", code: "io", message: "boom" },
+        1000,
+      ),
+    ).toBe(existing);
+  });
+});
+
+describe("jobRate", () => {
+  it("returns null with fewer than 2 samples", () => {
+    expect(jobRate([], 1000)).toBeNull();
+    expect(jobRate([{ t: 0, done: 1 }], 1000)).toBeNull();
+  });
+
+  it("computes files/sec from the oldest to newest sample in the window", () => {
+    const samples: Sample[] = [
+      { t: 0, done: 0 },
+      { t: 5000, done: 10 },
+      { t: 10_000, done: 20 },
+    ];
+    expect(jobRate(samples, 10_000)).toBe(2);
+  });
+
+  it("ignores samples older than the 30s window", () => {
+    const samples: Sample[] = [
+      { t: 0, done: 0 },
+      { t: 40_000, done: 100 },
+      { t: 41_000, done: 102 },
+    ];
+    // Only the last two fall in [11_000, 41_000]; delta 2 over 1s = 2/s.
+    expect(jobRate(samples, 41_000)).toBe(2);
+  });
+
+  it("returns null when elapsed time is non-positive", () => {
+    const samples: Sample[] = [
+      { t: 1000, done: 1 },
+      { t: 1000, done: 2 },
+    ];
+    expect(jobRate(samples, 1000)).toBeNull();
+  });
+});
+
+describe("etaSeconds", () => {
+  it("returns null when rate is null", () => {
+    expect(etaSeconds(null, 5, 10)).toBeNull();
+  });
+
+  it("returns null when rate is non-positive", () => {
+    expect(etaSeconds(0, 5, 10)).toBeNull();
+  });
+
+  it("returns null when total is 0 (no total reported yet)", () => {
+    expect(etaSeconds(2, 5, 0)).toBeNull();
+  });
+
+  it("computes remaining seconds at the given rate", () => {
+    expect(etaSeconds(2, 5, 10)).toBe(2.5);
+  });
+
+  it("returns 0 once done has reached total", () => {
+    expect(etaSeconds(2, 10, 10)).toBe(0);
+    expect(etaSeconds(2, 12, 10)).toBe(0);
   });
 });

@@ -15,7 +15,7 @@ beforeEach(async () => {
   // `DrivesPage` itself) — `DrivesPage` reads job progress from the
   // global `jobsStore` via `useJobEvents` instead, so tests seed it
   // directly rather than emitting a "job" Tauri event.
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
 });
 
 function renderPage() {

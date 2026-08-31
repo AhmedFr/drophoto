@@ -19,7 +19,7 @@ vi.mock("@/lib/api/places", () => ({
 }));
 
 beforeEach(async () => {
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
   vi.mocked(toast).mockClear();
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();

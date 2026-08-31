@@ -3,7 +3,7 @@ import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { useJobEvents } from "./useJobEvents";
 
 beforeEach(() => {
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
 });
 
 it("reflects the jobs store's events", () => {
