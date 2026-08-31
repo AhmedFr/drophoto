@@ -23,6 +23,12 @@ APP_TARBALL="target/release/bundle/macos/drophoto.app.tar.gz"
 APP_SIG="$APP_TARBALL.sig"
 LATEST_JSON="target/release/bundle/macos/latest.json"
 
+if ! command -v jq >/dev/null 2>&1; then
+    echo "error: jq not found — required to write $LATEST_JSON." >&2
+    echo "install it first (e.g. brew install jq)." >&2
+    exit 1
+fi
+
 UPDATER_KEY="$HOME/.tauri/drophoto_updater.key"
 if [ ! -f "$UPDATER_KEY" ]; then
     echo "error: $UPDATER_KEY not found." >&2
@@ -38,13 +44,11 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 pnpm tauri build
 
-codesign --verify --deep --strict "$APP"
-echo "==> notarizing (usually 1-5 minutes)"
-xcrun notarytool submit "$DMG" --keychain-profile drophoto-notary --wait
-echo "==> stapling"
-xcrun stapler staple "$DMG"
-xcrun stapler validate "$DMG"
-
+# Checked immediately after build (before the slow notarize/staple round
+# trip) so a `bundle.createUpdaterArtifacts` misconfiguration fails fast
+# rather than after several minutes of notarization. Nothing downstream
+# touches these two files (stapling only rewrites the DMG), so this is the
+# only place that needs to check for them.
 if [ ! -f "$APP_TARBALL" ] || [ ! -f "$APP_SIG" ]; then
     echo "error: expected updater artifacts missing:" >&2
     echo "  $APP_TARBALL" >&2
@@ -52,6 +56,13 @@ if [ ! -f "$APP_TARBALL" ] || [ ! -f "$APP_SIG" ]; then
     echo "(bundle.createUpdaterArtifacts must be true in tauri.conf.json)." >&2
     exit 1
 fi
+
+codesign --verify --deep --strict "$APP"
+echo "==> notarizing (usually 1-5 minutes)"
+xcrun notarytool submit "$DMG" --keychain-profile drophoto-notary --wait
+echo "==> stapling"
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
 
 echo "==> writing $LATEST_JSON"
 PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

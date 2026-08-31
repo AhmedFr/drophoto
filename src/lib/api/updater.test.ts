@@ -28,6 +28,12 @@ it("resolves version and notes when an update is available", async () => {
     version: "0.4.0",
     body: "Bug fixes.",
     downloadAndInstall: vi.fn(),
+    // A plain function, not `vi.fn()` — `beforeEach`'s `vi.resetAllMocks()`
+    // would otherwise reset this mock's implementation once a *later* test
+    // calls `checkForUpdate()` again and finds it still sitting in the
+    // module-level `pendingUpdate` from this test, turning `.close()` into
+    // a call that returns `undefined` instead of a promise.
+    close: () => Promise.resolve(),
   } as never);
 
   await expect(checkForUpdate()).resolves.toEqual({ version: "0.4.0", notes: "Bug fixes." });
@@ -39,9 +45,56 @@ it("resolves notes as null when the release has no body", async () => {
     version: "0.4.0",
     body: undefined,
     downloadAndInstall: vi.fn(),
+    // A plain function, not `vi.fn()` — `beforeEach`'s `vi.resetAllMocks()`
+    // would otherwise reset this mock's implementation once a *later* test
+    // calls `checkForUpdate()` again and finds it still sitting in the
+    // module-level `pendingUpdate` from this test, turning `.close()` into
+    // a call that returns `undefined` instead of a promise.
+    close: () => Promise.resolve(),
   } as never);
 
   await expect(checkForUpdate()).resolves.toEqual({ version: "0.4.0", notes: null });
+});
+
+it("closes the previous pending update (best-effort) before a re-check replaces it", async () => {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const firstClose = vi.fn().mockResolvedValue(undefined);
+  vi.mocked(check).mockResolvedValueOnce({
+    version: "0.4.0",
+    body: null,
+    downloadAndInstall: vi.fn(),
+    close: firstClose,
+  } as never);
+  await checkForUpdate();
+
+  vi.mocked(check).mockResolvedValueOnce({
+    version: "0.5.0",
+    body: null,
+    downloadAndInstall: vi.fn(),
+    // A plain function, not `vi.fn()` — `beforeEach`'s `vi.resetAllMocks()`
+    // would otherwise reset this mock's implementation once a *later* test
+    // calls `checkForUpdate()` again and finds it still sitting in the
+    // module-level `pendingUpdate` from this test, turning `.close()` into
+    // a call that returns `undefined` instead of a promise.
+    close: () => Promise.resolve(),
+  } as never);
+  await checkForUpdate();
+
+  expect(firstClose).toHaveBeenCalledTimes(1);
+});
+
+it("does not let a rejected close() from the previous update break the new check", async () => {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  vi.mocked(check).mockResolvedValueOnce({
+    version: "0.4.0",
+    body: null,
+    downloadAndInstall: vi.fn(),
+    close: vi.fn().mockRejectedValue(new Error("already closed")),
+  } as never);
+  await checkForUpdate();
+
+  vi.mocked(check).mockResolvedValueOnce(null);
+  await expect(checkForUpdate()).resolves.toBeNull();
 });
 
 it("propagates a rejection from check()", async () => {
@@ -67,7 +120,17 @@ it("reports whole-percent progress computed from Started/Progress events, then 1
     onEvent({ event: "Progress", data: { chunkLength: 50 } });
     onEvent({ event: "Finished" });
   });
-  vi.mocked(check).mockResolvedValue({ version: "0.4.0", body: null, downloadAndInstall } as never);
+  vi.mocked(check).mockResolvedValue({
+    version: "0.4.0",
+    body: null,
+    downloadAndInstall,
+    // A plain function, not `vi.fn()` — `beforeEach`'s `vi.resetAllMocks()`
+    // would otherwise reset this mock's implementation once a *later* test
+    // calls `checkForUpdate()` again and finds it still sitting in the
+    // module-level `pendingUpdate` from this test, turning `.close()` into
+    // a call that returns `undefined` instead of a promise.
+    close: () => Promise.resolve(),
+  } as never);
   await checkForUpdate();
 
   const percents: number[] = [];
@@ -82,7 +145,17 @@ it("reports 0 progress for a Progress event when content length is unknown", asy
     onEvent({ event: "Started", data: {} });
     onEvent({ event: "Progress", data: { chunkLength: 50 } });
   });
-  vi.mocked(check).mockResolvedValue({ version: "0.4.0", body: null, downloadAndInstall } as never);
+  vi.mocked(check).mockResolvedValue({
+    version: "0.4.0",
+    body: null,
+    downloadAndInstall,
+    // A plain function, not `vi.fn()` — `beforeEach`'s `vi.resetAllMocks()`
+    // would otherwise reset this mock's implementation once a *later* test
+    // calls `checkForUpdate()` again and finds it still sitting in the
+    // module-level `pendingUpdate` from this test, turning `.close()` into
+    // a call that returns `undefined` instead of a promise.
+    close: () => Promise.resolve(),
+  } as never);
   await checkForUpdate();
 
   const percents: number[] = [];

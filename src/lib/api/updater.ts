@@ -25,6 +25,12 @@ let pendingUpdate: Update | null = null;
  */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   const update = await check();
+  // Best-effort: releases the previous check's Rust-side resource (if any)
+  // now that it's about to be replaced and unreachable — a re-check (the
+  // manual "Check for updates" button, or the startup check racing a
+  // Settings-page mount) would otherwise leak one `Update` handle per call.
+  // Never worth failing the new check over.
+  pendingUpdate?.close().catch(() => {});
   pendingUpdate = update;
   if (!update) return null;
   return { version: update.version, notes: update.body ?? null };
