@@ -10,11 +10,15 @@ export type JobsState = {
   labels: Record<string, string>;
   /** Recent progress samples per `job_id`, for `jobRate`/`etaSeconds` — see `applySample`. */
   samples: Record<string, Sample[]>;
+  /** Drive id per `job_id`, set by whoever started a scan job via `setJobDrive` — lets `DrivesPage` derive each card's running-scan state from this global store instead of page-local state that's lost on unmount. */
+  driveIds: Record<string, number>;
   /** Applies `event`, keeping the out-of-order `progress` guard — see `applyJobEvent` — and updating `samples` — see `applySample`. */
   applyEvent: (event: JobEvent) => void;
   /** Records `label` (typically a drive name) for `jobId`, used alongside its kind for display. */
   setLabel: (jobId: string, label: string) => void;
-  /** Drops every job whose latest event is terminal (`finished`/`cancelled`). */
+  /** Records `driveId` for `jobId`, so `DrivesPage` can match a running scan job back to its drive. */
+  setJobDrive: (jobId: string, driveId: number) => void;
+  /** Drops every job whose latest event is terminal (`finished`/`cancelled`), along with its `driveIds` entry. */
   clearFinished: () => void;
 };
 

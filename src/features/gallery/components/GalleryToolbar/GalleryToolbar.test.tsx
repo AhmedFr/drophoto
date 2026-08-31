@@ -27,6 +27,12 @@ describe("GalleryToolbar", () => {
     expect(await screen.findByText("12 items")).toBeInTheDocument();
   });
 
+  it("gives the count a stable reserved width so filter changes don't shift the toolbar", async () => {
+    renderWithRouter(<GalleryToolbar count={12} />);
+    const countEl = await screen.findByText("12 items");
+    expect(countEl).toHaveClass("tabular-nums", "inline-block", "min-w-[9ch]", "text-right");
+  });
+
   it("renders no count while undefined", async () => {
     renderWithRouter(<GalleryToolbar count={undefined} />);
     await screen.findByRole("link");

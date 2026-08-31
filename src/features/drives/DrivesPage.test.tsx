@@ -15,7 +15,7 @@ beforeEach(async () => {
   // `DrivesPage` itself) — `DrivesPage` reads job progress from the
   // global `jobsStore` via `useJobEvents` instead, so tests seed it
   // directly rather than emitting a "job" Tauri event.
-  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {}, driveIds: {} });
 });
 
 function renderPage() {
@@ -279,6 +279,38 @@ it("starts a scan, shows live progress from job events, and cancels", async () =
 
   fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
   await waitFor(() => expect(cancelArgs).toEqual({ jobId: "scan-0" }));
+});
+
+it("shows a drive's running scan and lets it be cancelled after navigating away and back (job event was already in the global store before mount)", async () => {
+  let cancelArgs: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
+    if (cmd === "cancel_job") {
+      cancelArgs = args;
+      return null;
+    }
+    return undefined;
+  });
+
+  // Simulates a scan that was started while `DrivesPage` was mounted
+  // earlier, whose progress is only tracked in the global `jobsStore` (fed
+  // by `JobEventsBridge` in `AppShell`) — not in any state local to
+  // `DrivesPage`, which would have been discarded on unmount.
+  act(() => {
+    useJobsStore.getState().setJobDrive("scan-7", 1);
+    useJobsStore
+      .getState()
+      .applyEvent({ kind: "progress", job_id: "scan-7", done: 4, total: 10, current: "b.jpg" });
+  });
+
+  renderPage();
+
+  expect(await screen.findByText("4 / 10")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+  await waitFor(() => expect(cancelArgs).toEqual({ jobId: "scan-7" }));
 });
 
 it("starts a full rescan when the Full button is clicked", async () => {

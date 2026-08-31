@@ -6,6 +6,7 @@ import type { Volume } from "@/lib/api/volumes";
 import { listDrives, registerDrive } from "@/lib/api/drives";
 import type { Drive } from "@/lib/api/drives";
 import { startScan, cancelJob } from "@/lib/api/scan";
+import type { JobEvent } from "@/lib/api/scan";
 import { useTauriEvent } from "@/lib/hooks/useTauriEvent";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { VolumeList } from "./components/VolumeList";
@@ -15,14 +16,38 @@ import { SourcesDialog } from "./components/SourcesDialog";
 import { useJobEvents } from "./hooks/useJobEvents";
 import { useSources } from "./hooks/useSources";
 
+/**
+ * The id of the still-running (`started`/`progress`) `scan-*` job mapped to
+ * `driveId` via `jobsStore`'s `driveIds`, if any — reading from the global
+ * store (rather than page-local state) is what lets a card keep showing its
+ * scan's progress after `DrivesPage` unmounts and remounts (e.g. navigating
+ * away and back). Picks the most recently-applied match in the unlikely
+ * case more than one is present at once.
+ */
+function activeScanJobId(
+  driveId: number,
+  events: Record<string, JobEvent>,
+  driveIds: Record<string, number>,
+): string | undefined {
+  const matches = Object.entries(events)
+    .filter(
+      ([jobId, event]) =>
+        jobId.startsWith("scan-") &&
+        driveIds[jobId] === driveId &&
+        (event.kind === "started" || event.kind === "progress"),
+    )
+    .map(([jobId]) => jobId);
+  return matches[matches.length - 1];
+}
+
 export function DrivesPage() {
   const queryClient = useQueryClient();
   const volumes = useQuery({ queryKey: ["volumes"], queryFn: listVolumes, refetchInterval: 5_000 });
   const drives = useQuery({ queryKey: ["drives"], queryFn: listDrives });
   const [pending, setPending] = useState<Volume | null>(null);
   const [sourcesDrive, setSourcesDrive] = useState<Drive | null>(null);
-  const [scanJobs, setScanJobs] = useState<Record<number, string>>({});
   const jobEvents = useJobEvents();
+  const driveIds = useJobsStore((s) => s.driveIds);
   const { sourcesByDrive, isLoading: sourcesLoading } = useSources((drives.data ?? []).map((d) => d.id));
 
   useTauriEvent("drives:changed", () => {
@@ -44,7 +69,10 @@ export function DrivesPage() {
       jobId: await startScan(driveId, full),
     }),
     onSuccess: ({ driveId, jobId }) => {
-      setScanJobs((prev) => ({ ...prev, [driveId]: jobId }));
+      // Recorded in the global store (not page-local state) so the running
+      // scan survives navigating away from and back to this page — see
+      // `scanEvent`/`onCancelScan` below, which derive from it.
+      useJobsStore.getState().setJobDrive(jobId, driveId);
       // Cheap to do here — the drive's name is already on hand — so the
       // global `ActiveJobs` strip and terminal-event toast can show it
       // instead of falling back to just "Scan".
@@ -78,7 +106,7 @@ export function DrivesPage() {
         {drives.data?.length ? (
           <ul className="flex flex-col">
             {drives.data.map((d) => {
-              const jobId = scanJobs[d.id];
+              const jobId = activeScanJobId(d.id, jobEvents, driveIds);
               return (
                 <DriveCard
                   key={d.id}

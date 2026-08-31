@@ -129,16 +129,27 @@ export const useJobsStore = create<JobsState>()((set) => ({
   events: {},
   labels: {},
   samples: {},
+  driveIds: {},
   applyEvent: (event) =>
     set((state) => ({
       events: applyJobEvent(state.events, event),
       samples: applySample(state.samples, event, Date.now()),
     })),
   setLabel: (jobId, label) => set((state) => ({ labels: { ...state.labels, [jobId]: label } })),
+  setJobDrive: (jobId, driveId) =>
+    set((state) => ({ driveIds: { ...state.driveIds, [jobId]: driveId } })),
   clearFinished: () =>
-    set((state) => ({
-      events: Object.fromEntries(
-        Object.entries(state.events).filter(([, e]) => e.kind !== "finished" && e.kind !== "cancelled"),
-      ),
-    })),
+    set((state) => {
+      const dropped = new Set(
+        Object.entries(state.events)
+          .filter(([, e]) => e.kind === "finished" || e.kind === "cancelled")
+          .map(([jobId]) => jobId),
+      );
+      return {
+        events: Object.fromEntries(Object.entries(state.events).filter(([jobId]) => !dropped.has(jobId))),
+        driveIds: Object.fromEntries(
+          Object.entries(state.driveIds).filter(([jobId]) => !dropped.has(jobId)),
+        ),
+      };
+    }),
 }));

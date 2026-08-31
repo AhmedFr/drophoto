@@ -13,7 +13,7 @@ import {
 } from "./jobsStore";
 
 beforeEach(() => {
-  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {}, driveIds: {} });
 });
 
 describe("applyJobEvent", () => {
@@ -140,6 +140,22 @@ describe("useJobsStore", () => {
     useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a" });
     useJobsStore.getState().applyEvent({ kind: "finished", job_id: "scan-0", ok: 3, failed: 0, skipped: 0 });
     expect(useJobsStore.getState().samples["scan-0"]).toBeUndefined();
+  });
+
+  it("setJobDrive records a drive id for a job id", () => {
+    useJobsStore.getState().setJobDrive("scan-0", 3);
+    expect(useJobsStore.getState().driveIds["scan-0"]).toBe(3);
+  });
+
+  it("clearFinished also drops driveIds entries for terminal jobs", () => {
+    useJobsStore.getState().setJobDrive("scan-0", 1);
+    useJobsStore.getState().setJobDrive("scan-1", 2);
+    useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 1, total: 10, current: "a" });
+    useJobsStore.getState().applyEvent({ kind: "finished", job_id: "scan-1", ok: 1, failed: 0, skipped: 0 });
+    useJobsStore.getState().clearFinished();
+    const driveIds = useJobsStore.getState().driveIds;
+    expect(driveIds["scan-0"]).toBe(1);
+    expect(driveIds["scan-1"]).toBeUndefined();
   });
 });
 
