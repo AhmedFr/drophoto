@@ -8,6 +8,8 @@ async fn drive(c: &SqliteCatalog) -> i64 {
         role: DriveRole::Source,
         capacity: 100,
         free: 40,
+        volume_uuid: None,
+        volume_label: None,
     })
     .await
     .unwrap()

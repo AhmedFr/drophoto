@@ -23,6 +23,8 @@ pub fn run() {
             commands::volumes::list_volumes,
             commands::drives::register_drive,
             commands::drives::list_drives,
+            commands::drives::forget_drive,
+            commands::drives::count_drive_media,
             commands::media::query_media,
             commands::media::count_media,
             commands::media::get_media,

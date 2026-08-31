@@ -94,6 +94,8 @@ async fn register_drive(catalog: &Arc<dyn Catalog>, mount_path: &Path) -> dp_cor
             role: DriveRole::Source,
             capacity: 1_000_000,
             free: 500_000,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap()
@@ -689,6 +691,21 @@ impl Catalog for FailingCatalog {
 
     async fn set_drive_presence(&self, id: i64, mount_path: Option<&str>, free: Option<u64>) -> DpResult<()> {
         self.0.set_drive_presence(id, mount_path, free).await
+    }
+
+    async fn backfill_drive_volume_identity(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+    ) -> DpResult<()> {
+        self.0
+            .backfill_drive_volume_identity(id, volume_uuid, volume_label)
+            .await
+    }
+
+    async fn forget_drive(&self, id: i64) -> DpResult<()> {
+        self.0.forget_drive(id).await
     }
 
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64> {

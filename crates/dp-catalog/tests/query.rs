@@ -11,6 +11,8 @@ async fn seed() -> (SqliteCatalog, i64) {
             role: DriveRole::Archive,
             capacity: 1,
             free: 1,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap();

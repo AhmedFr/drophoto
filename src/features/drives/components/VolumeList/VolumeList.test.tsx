@@ -10,6 +10,7 @@ const volumes: Volume[] = [
     total_bytes: 1_000_000_000,
     free_bytes: 400_000_000,
     is_removable: false,
+    uuid: null,
   },
   {
     name: "Kodachrome",
@@ -17,6 +18,7 @@ const volumes: Volume[] = [
     total_bytes: 2_000_000_000,
     free_bytes: 1_500_000_000,
     is_removable: true,
+    uuid: null,
   },
 ];
 

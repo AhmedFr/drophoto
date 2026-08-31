@@ -1,4 +1,5 @@
 mod drives;
+mod forget_drive;
 mod fts;
 mod job_runs;
 mod media;
@@ -27,6 +28,25 @@ pub trait Catalog: Send + Sync {
     async fn register_drive(&self, d: NewDrive) -> DpResult<Drive>;
     async fn list_drives(&self) -> DpResult<Vec<Drive>>;
     async fn set_drive_presence(&self, id: i64, mount_path: Option<&str>, free: Option<u64>) -> DpResult<()>;
+    /// Fills `volume_uuid`/`volume_label` on drive `id` from a currently
+    /// matched volume's identity, but only where each is still `NULL` —
+    /// self-heals a legacy drive row the first time it's matched to a
+    /// mounted volume since either column existed. See
+    /// [`dp_core::Drive::volume_label`].
+    async fn backfill_drive_volume_identity(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+    ) -> DpResult<()>;
+    /// Permanently deletes drive `id` and everything that references it —
+    /// sources, media (and by extension tags/places/FTS), and its
+    /// organize/revert job history — in one transaction. Never touches
+    /// the filesystem: thumbnails are content-addressed and possibly
+    /// shared across drives, so they're left in the thumb store; the
+    /// user's photos/folders/sidecars on the drive itself are never
+    /// touched either. See [`crate::forget_drive`] for the exact cascade.
+    async fn forget_drive(&self, id: i64) -> DpResult<()>;
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64>;
     async fn list_media(&self, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>>;
     async fn query_media(&self, q: &MediaQuery) -> DpResult<Vec<(MediaRow, Drive)>>;
@@ -158,6 +178,19 @@ impl Catalog for SqliteCatalog {
 
     async fn set_drive_presence(&self, id: i64, mount_path: Option<&str>, free: Option<u64>) -> DpResult<()> {
         drives::set_drive_presence(&self.pool, id, mount_path, free).await
+    }
+
+    async fn backfill_drive_volume_identity(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+    ) -> DpResult<()> {
+        drives::backfill_drive_volume_identity(&self.pool, id, volume_uuid, volume_label).await
+    }
+
+    async fn forget_drive(&self, id: i64) -> DpResult<()> {
+        forget_drive::forget_drive(&self.pool, id).await
     }
 
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64> {

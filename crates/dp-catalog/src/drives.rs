@@ -40,6 +40,7 @@ pub(crate) fn row_to_drive_prefixed(row: &SqliteRow, prefix: &str) -> DpResult<D
         id: row.try_get(col("id").as_str()).map_err(db)?,
         name: row.try_get(col("name").as_str()).map_err(db)?,
         volume_uuid: row.try_get(col("volume_uuid").as_str()).map_err(db)?,
+        volume_label: row.try_get(col("volume_label").as_str()).map_err(db)?,
         mount_path,
         role: role_from_str(&role)?,
         capacity: capacity as u64,
@@ -65,10 +66,12 @@ async fn get_drive(pool: &SqlitePool, id: i64) -> DpResult<Drive> {
 pub(crate) async fn register_drive(pool: &SqlitePool, d: NewDrive) -> DpResult<Drive> {
     let now = Utc::now().to_rfc3339();
     let result = sqlx::query(
-        "INSERT INTO drives (name, volume_uuid, mount_path, role, capacity, free, last_seen_at) \
-         VALUES (?, NULL, ?, ?, ?, ?, ?)",
+        "INSERT INTO drives (name, volume_uuid, volume_label, mount_path, role, capacity, free, last_seen_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&d.name)
+    .bind(&d.volume_uuid)
+    .bind(&d.volume_label)
     .bind(&d.mount_path)
     .bind(role_to_str(d.role))
     .bind(d.capacity as i64)
@@ -78,6 +81,32 @@ pub(crate) async fn register_drive(pool: &SqlitePool, d: NewDrive) -> DpResult<D
     .await
     .map_err(db)?;
     get_drive(pool, result.last_insert_rowid()).await
+}
+
+/// Fills `volume_uuid`/`volume_label` on drive `id` from the volume it's
+/// currently matched to, but only where each is still `NULL` (`COALESCE`
+/// keeps whatever the row already has) — the presence watcher's
+/// self-healing backfill for a drive registered before either column
+/// existed, or a legacy drive whose earlier registration never captured
+/// them. Called on every presence-resolve tick for a matched drive; a
+/// no-op once both columns are already set.
+pub(crate) async fn backfill_drive_volume_identity(
+    pool: &SqlitePool,
+    id: i64,
+    volume_uuid: Option<&str>,
+    volume_label: Option<&str>,
+) -> DpResult<()> {
+    sqlx::query(
+        "UPDATE drives SET volume_uuid = COALESCE(volume_uuid, ?), \
+         volume_label = COALESCE(volume_label, ?) WHERE id = ?",
+    )
+    .bind(volume_uuid)
+    .bind(volume_label)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    Ok(())
 }
 
 pub(crate) async fn list_drives(pool: &SqlitePool) -> DpResult<Vec<Drive>> {

@@ -6,6 +6,7 @@ const onlineDrive: Drive = {
   id: 1,
   name: "Kodachrome",
   volume_uuid: null,
+  volume_label: null,
   mount_path: "/Volumes/Kodachrome",
   role: "archive",
   capacity: 2_000_000_000,

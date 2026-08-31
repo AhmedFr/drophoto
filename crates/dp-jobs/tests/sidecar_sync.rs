@@ -48,6 +48,8 @@ async fn register_drive(catalog: &Arc<dyn Catalog>, mount_path: &Path) -> Drive 
             role: DriveRole::Source,
             capacity: 1_000_000,
             free: 500_000,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap()

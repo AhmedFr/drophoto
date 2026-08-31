@@ -8,6 +8,13 @@ pub struct Volume {
     pub total_bytes: u64,
     pub free_bytes: u64,
     pub is_removable: bool,
+    /// The volume's Apple `VolumeUUID` (macOS only; `None` on every other
+    /// platform, and `None` on macOS if `diskutil` couldn't be read for
+    /// this mount) — the strongest identity signal `resolve_presence` has
+    /// for matching a reconnected drive back to its registered row,
+    /// stronger than the volume's display name (which the user can
+    /// rename) or its mount path (which can shift between reconnects).
+    pub uuid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Copy, Eq)]
@@ -22,6 +29,13 @@ pub struct Drive {
     pub id: i64,
     pub name: String,
     pub volume_uuid: Option<String>,
+    /// The mounted volume's own display name (`Volume::name`) as of the
+    /// last successful presence match — independent of `name`, which is
+    /// the user-chosen label shown in the UI and can differ from it (see
+    /// `dp_volumes::resolve_presence`). `None` until the drive has been
+    /// matched to a volume at least once (registration, or a later
+    /// presence-resolve self-heal for a legacy row).
+    pub volume_label: Option<String>,
     pub mount_path: Option<String>,
     pub role: DriveRole,
     pub capacity: u64,
@@ -37,6 +51,12 @@ pub struct NewDrive {
     pub role: DriveRole,
     pub capacity: u64,
     pub free: u64,
+    /// The volume's `VolumeUUID`/display name at registration time,
+    /// captured independently of `name` (the user-chosen label) — see
+    /// `Drive::volume_label`. `None` on non-macOS or when the volume
+    /// couldn't be read.
+    pub volume_uuid: Option<String>,
+    pub volume_label: Option<String>,
 }
 
 /// A configured scan root within a drive: `mount_path/rel_path` (or the

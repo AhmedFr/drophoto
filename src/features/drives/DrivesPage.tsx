@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { listVolumes } from "@/lib/api/volumes";
 import type { Volume } from "@/lib/api/volumes";
-import { listDrives, registerDrive } from "@/lib/api/drives";
+import { listDrives, registerDrive, forgetDrive, countDriveMedia } from "@/lib/api/drives";
 import type { Drive } from "@/lib/api/drives";
 import { startScan, cancelJob } from "@/lib/api/scan";
 import type { JobEvent } from "@/lib/api/scan";
@@ -13,6 +13,7 @@ import { VolumeList } from "./components/VolumeList";
 import { DriveCard } from "./components/DriveCard";
 import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
 import { SourcesDialog } from "./components/SourcesDialog";
+import { ForgetDriveDialog } from "./components/ForgetDriveDialog";
 import { useJobEvents } from "./hooks/useJobEvents";
 import { useSources } from "./hooks/useSources";
 
@@ -48,6 +49,7 @@ export function DrivesPage() {
   const drives = useQuery({ queryKey: ["drives"], queryFn: listDrives });
   const [pending, setPending] = useState<Volume | null>(null);
   const [sourcesDrive, setSourcesDrive] = useState<Drive | null>(null);
+  const [driveToForget, setDriveToForget] = useState<Drive | null>(null);
   const jobEvents = useJobEvents();
   const driveIds = useJobsStore((s) => s.driveIds);
   const { sourcesByDrive, isLoading: sourcesLoading } = useSources((drives.data ?? []).map((d) => d.id));
@@ -88,6 +90,25 @@ export function DrivesPage() {
     mutation.reset();
   };
 
+  const driveMediaCount = useQuery({
+    queryKey: ["driveMediaCount", driveToForget?.id],
+    queryFn: () => countDriveMedia(driveToForget?.id as number),
+    enabled: driveToForget != null,
+  });
+
+  const forgetMutation = useMutation({
+    mutationFn: forgetDrive,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["drives"] });
+      setDriveToForget(null);
+    },
+  });
+
+  const handleForgetDialogClose = () => {
+    setDriveToForget(null);
+    forgetMutation.reset();
+  };
+
   const registeredMountPaths = new Set(
     (drives.data ?? []).map((d) => d.mount_path).filter((p): p is string => p != null),
   );
@@ -120,6 +141,7 @@ export function DrivesPage() {
                   scanEvent={jobId ? jobEvents[jobId] : undefined}
                   onCancelScan={jobId ? () => cancelJob(jobId) : undefined}
                   onOpenSources={() => setSourcesDrive(d)}
+                  onForget={() => setDriveToForget(d)}
                 />
               );
             })}
@@ -143,6 +165,14 @@ export function DrivesPage() {
         onSubmit={(input) => mutation.mutate(input)}
       />
       <SourcesDialog drive={sourcesDrive} onClose={() => setSourcesDrive(null)} />
+      <ForgetDriveDialog
+        drive={driveToForget}
+        mediaCount={driveMediaCount.data ?? null}
+        forgetting={forgetMutation.isPending}
+        error={forgetMutation.isError ? (forgetMutation.error as Error).message : null}
+        onOpenChange={(open) => !open && handleForgetDialogClose()}
+        onConfirm={() => driveToForget && forgetMutation.mutate(driveToForget.id)}
+      />
     </div>
   );
 }

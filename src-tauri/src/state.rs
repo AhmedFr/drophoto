@@ -87,7 +87,7 @@ impl AppState {
         let geocoder: Arc<dyn Geocoder> = Arc::new(BundledGeocoder::load()?);
 
         Ok(Self {
-            volumes: Arc::new(SysinfoVolumes),
+            volumes: Arc::new(SysinfoVolumes::default()),
             catalog,
             strategy: default_strategy(hasher.clone()),
             hasher,

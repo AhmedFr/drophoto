@@ -63,6 +63,7 @@ mod tests {
             id: 1,
             name: "Kodachrome".into(),
             volume_uuid: None,
+            volume_label: None,
             mount_path: mount_path.map(String::from),
             role: DriveRole::Source,
             capacity: 100,

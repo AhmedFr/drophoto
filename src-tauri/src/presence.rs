@@ -42,20 +42,44 @@ async fn tick(app: &AppHandle) {
     let resolved = resolve_presence(&drives, &volumes);
     let mut changed = false;
 
-    for (id, mount_path, free) in resolved {
-        let Some(current) = drives.iter().find(|d| d.id == id) else {
+    for m in resolved {
+        let Some(current) = drives.iter().find(|d| d.id == m.drive_id) else {
             continue;
         };
-        let free_changed = matches!(free, Some(f) if f != current.free);
-        if current.mount_path == mount_path && !free_changed {
+
+        // Self-heal a legacy drive's identity columns the moment it's
+        // matched to a mounted volume — see
+        // `dp_catalog::backfill_drive_volume_identity`'s doc comment.
+        // `COALESCE` on the write side means this is a safe no-op once
+        // both columns are already set, so it's cheap to just always call
+        // it on a match rather than checking `current` first.
+        if m.mount_path.is_some() && (m.volume_uuid.is_some() || m.volume_label.is_some()) {
+            if let Err(e) = state
+                .catalog
+                .backfill_drive_volume_identity(
+                    m.drive_id,
+                    m.volume_uuid.as_deref(),
+                    m.volume_label.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    "presence watcher: failed to backfill volume identity for drive {}: {e}",
+                    m.drive_id
+                );
+            }
+        }
+
+        let free_changed = matches!(m.free_bytes, Some(f) if f != current.free);
+        if current.mount_path == m.mount_path && !free_changed {
             continue;
         }
         if let Err(e) = state
             .catalog
-            .set_drive_presence(id, mount_path.as_deref(), free)
+            .set_drive_presence(m.drive_id, m.mount_path.as_deref(), m.free_bytes)
             .await
         {
-            tracing::warn!("presence watcher: failed to update drive {id}: {e}");
+            tracing::warn!("presence watcher: failed to update drive {}: {e}", m.drive_id);
             continue;
         }
         changed = true;

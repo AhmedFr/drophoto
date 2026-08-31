@@ -1,5 +1,12 @@
+import { MoreVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { formatBytes } from "@/lib/format/bytes";
 import { ScanProgress } from "../ScanProgress";
 import type { DriveCardProps } from "./DriveCard.types";
@@ -12,6 +19,7 @@ export function DriveCard({
   onFullScan,
   onCancelScan,
   onOpenSources,
+  onForget,
   scanEvent,
 }: DriveCardProps) {
   const scanInProgress = scanEvent != null && scanEvent.kind !== "finished" && scanEvent.kind !== "cancelled";
@@ -64,6 +72,20 @@ export function DriveCard({
           >
             Full
           </Button>
+        )}
+        {onForget && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="xs" aria-label="Drive actions">
+                <MoreVertical className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem variant="destructive" onClick={onForget}>
+                Forget…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
       {scanEvent && <ScanProgress event={scanEvent} onCancel={onCancelScan ?? (() => {})} />}

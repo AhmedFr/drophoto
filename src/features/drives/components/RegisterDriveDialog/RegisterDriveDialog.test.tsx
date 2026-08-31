@@ -8,6 +8,7 @@ const volume: Volume = {
   total_bytes: 2_000_000_000,
   free_bytes: 1_500_000_000,
   is_removable: true,
+  uuid: null,
 };
 
 it("is closed when volume is null", () => {
@@ -42,7 +43,33 @@ it("submits with the typed name and default archive role", () => {
     role: "archive",
     capacity: 2_000_000_000,
     free: 1_500_000_000,
+    volume_uuid: null,
+    volume_label: null,
   });
+});
+
+// The root cause of the field-reported presence bug this task fixes: the
+// volume's own identity must be captured independently of whatever the
+// user types as the display name, so a later reconnect can still match
+// it even after the drive has been renamed in the UI.
+it("captures the volume's own uuid and name independently of an edited display name", () => {
+  const onSubmit = vi.fn();
+  render(
+    <RegisterDriveDialog
+      volume={{ ...volume, name: "Kodachrome", uuid: "uuid-123" }}
+      onClose={vi.fn()}
+      onSubmit={onSubmit}
+    />,
+  );
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "My Backup Drive" } });
+  fireEvent.click(screen.getByRole("button", { name: /register/i }));
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "My Backup Drive",
+      volume_uuid: "uuid-123",
+      volume_label: "Kodachrome",
+    }),
+  );
 });
 
 it("renders no role toggle", () => {

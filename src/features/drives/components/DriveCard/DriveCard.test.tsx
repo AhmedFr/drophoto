@@ -1,4 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import type { Drive } from "@/lib/api/drives";
 import type { JobEvent } from "@/lib/api/scan";
@@ -9,6 +10,7 @@ const baseDrive: Drive = {
   id: 1,
   name: "Kodachrome",
   volume_uuid: null,
+  volume_label: null,
   mount_path: "/Volumes/Kodachrome",
   role: "archive",
   capacity: 2_000_000_000,
@@ -212,4 +214,19 @@ it("disables the Full button when there are sources but none enabled, and switch
   const button = screen.getByRole("button", { name: "Full" });
   expect(button).toBeDisabled();
   expect(button).toHaveAttribute("title", "Choose sources first");
+});
+
+it("does not render the drive-actions menu when onForget is not given", () => {
+  render(<DriveCard drive={baseDrive} />);
+  expect(screen.queryByRole("button", { name: "Drive actions" })).not.toBeInTheDocument();
+});
+
+it("calls onForget when Forget… is chosen from the drive-actions menu, even offline", async () => {
+  const onForget = vi.fn();
+  render(<DriveCard drive={{ ...baseDrive, online: false, mount_path: null }} onForget={onForget} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Drive actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Forget…" }));
+
+  expect(onForget).toHaveBeenCalledTimes(1);
 });

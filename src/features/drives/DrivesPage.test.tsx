@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
@@ -44,6 +45,7 @@ const onlineDrive = {
   id: 1,
   name: "Kodachrome",
   volume_uuid: null,
+  volume_label: null,
   mount_path: "/Volumes/Kodachrome",
   role: "archive",
   capacity: 2_000_000_000,
@@ -73,6 +75,7 @@ it("renders registered drives and hides their volume from the mounted list", asy
           id: 1,
           name: "Kodachrome",
           volume_uuid: null,
+          volume_label: null,
           mount_path: "/Volumes/Kodachrome",
           role: "archive",
           capacity: 2_000_000_000,
@@ -90,6 +93,7 @@ it("renders registered drives and hides their volume from the mounted list", asy
           total_bytes: 2_000_000_000,
           free_bytes: 1_500_000_000,
           is_removable: true,
+          uuid: null,
         },
         {
           name: "Extra",
@@ -97,6 +101,7 @@ it("renders registered drives and hides their volume from the mounted list", asy
           total_bytes: 1_000_000_000,
           free_bytes: 500_000_000,
           is_removable: true,
+          uuid: null,
         },
       ];
     }
@@ -122,6 +127,7 @@ it("shows the mutation error message when registration fails", async () => {
           total_bytes: 2_000_000_000,
           free_bytes: 1_500_000_000,
           is_removable: true,
+          uuid: null,
         },
       ];
     }
@@ -149,6 +155,7 @@ it("clears the mutation error when the dialog is closed and reopened", async () 
           total_bytes: 2_000_000_000,
           free_bytes: 1_500_000_000,
           is_removable: true,
+          uuid: null,
         },
       ];
     }
@@ -182,6 +189,7 @@ it("registers a volume from the dialog with the expected input", async () => {
           total_bytes: 2_000_000_000,
           free_bytes: 1_500_000_000,
           is_removable: true,
+          uuid: null,
         },
       ];
     }
@@ -192,6 +200,7 @@ it("registers a volume from the dialog with the expected input", async () => {
         id: 1,
         name: "Kodachrome",
         volume_uuid: null,
+        volume_label: null,
         mount_path: "/Volumes/Kodachrome",
         role: "archive",
         capacity: 2_000_000_000,
@@ -215,6 +224,8 @@ it("registers a volume from the dialog with the expected input", async () => {
       role: "archive",
       capacity: 2_000_000_000,
       free: 1_500_000_000,
+      volume_uuid: null,
+      volume_label: "Kodachrome",
     }),
   );
 });
@@ -391,6 +402,7 @@ it("opens the Sources dialog automatically after registering a drive", async () 
           total_bytes: 2_000_000_000,
           free_bytes: 1_500_000_000,
           is_removable: true,
+          uuid: null,
         },
       ];
     }
@@ -422,4 +434,82 @@ it("opens the Sources dialog for a drive when its Sources… button is clicked",
   fireEvent.click(await screen.findByRole("button", { name: /sources/i }));
 
   expect(await screen.findByRole("dialog")).toHaveTextContent("Sources — Kodachrome");
+});
+
+it("opens the Forget dialog with the drive's media count from the drive-actions menu", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_drive_media") return 12;
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Forget…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent('Forget "Kodachrome"');
+  expect(await within(dialog).findByText(/Removes 12 photos/)).toBeInTheDocument();
+});
+
+it("forgets a drive and removes it from the list", async () => {
+  let forgetArgs: unknown;
+  let listCalls = 0;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") {
+      listCalls += 1;
+      return listCalls === 1 ? [onlineDrive] : [];
+    }
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_drive_media") return 3;
+    if (cmd === "forget_drive") {
+      forgetArgs = args;
+      return null;
+    }
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Forget…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Type FORGET to confirm"), {
+    target: { value: "FORGET" },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Forget drive" }));
+
+  await waitFor(() => expect(forgetArgs).toEqual({ driveId: 1 }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(await screen.findByText("No drives registered")).toBeInTheDocument();
+});
+
+it("shows the backend's refusal message when a job is running on the drive", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_drive_media") return 3;
+    if (cmd === "forget_drive") {
+      throw { code: "unsupported", message: "a scan job is running on this drive" };
+    }
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Forget…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Type FORGET to confirm"), {
+    target: { value: "FORGET" },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Forget drive" }));
+
+  expect(await within(dialog).findByText("a scan job is running on this drive")).toBeInTheDocument();
+  // The dialog stays open and the drive is not removed from the list.
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
 });

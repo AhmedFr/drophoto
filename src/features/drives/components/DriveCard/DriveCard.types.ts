@@ -22,5 +22,7 @@ export type DriveCardProps = {
   onFullScan?: () => void;
   onCancelScan?: () => void;
   onOpenSources?: () => void;
+  /** Opens the FORGET… confirmation dialog for this drive. Rendered as a dropdown menu action; the dropdown itself is only rendered when this is given. */
+  onForget?: () => void;
   scanEvent?: JobEvent;
 };

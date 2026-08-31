@@ -168,6 +168,7 @@ fn build_match_query(query: &str) -> Option<String> {
 }
 
 const SELECT_JOINED: &str = "SELECT m.*, d.id AS d_id, d.name AS d_name, d.volume_uuid AS d_volume_uuid, \
+     d.volume_label AS d_volume_label, \
      d.mount_path AS d_mount_path, d.role AS d_role, d.capacity AS d_capacity, d.free AS d_free, \
      d.last_seen_at AS d_last_seen_at \
      FROM media_fts JOIN media m ON m.id = media_fts.rowid JOIN drives d ON d.id = m.drive_id \

@@ -34,3 +34,16 @@ ALTER TABLE media ADD COLUMN mtime TEXT;
 -- and get re-imported on every single incremental scan forever. NULL
 -- falls back to comparing against `mtime` instead (first-scan behavior).
 ALTER TABLE media ADD COLUMN sidecar_mtime TEXT;
+
+-- The mounted VOLUME's own display name, captured independently of
+-- `drives.name` (the user-chosen label edited in the register-drive
+-- dialog) — see `dp_core::Drive::volume_label`. `resolve_presence`
+-- matches a reconnected drive against `volume_label` before falling back
+-- to the legacy `drives.name == volume.name` comparison, fixing the bug
+-- where a drive renamed at registration never matched its own volume
+-- again once reconnected. NULL for a drive registered before this
+-- column existed; self-healed the next time that row is matched to a
+-- mounted volume (see the presence watcher's backfill call) rather than
+-- backfilled here, since there's no mounted-volume state to backfill
+-- from at migration time.
+ALTER TABLE drives ADD COLUMN volume_label TEXT;
