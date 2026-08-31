@@ -1067,6 +1067,7 @@ dependencies = [
  "dp-places",
  "dp-thumbs",
  "futures",
+ "image",
  "libc",
  "serde",
  "tempfile",

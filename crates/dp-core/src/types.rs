@@ -488,6 +488,57 @@ pub struct MediaMetadata {
     pub lon: Option<f64>,
 }
 
+/// Longest edge (px) the "preview" thumbnail slot is rendered/regenerated
+/// at when the user picks "Compact" quality in Settings. See
+/// [`PREVIEW_EDGE_MAX`] for why the on-disk slot filename never changes.
+pub const PREVIEW_EDGE_COMPACT: u32 = 800;
+/// Same as [`PREVIEW_EDGE_COMPACT`], for "Balanced" quality.
+pub const PREVIEW_EDGE_BALANCED: u32 = 1200;
+/// Same as [`PREVIEW_EDGE_COMPACT`], for "Max" quality — also the app's
+/// default (and the value that was hard-coded before this setting
+/// existed), so an upgrading user's existing previews stay exactly as
+/// they were until they explicitly choose a lower quality.
+pub const PREVIEW_EDGE_MAX: u32 = 2000;
+/// Default `preview_edge` for a catalog that has never had the setting
+/// written — see `dp_catalog::Catalog::get_settings`.
+pub const DEFAULT_PREVIEW_EDGE: u32 = PREVIEW_EDGE_MAX;
+
+/// Persisted app-wide settings — currently just the preview quality, but
+/// the shape `Catalog::get_settings`/`get_settings` (the Tauri command)
+/// hands the frontend, so more keys can be added here without changing
+/// either signature.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct AppSettings {
+    /// The longest edge (px) the "preview" (`2000.webp`) thumbnail slot is
+    /// rendered/regenerated at — one of [`PREVIEW_EDGE_COMPACT`],
+    /// [`PREVIEW_EDGE_BALANCED`], or [`PREVIEW_EDGE_MAX`] in the current
+    /// UI, though nothing enforces that at this layer.
+    pub preview_edge: u32,
+}
+
+/// A breakdown of on-disk space the app itself is responsible for —
+/// returned by the `storage_usage` Tauri command for Settings' storage
+/// panel. Never covers the user's own photos/drives, only the app's own
+/// cache/catalog.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct StorageUsage {
+    /// Total size of every `400.webp` (thumbnail slot) file under the
+    /// thumbs root.
+    pub thumbs_400_bytes: u64,
+    /// Total size of every `2000.webp` (preview slot) file under the
+    /// thumbs root — see the module docs on why the filename stays
+    /// `2000.webp` regardless of the configured preview edge.
+    pub previews_bytes: u64,
+    /// Size of the catalog SQLite file plus its `-wal`/`-shm` siblings,
+    /// when present (WAL journal mode).
+    pub catalog_bytes: u64,
+    /// `thumbs_400_bytes + previews_bytes + catalog_bytes`.
+    pub total_bytes: u64,
+    /// Count of thumbnail files (both slots) counted toward the totals
+    /// above.
+    pub file_count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -18,23 +18,29 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
  * `started`/`progress`/`item_error` events are no-ops; only a job's own
  * terminal event should invalidate or toast, never a per-item one.
  *
- * A sidecar sync or geocode sweep (`job_id` prefixed `"sidecar-"` or
- * `"geocode-"`) is handled first and quite differently, because both are
- * background sweeps nobody explicitly asked for. A sidecar sync writes
- * `.xmp` files on disk, clears a flag no query here reads, and can import
- * externally-edited subjects into the catalog — so only the tag queries
- * are refreshed. A geocode sweep assigns `place_id`s — so only the place,
- * search, and media queries are refreshed. Either way, refetching the
- * whole gallery after every sweep would be pure churn and is skipped. Both
- * are silent on success, so neither interrupts whatever the user's
- * actually doing; a failure still surfaces as the usual error toast, the
- * one outcome worth knowing about unprompted.
+ * A sidecar sync, geocode sweep, or preview-regen sweep (`job_id` prefixed
+ * `"sidecar-"`, `"geocode-"`, or `"regen-"`) is handled first and quite
+ * differently, because all three are background sweeps nobody explicitly
+ * asked for in the moment (even the regen sweep, though the user did
+ * trigger it, is a long-running maintenance pass, not something with a
+ * result to review). A sidecar sync writes `.xmp` files on disk, clears a
+ * flag no query here reads, and can import externally-edited subjects
+ * into the catalog — so only the tag queries are refreshed. A geocode
+ * sweep assigns `place_id`s — so only the place, search, and media
+ * queries are refreshed. A regen sweep only ever rewrites cached preview
+ * bytes in place (same hash, same dimensions on disk elsewhere) — so only
+ * the storage-usage query (Settings' storage panel) is refreshed. Either
+ * way, refetching the whole gallery after every sweep would be pure churn
+ * and is skipped. All three are silent on success, so none interrupts
+ * whatever the user's actually doing; a failure still surfaces as the
+ * usual error toast, the one outcome worth knowing about unprompted.
  */
 export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label: string): void {
   if (event.kind !== "finished" && event.kind !== "cancelled") return;
 
   const isSidecarSync = event.job_id.startsWith("sidecar-");
   const isGeocode = event.job_id.startsWith("geocode-");
+  const isRegen = event.job_id.startsWith("regen-");
 
   if (isSidecarSync) {
     // The sweep can import externally-added subjects into the catalog
@@ -50,6 +56,11 @@ export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label
     queryClient.invalidateQueries({ queryKey: ["places"] });
     queryClient.invalidateQueries({ queryKey: ["search"] });
     queryClient.invalidateQueries({ queryKey: ["media"] });
+    if (event.failed === 0) return;
+  } else if (isRegen) {
+    // Only cached preview bytes on disk changed — nothing the gallery,
+    // tag, or place queries read.
+    queryClient.invalidateQueries({ queryKey: ["storage-usage"] });
     if (event.failed === 0) return;
   } else {
     for (const queryKey of INVALIDATE_KEYS) {

@@ -43,6 +43,12 @@ pub struct AppState {
     /// [`AppState::start_organize`] checks them against
     /// [`JobRunner::is_running`].
     active_jobs: Mutex<HashMap<(String, i64), String>>,
+    /// The app's own data directory (`tauri::path::BaseDirectory::AppData`)
+    /// — where `catalog.db` (plus its `-wal`/`-shm` siblings) and the
+    /// `thumbs/` directory live. Resolved once at startup and reused by
+    /// `storage_usage` and `reset_app_data`, rather than re-querying
+    /// `AppHandle::path()` on every call.
+    pub app_data_dir: PathBuf,
 }
 
 impl AppState {
@@ -93,6 +99,7 @@ impl AppState {
             runner,
             home,
             active_jobs: Mutex::new(HashMap::new()),
+            app_data_dir: dir,
         })
     }
 
@@ -150,6 +157,21 @@ impl AppState {
     /// their own real drive ids and never collide with `0`.
     pub fn start_geocode(&self, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> DpResult<String> {
         self.start_job("geocode", 0, make_job)
+    }
+
+    /// Starts the preview-regen sweep, unless one is already running — in
+    /// which case its id is returned instead of starting a duplicate.
+    ///
+    /// Same sentinel-`drive_id`-`0` convention as [`Self::start_geocode`]
+    /// (see its doc comment): a [`dp_jobs::RegenJob`] is GLOBAL, so it's
+    /// tracked under a `"regen"` bucket at drive id `0` rather than a real
+    /// drive. That also means a regen sweep and a geocode sweep block each
+    /// other (both occupy drive id `0`, under different kinds) — an
+    /// acceptable trade rather than a deliberate one: it keeps at most one
+    /// global background job running at a time, same as every per-drive
+    /// job already only allows one job per drive.
+    pub fn start_regen(&self, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> DpResult<String> {
+        self.start_job("regen", 0, make_job)
     }
 
     /// Starts a revert job for `drive_id`, admitted under the exact same

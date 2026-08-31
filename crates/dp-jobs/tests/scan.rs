@@ -7,6 +7,7 @@ use std::time::Duration;
 use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{
     DpResult, Drive, DriveRole, MediaKind, MediaRow, NewDrive, NewMedia, NewSource, ScanIndexEntry, Source,
+    PREVIEW_EDGE_MAX,
 };
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
@@ -82,6 +83,7 @@ fn default_deps(catalog: Arc<dyn Catalog>, store: Arc<ThumbStore>) -> ScanDeps {
         thumbs: Arc::new(ThumbChain::default_chain()),
         store,
         sidecars: Arc::new(ExiftoolSidecars::from_path()),
+        preview_edge: PREVIEW_EDGE_MAX,
         home: None,
     }
 }
@@ -317,6 +319,46 @@ async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     assert_eq!(png_before.len(), png_after.len());
     assert_eq!(jpg_before.modified().unwrap(), jpg_after.modified().unwrap());
     assert_eq!(png_before.modified().unwrap(), png_after.modified().unwrap());
+}
+
+/// `ScanDeps::preview_edge` parametrizes only the `2000.webp` preview
+/// slot's *rendered* pixel edge — the `400.webp` thumb slot always
+/// renders at 400px regardless. Both fixtures are 640x480, so a
+/// `preview_edge` of 300 (below both the thumb's fixed 400px and the
+/// source's own 640px) makes the difference unambiguous: the preview
+/// slot's decoded longest edge must be 300, while the thumb slot's stays
+/// 400 — and both are still written under their fixed slot filenames.
+#[tokio::test]
+async fn scan_renders_the_preview_slot_at_the_configured_edge_leaving_the_thumb_slot_fixed() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Test Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = ScanDeps {
+        preview_edge: 300,
+        ..default_deps(catalog.clone(), store.clone())
+    };
+
+    let (_events, terminal) = run_scan(drive, vec![src], deps, no_index()).await;
+    assert!(matches!(terminal, JobEvent::Finished { failed: 0, .. }));
+
+    let jpg_hash = Blake3Hasher.hash_file(&fx("sample.jpg")).await.unwrap();
+
+    let thumb = image::open(store.path(&jpg_hash, 400)).unwrap().to_rgb8();
+    assert_eq!(thumb.width().max(thumb.height()), 400);
+
+    let preview = image::open(store.path(&jpg_hash, 2000)).unwrap().to_rgb8();
+    assert_eq!(preview.width().max(preview.height()), 300);
 }
 
 /// `JobRunner::with_recorder`'s scan-specific counters: `bytes_read` must

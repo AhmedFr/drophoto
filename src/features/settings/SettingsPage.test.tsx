@@ -1,7 +1,111 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { mockIPC } from "@tauri-apps/api/mocks";
+import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { SettingsPage } from "./SettingsPage";
 
-it("renders the Settings header", () => {
-  render(<SettingsPage />);
-  expect(screen.getByRole("heading")).toHaveTextContent("SETTINGS");
+beforeEach(() => {
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
+});
+
+function renderPage() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <SettingsPage />
+    </QueryClientProvider>,
+  );
+}
+
+const settings = { preview_edge: 2000 };
+const usage = {
+  thumbs_400_bytes: 1_000_000,
+  previews_bytes: 8_000_000,
+  catalog_bytes: 500_000,
+  total_bytes: 9_500_000,
+  file_count: 42,
+};
+
+function mockDefaults() {
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return settings;
+    if (cmd === "storage_usage") return usage;
+    return undefined;
+  });
+}
+
+it("renders the Settings header", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByRole("heading")).toHaveTextContent("SETTINGS");
+});
+
+it("renders the storage breakdown once it loads", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByText("Previews")).toBeInTheDocument();
+  expect(screen.getByText("977 KB")).toBeInTheDocument();
+});
+
+it("renders the quality picker pre-selected to the current setting", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByRole("radio", { name: /Max/ })).toBeChecked();
+});
+
+it("renders the danger zone with the reset button", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByRole("button", { name: "Reset app data…" })).toBeInTheDocument();
+});
+
+it("applies a lower quality and offers to regenerate previews", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return settings;
+    if (cmd === "storage_usage") return usage;
+    if (cmd === "set_preview_quality") return true;
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("radio", { name: /Compact/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+  expect(await screen.findByRole("button", { name: "Regenerate previews" })).toBeInTheDocument();
+});
+
+it("starts a regen sweep when the regenerate-previews button is clicked", async () => {
+  const startRegen = vi.fn().mockReturnValue("regen-0");
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return settings;
+    if (cmd === "storage_usage") return usage;
+    if (cmd === "set_preview_quality") return true;
+    if (cmd === "start_regen_previews") return startRegen();
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("radio", { name: /Compact/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Regenerate previews" }));
+
+  expect(startRegen).toHaveBeenCalledTimes(1);
+});
+
+it("triggers reset_app_data once the danger-zone dialog is confirmed", async () => {
+  const resetAppData = vi.fn().mockReturnValue(undefined);
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return settings;
+    if (cmd === "storage_usage") return usage;
+    if (cmd === "reset_app_data") return resetAppData();
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Reset app data…" }));
+  await userEvent.type(screen.getByLabelText("Type RESET to confirm"), "RESET");
+  await userEvent.click(screen.getByRole("button", { name: "Reset app data" }));
+
+  expect(resetAppData).toHaveBeenCalledTimes(1);
 });

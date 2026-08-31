@@ -6,6 +6,7 @@ mod organize;
 mod organize_jobs;
 mod places;
 mod query;
+mod settings;
 mod sources;
 mod sqlite;
 mod tags;
@@ -13,8 +14,8 @@ mod tags;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dp_core::{
-    DpResult, Drive, JobRunRow, MediaQuery, MediaRow, NewDrive, NewJobRun, NewMedia, NewPlace, NewSource,
-    OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, ScanIndexEntry, Source, Tag,
+    AppSettings, DpResult, Drive, JobRunRow, MediaQuery, MediaRow, NewDrive, NewJobRun, NewMedia, NewPlace,
+    NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, ScanIndexEntry, Source, Tag,
     UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
@@ -136,6 +137,13 @@ pub trait Catalog: Send + Sync {
     /// The most recent `limit` job runs, newest first — for the
     /// dashboard's "LAST RUNS" card.
     async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<JobRunRow>>;
+    /// Current app-wide settings, falling back to defaults for any key
+    /// never written — see [`dp_core::DEFAULT_PREVIEW_EDGE`].
+    async fn get_settings(&self) -> DpResult<AppSettings>;
+    /// Sets the preview-quality edge (px) — see
+    /// [`dp_core::AppSettings::preview_edge`]. Does not itself trigger a
+    /// regen; that's the caller's job (see `start_regen_previews`).
+    async fn set_preview_edge(&self, edge: u32) -> DpResult<()>;
 }
 
 #[async_trait]
@@ -357,5 +365,13 @@ impl Catalog for SqliteCatalog {
 
     async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<JobRunRow>> {
         job_runs::list_job_runs(&self.pool, limit).await
+    }
+
+    async fn get_settings(&self) -> DpResult<AppSettings> {
+        settings::get_settings(&self.pool).await
+    }
+
+    async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
+        settings::set_preview_edge(&self.pool, edge).await
     }
 }

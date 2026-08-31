@@ -10,7 +10,7 @@ use dp_core::denylist::is_denied_path;
 use dp_core::{DpError, DpResult, Drive, MediaKind, MediaMetadata, NewMedia, ScanIndexEntry, Source};
 use dp_hash::Hasher;
 use dp_metadata::{sidecar_path, MetadataProvider, Sidecars};
-use dp_thumbs::{ThumbChain, ThumbStore, THUMB_SIZES};
+use dp_thumbs::{render_edge_for_slot, ThumbChain, ThumbStore, THUMB_SIZES};
 use futures::stream::{self, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -46,6 +46,12 @@ pub struct ScanDeps {
     /// After a file is upserted, its sidecar (if any) is read and its
     /// subjects imported as catalog tags — see [`import_sidecar_tags`].
     pub sidecars: Arc<dyn Sidecars>,
+    /// The pixel edge (px) to render into the "preview" thumbnail slot —
+    /// the current `preview_edge` setting (`Catalog::get_settings`), one
+    /// of `800`/`1200`/`2000` in the current UI. Only the preview slot is
+    /// parametrized by this — the 400px thumb slot always renders at
+    /// 400px regardless — see [`dp_thumbs::render_edge_for_slot`].
+    pub preview_edge: u32,
     /// The current user's home directory (`$HOME`), used for the
     /// deny-list's `home/Library` rule (see
     /// [`dp_core::denylist::is_denied_path`]). `None` when it couldn't be
@@ -592,7 +598,8 @@ async fn process_file(
             any_thumb_ok = true;
             continue;
         }
-        let render_result = deps.thumbs.render(&file.path, file.ext, size_px).await;
+        let render_edge = render_edge_for_slot(size_px, deps.preview_edge);
+        let render_result = deps.thumbs.render(&file.path, file.ext, render_edge).await;
         match render_result {
             Ok(img) => {
                 any_thumb_ok = true;

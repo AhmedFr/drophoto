@@ -901,6 +901,14 @@ impl Catalog for FailingCatalog {
     async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<dp_core::JobRunRow>> {
         self.0.list_job_runs(limit).await
     }
+
+    async fn get_settings(&self) -> DpResult<dp_core::AppSettings> {
+        self.0.get_settings().await
+    }
+
+    async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
+        self.0.set_preview_edge(edge).await
+    }
 }
 
 #[tokio::test]

@@ -51,6 +51,11 @@ pub fn run() {
             commands::places::search_cities,
             commands::places::set_media_place,
             commands::metrics::list_job_runs,
+            commands::settings::get_settings,
+            commands::settings::set_preview_quality,
+            commands::settings::storage_usage,
+            commands::settings::start_regen_previews,
+            commands::settings::reset_app_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

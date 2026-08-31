@@ -57,6 +57,7 @@ describe("jobKindFromId", () => {
     ["revert-3", "Revert"],
     ["sidecar-0", "Sidecar sync"],
     ["geocode-0", "Geocode"],
+    ["regen-0", "Regenerate previews"],
     ["mystery-1", "Job"],
   ])("derives %s -> %s", (jobId, expected) => {
     expect(jobKindFromId(jobId)).toBe(expected);

@@ -52,6 +52,7 @@ pub async fn start_scan(
             .collect()
     };
 
+    let preview_edge = state.catalog.get_settings().await?.preview_edge;
     let deps = ScanDeps {
         catalog: state.catalog.clone(),
         hasher: state.hasher.clone(),
@@ -59,6 +60,7 @@ pub async fn start_scan(
         thumbs: state.thumbs.clone(),
         store: state.store.clone(),
         sidecars: state.sidecars.clone(),
+        preview_edge,
         home: state.home.clone(),
     };
 
