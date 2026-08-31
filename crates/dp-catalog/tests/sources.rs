@@ -8,6 +8,8 @@ async fn drive(c: &SqliteCatalog) -> i64 {
         role: DriveRole::Source,
         capacity: 100,
         free: 40,
+        volume_uuid: None,
+        volume_label: None,
     })
     .await
     .unwrap()
@@ -35,6 +37,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str, source_id: Option<i64>) -> NewM
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id,
     }
 }

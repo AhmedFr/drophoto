@@ -8,6 +8,13 @@ pub struct Volume {
     pub total_bytes: u64,
     pub free_bytes: u64,
     pub is_removable: bool,
+    /// The volume's Apple `VolumeUUID` (macOS only; `None` on every other
+    /// platform, and `None` on macOS if `diskutil` couldn't be read for
+    /// this mount) — the strongest identity signal `resolve_presence` has
+    /// for matching a reconnected drive back to its registered row,
+    /// stronger than the volume's display name (which the user can
+    /// rename) or its mount path (which can shift between reconnects).
+    pub uuid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Copy, Eq)]
@@ -22,6 +29,13 @@ pub struct Drive {
     pub id: i64,
     pub name: String,
     pub volume_uuid: Option<String>,
+    /// The mounted volume's own display name (`Volume::name`) as of the
+    /// last successful presence match — independent of `name`, which is
+    /// the user-chosen label shown in the UI and can differ from it (see
+    /// `dp_volumes::resolve_presence`). `None` until the drive has been
+    /// matched to a volume at least once (registration, or a later
+    /// presence-resolve self-heal for a legacy row).
+    pub volume_label: Option<String>,
     pub mount_path: Option<String>,
     pub role: DriveRole,
     pub capacity: u64,
@@ -37,6 +51,12 @@ pub struct NewDrive {
     pub role: DriveRole,
     pub capacity: u64,
     pub free: u64,
+    /// The volume's `VolumeUUID`/display name at registration time,
+    /// captured independently of `name` (the user-chosen label) — see
+    /// `Drive::volume_label`. `None` on non-macOS or when the volume
+    /// couldn't be read.
+    pub volume_uuid: Option<String>,
+    pub volume_label: Option<String>,
 }
 
 /// A configured scan root within a drive: `mount_path/rel_path` (or the
@@ -184,6 +204,12 @@ pub struct MediaRow {
     /// manual pick). `None` here also means "not yet geocoded"; see
     /// [`Catalog::list_ungeocoded`] for how that state is detected.
     pub place_id: Option<i64>,
+    /// The source file's on-disk modification time, as captured by the
+    /// scan that last wrote this row (`symlink_metadata().modified()`).
+    /// `None` for rows scanned before this field existed. Compared at
+    /// second precision against the walked file's live mtime to decide
+    /// whether a rescan can skip it — see `dp_jobs::ScanJob`.
+    pub mtime: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -208,6 +234,38 @@ pub struct NewMedia {
     pub lon: Option<f64>,
     pub organized_at: Option<DateTime<Utc>>,
     pub source_id: Option<i64>,
+    /// The source file's on-disk modification time — see
+    /// [`MediaRow::mtime`].
+    pub mtime: Option<DateTime<Utc>>,
+}
+
+/// One media row's identity/fingerprint for the incremental-rescan skip
+/// check — everything `dp_jobs::ScanJob` needs to decide, before hashing a
+/// walked file, whether it's unchanged since the last scan. Returned by
+/// `Catalog::list_scan_index`, one query for a whole drive, loaded into a
+/// `HashMap<rel_path, ScanIndexEntry>` before the walk starts.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ScanIndexEntry {
+    pub id: i64,
+    pub rel_path: String,
+    pub size: u64,
+    pub mtime: Option<DateTime<Utc>>,
+    /// Needed for the skip rule's thumb-existence checks
+    /// (`store.exists(hash, 400)` / `store.exists(hash, 2000)`).
+    pub hash: String,
+    /// The [`Source`] this row was last attributed to, if any — `None` for
+    /// legacy rows scanned before sources existed. The skip rule refuses
+    /// to skip a row whose `source_id` is `None` or differs from the
+    /// walked file's owning source, so a re-scan can attribute (or
+    /// re-attribute) it instead of freezing it out forever.
+    pub source_id: Option<i64>,
+    /// The XMP sidecar's on-disk mtime as of the last time this row's
+    /// sidecar was actually read (imported or looked at) — set via
+    /// `Catalog::set_sidecar_mtime`. `None` means "never recorded" (a
+    /// fresh row, or one that predates this column); the skip rule then
+    /// falls back to comparing against [`Self::mtime`] instead, matching
+    /// pre-existing first-scan behavior.
+    pub sidecar_mtime: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -267,6 +325,54 @@ pub struct OrganizeJobRow {
     /// a `LEFT JOIN` on `reverts_job_id` — never stored on the row
     /// itself, and always `None` for a `revert` job.
     pub reverted_by_job_id: Option<i64>,
+}
+
+/// A finished job's run metrics, as recorded by `dp_jobs::JobRunner` via
+/// `Catalog::record_job_run` on every terminal path (done/cancelled/failed)
+/// of every job kind — see `dp-catalog`'s `job_runs` table.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NewJobRun {
+    /// The runner-assigned job id, e.g. `"scan-3"`.
+    pub job_id: String,
+    /// `job_id`'s prefix before its first `-` (`"scan"`, `"organize"`,
+    /// `"revert"`, `"sidecar"`, `"geocode"`, `"regen"`).
+    pub kind: String,
+    /// `None` for a global job (geocode, regen); `Some` for every per-drive job.
+    pub drive_id: Option<i64>,
+    /// `done` | `cancelled` | `failed` — `failed` only for a job-level
+    /// failure (the `Job::run` future itself returned `Err` or panicked);
+    /// item-level failures are folded into `failed` below instead.
+    pub status: String,
+    pub ok: u64,
+    pub failed: u64,
+    pub skipped: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    /// Process-wide `rusage` (user + sys) delta across the job's run,
+    /// milliseconds — "app CPU during this job, including concurrent
+    /// jobs", not an isolated per-job measurement.
+    pub cpu_ms: u64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+}
+
+/// A [`NewJobRun`] as stored, with its assigned id — what
+/// `Catalog::list_job_runs` returns.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct JobRunRow {
+    pub id: i64,
+    pub job_id: String,
+    pub kind: String,
+    pub drive_id: Option<i64>,
+    pub status: String,
+    pub ok: u64,
+    pub failed: u64,
+    pub skipped: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub cpu_ms: u64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -400,6 +506,57 @@ pub struct MediaMetadata {
     pub focal_mm: Option<f64>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
+}
+
+/// Longest edge (px) the "preview" thumbnail slot is rendered/regenerated
+/// at when the user picks "Compact" quality in Settings. See
+/// [`PREVIEW_EDGE_MAX`] for why the on-disk slot filename never changes.
+pub const PREVIEW_EDGE_COMPACT: u32 = 800;
+/// Same as [`PREVIEW_EDGE_COMPACT`], for "Balanced" quality.
+pub const PREVIEW_EDGE_BALANCED: u32 = 1200;
+/// Same as [`PREVIEW_EDGE_COMPACT`], for "Max" quality — also the app's
+/// default (and the value that was hard-coded before this setting
+/// existed), so an upgrading user's existing previews stay exactly as
+/// they were until they explicitly choose a lower quality.
+pub const PREVIEW_EDGE_MAX: u32 = 2000;
+/// Default `preview_edge` for a catalog that has never had the setting
+/// written — see `dp_catalog::Catalog::get_settings`.
+pub const DEFAULT_PREVIEW_EDGE: u32 = PREVIEW_EDGE_MAX;
+
+/// Persisted app-wide settings — currently just the preview quality, but
+/// the shape `Catalog::get_settings`/`get_settings` (the Tauri command)
+/// hands the frontend, so more keys can be added here without changing
+/// either signature.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct AppSettings {
+    /// The longest edge (px) the "preview" (`2000.webp`) thumbnail slot is
+    /// rendered/regenerated at — one of [`PREVIEW_EDGE_COMPACT`],
+    /// [`PREVIEW_EDGE_BALANCED`], or [`PREVIEW_EDGE_MAX`] in the current
+    /// UI, though nothing enforces that at this layer.
+    pub preview_edge: u32,
+}
+
+/// A breakdown of on-disk space the app itself is responsible for —
+/// returned by the `storage_usage` Tauri command for Settings' storage
+/// panel. Never covers the user's own photos/drives, only the app's own
+/// cache/catalog.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct StorageUsage {
+    /// Total size of every `400.webp` (thumbnail slot) file under the
+    /// thumbs root.
+    pub thumbs_400_bytes: u64,
+    /// Total size of every `2000.webp` (preview slot) file under the
+    /// thumbs root — see the module docs on why the filename stays
+    /// `2000.webp` regardless of the configured preview edge.
+    pub previews_bytes: u64,
+    /// Size of the catalog SQLite file plus its `-wal`/`-shm` siblings,
+    /// when present (WAL journal mode).
+    pub catalog_bytes: u64,
+    /// `thumbs_400_bytes + previews_bytes + catalog_bytes`.
+    pub total_bytes: u64,
+    /// Count of thumbnail files (both slots) counted toward the totals
+    /// above.
+    pub file_count: u64,
 }
 
 #[cfg(test)]

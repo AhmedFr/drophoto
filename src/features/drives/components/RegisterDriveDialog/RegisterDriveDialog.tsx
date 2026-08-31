@@ -34,6 +34,12 @@ function RegisterDriveForm({ volume, error, onSubmit }: FormProps) {
       role: "archive",
       capacity: volume.total_bytes,
       free: volume.free_bytes,
+      // Captured independently of `name` (which the user may have just
+      // edited above) — see `Drive.volume_label`'s doc comment. This is
+      // what lets a later reconnect match the volume even after the
+      // drive has been renamed in the UI.
+      volume_uuid: volume.uuid,
+      volume_label: volume.name || null,
     });
   };
 

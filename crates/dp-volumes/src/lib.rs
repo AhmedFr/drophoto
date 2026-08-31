@@ -1,8 +1,8 @@
 mod presence;
 mod sysinfo_volumes;
 use dp_core::{DpResult, Volume};
-pub use presence::resolve_presence;
-pub use sysinfo_volumes::SysinfoVolumes;
+pub use presence::{resolve_presence, PresenceMatch};
+pub use sysinfo_volumes::{DiskIdentity, DiskutilIdentity, SysinfoVolumes};
 
 #[async_trait::async_trait]
 pub trait VolumeProvider: Send + Sync {
@@ -15,7 +15,7 @@ mod tests {
 
     #[tokio::test]
     async fn lists_root_volume() {
-        let v = SysinfoVolumes.list().await.unwrap();
+        let v = SysinfoVolumes::default().list().await.unwrap();
         assert!(v.iter().any(|x| x.mount_path == "/"), "expected / in {v:?}");
         assert!(v.iter().all(|x| x.total_bytes >= x.free_bytes));
     }

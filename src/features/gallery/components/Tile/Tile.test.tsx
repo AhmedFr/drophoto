@@ -34,6 +34,7 @@ function item(overrides: Partial<MediaItem> = {}): MediaItem {
       organized_at: null,
       source_id: null,
       place_id: null,
+      mtime: null,
     },
     thumb_path: "/tmp/thumbs/hash1/400.webp",
     preview_path: "/tmp/thumbs/hash1/2000.webp",

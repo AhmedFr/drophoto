@@ -30,6 +30,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str, lat: Option<f64>, lon: Option<f
         lat,
         lon,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -42,6 +43,8 @@ async fn drive(catalog: &Arc<dyn Catalog>) -> i64 {
             role: DriveRole::Archive,
             capacity: 100,
             free: 40,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap()

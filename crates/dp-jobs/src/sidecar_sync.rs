@@ -47,6 +47,11 @@ pub struct SidecarSyncJob {
     deps: SidecarSyncDeps,
     ok: AtomicU64,
     failed: AtomicU64,
+    /// Total bytes written to sidecar files across this run — the size of
+    /// each `.xmp` on disk right after a successful
+    /// [`Sidecars::write_subjects`] call, summed. See
+    /// [`Self::sync_row`].
+    bytes_written: AtomicU64,
 }
 
 impl SidecarSyncJob {
@@ -57,6 +62,7 @@ impl SidecarSyncJob {
             deps,
             ok: AtomicU64::new(0),
             failed: AtomicU64::new(0),
+            bytes_written: AtomicU64::new(0),
         }
     }
 }
@@ -65,6 +71,10 @@ impl SidecarSyncJob {
 impl Job for SidecarSyncJob {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn drive_id(&self) -> Option<i64> {
+        Some(self.drive.id)
     }
 
     /// Same panic-safety rationale as [`crate::RevertJob::run`]: a panic
@@ -158,6 +168,9 @@ impl SidecarSyncJob {
             failed,
             skipped: 0,
             cancelled,
+            // Sidecar sync only writes, never reads a file's bytes.
+            bytes_read: 0,
+            bytes_written: self.bytes_written.load(Ordering::Relaxed),
         })
     }
 
@@ -221,6 +234,29 @@ impl SidecarSyncJob {
         if let Err(e) = self.deps.sidecars.write_subjects(&abs, &names).await {
             self.record_failed(ctx, row, error_code(&e), e.to_string()).await;
             return;
+        }
+
+        // `Sidecars::write_subjects` reports success/failure only, not
+        // the bytes it wrote — the sidecar's size is read back off disk
+        // right after the write instead. A failure to stat it (rare: the
+        // write above just succeeded) simply skips the tally rather than
+        // failing an otherwise-successful sync.
+        //
+        // This write is also exactly the case that makes
+        // `ScanIndexEntry::sidecar_mtime` matter: it's this job that
+        // creates/touches the `.xmp`, which would otherwise look
+        // perpetually "newer" than a media row that never recorded a
+        // baseline — see `dp_jobs::scan::maybe_import_newer_sidecar` —
+        // and get a wasted exiftool re-read on every single incremental
+        // scan forever. Recording the mtime here is what lets that skip
+        // path converge instead.
+        if let Ok(meta) = tokio::fs::metadata(&sidecar).await {
+            self.bytes_written.fetch_add(meta.len(), Ordering::Relaxed);
+            if let Ok(mtime) = meta.modified() {
+                if let Err(e) = self.deps.catalog.set_sidecar_mtime(row.id, mtime.into()).await {
+                    tracing::warn!(media_id = row.id, error = %e, "failed to record sidecar mtime after sync write");
+                }
+            }
         }
 
         self.finish_row(ctx, row, &names).await;

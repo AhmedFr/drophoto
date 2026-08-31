@@ -12,6 +12,7 @@ it("returns volumes from the backend", async () => {
             total_bytes: 10,
             free_bytes: 5,
             is_removable: true,
+            uuid: null,
           },
         ]
       : undefined,

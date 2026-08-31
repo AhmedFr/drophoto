@@ -15,7 +15,7 @@ beforeEach(() => {
   // "job" Tauri event itself — in the real app `JobEventsBridge` applies
   // those events, so tests seed the store directly instead of mocking
   // `listen`.
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
 });
 
 /** Seeds job events straight into the global jobs store, returning an `emit` helper. */

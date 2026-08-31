@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use dp_catalog::Catalog;
 use dp_core::denylist::is_denied_path;
-use dp_core::{DpError, DpResult, Drive, MediaKind, MediaMetadata, NewMedia, Source};
+use dp_core::{DpError, DpResult, Drive, MediaKind, MediaMetadata, NewMedia, ScanIndexEntry, Source};
 use dp_hash::Hasher;
-use dp_metadata::{MetadataProvider, Sidecars};
-use dp_thumbs::{ThumbChain, ThumbStore, THUMB_SIZES};
+use dp_metadata::{sidecar_path, MetadataProvider, Sidecars};
+use dp_thumbs::{render_edge_for_slot, ThumbChain, ThumbStore, THUMB_SIZES};
 use futures::stream::{self, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +46,12 @@ pub struct ScanDeps {
     /// After a file is upserted, its sidecar (if any) is read and its
     /// subjects imported as catalog tags — see [`import_sidecar_tags`].
     pub sidecars: Arc<dyn Sidecars>,
+    /// The pixel edge (px) to render into the "preview" thumbnail slot —
+    /// the current `preview_edge` setting (`Catalog::get_settings`), one
+    /// of `800`/`1200`/`2000` in the current UI. Only the preview slot is
+    /// parametrized by this — the 400px thumb slot always renders at
+    /// 400px regardless — see [`dp_thumbs::render_edge_for_slot`].
+    pub preview_edge: u32,
     /// The current user's home directory (`$HOME`), used for the
     /// deny-list's `home/Library` rule (see
     /// [`dp_core::denylist::is_denied_path`]). `None` when it couldn't be
@@ -56,21 +64,64 @@ pub struct ScanDeps {
 /// A [`Job`] that walks each of a drive's *enabled* [`Source`]s, hashing,
 /// thumbnailing, and reading metadata for every media file found, then
 /// upserting it into the catalog with that source's id attached.
+///
+/// `skip_index` is the incremental-rescan index: every already-cataloged
+/// row on this drive, keyed by `rel_path` (see [`ScanIndexEntry`]). A
+/// walked file whose stat size/mtime match its index entry, and whose
+/// thumbnails already exist on disk, is skipped entirely — no hashing, no
+/// exiftool, no thumbnail render, no catalog upsert (see
+/// [`process_file`]). Pass an empty map for a full rescan (`start_scan`'s
+/// `full: true`), which makes every file look unindexed and so always
+/// falls through to full processing.
+///
+/// `full` (set via [`Self::with_full`], default `false`) is a *separate*
+/// knob from an empty `skip_index`: it controls whether the per-thumbnail
+/// existence check inside [`process_file`] is honored. An incremental scan
+/// (`full: false`) still renders/writes a thumbnail slot that's missing —
+/// e.g. because `skip_index` was empty, or a file's row-level skip check
+/// failed — but leaves an *existing* slot alone regardless of what pixel
+/// edge it actually holds. A full scan (`full: true`) skips that
+/// existence check entirely, so every already-cataloged file that reaches
+/// full processing has both thumbnail slots unconditionally re-rendered
+/// and rewritten at the currently configured edge — this is what makes
+/// "raise the preview quality, then run a full rescan" actually recover
+/// the higher-resolution previews after a downscale, rather than leaving
+/// the smaller cached file in place forever because it merely *exists*.
 pub struct ScanJob {
     id: String,
     drive: Drive,
     sources: Vec<Source>,
     deps: ScanDeps,
+    skip_index: HashMap<String, ScanIndexEntry>,
+    full: bool,
 }
 
 impl ScanJob {
-    pub fn new(id: String, drive: Drive, sources: Vec<Source>, deps: ScanDeps) -> Self {
+    pub fn new(
+        id: String,
+        drive: Drive,
+        sources: Vec<Source>,
+        deps: ScanDeps,
+        skip_index: HashMap<String, ScanIndexEntry>,
+    ) -> Self {
         Self {
             id,
             drive,
             sources,
             deps,
+            skip_index,
+            full: false,
         }
+    }
+
+    /// Marks this run as a FULL rescan — see the struct doc comment for
+    /// what that actually changes (unconditional thumbnail re-render,
+    /// on top of whatever `skip_index` already does). Builder-style,
+    /// mirroring [`crate::GeocodeJob::with_batch_size`]; defaults to
+    /// `false`, so every existing `ScanJob::new` call site is unaffected.
+    pub fn with_full(mut self, full: bool) -> Self {
+        self.full = full;
+        self
     }
 }
 
@@ -78,6 +129,10 @@ impl ScanJob {
 impl Job for ScanJob {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn drive_id(&self) -> Option<i64> {
+        Some(self.drive.id)
     }
 
     async fn run(&self, ctx: JobCtx) -> DpResult<JobOutcome> {
@@ -150,6 +205,8 @@ impl Job for ScanJob {
         let ok = AtomicU64::new(0);
         let failed = AtomicU64::new(0);
         let skipped = AtomicU64::new(0);
+        let bytes_read = AtomicU64::new(0);
+        let bytes_written = AtomicU64::new(0);
         // Set either by the blocking walk noticing cancellation mid-walk, or
         // inside process_file's pre-file cancellation check, so it reflects
         // an actual early exit rather than the token's state at some
@@ -164,6 +221,7 @@ impl Job for ScanJob {
         }
 
         let total = walk.files.len() as u64;
+        let skip_index = &self.skip_index;
         stream::iter(walk.files)
             .for_each_concurrent(SCAN_CONCURRENCY, |file| {
                 let ctx = ctx.clone();
@@ -172,6 +230,8 @@ impl Job for ScanJob {
                 let ok = &ok;
                 let failed = &failed;
                 let skipped = &skipped;
+                let bytes_read = &bytes_read;
+                let bytes_written = &bytes_written;
                 let stopped_early = &stopped_early;
                 async move {
                     process_file(
@@ -180,10 +240,13 @@ impl Job for ScanJob {
                         &mount,
                         file,
                         total,
+                        skip_index,
                         done,
                         ok,
                         failed,
                         skipped,
+                        bytes_read,
+                        bytes_written,
                         stopped_early,
                     )
                     .await;
@@ -196,6 +259,8 @@ impl Job for ScanJob {
             failed: failed.load(Ordering::SeqCst),
             skipped: skipped.load(Ordering::SeqCst),
             cancelled: stopped_early.load(Ordering::SeqCst),
+            bytes_read: bytes_read.load(Ordering::SeqCst),
+            bytes_written: bytes_written.load(Ordering::SeqCst),
         })
     }
 }
@@ -445,10 +510,13 @@ async fn process_file(
     mount: &Path,
     file: ScannedFile,
     total: u64,
+    skip_index: &HashMap<String, ScanIndexEntry>,
     done: &AtomicU64,
     ok: &AtomicU64,
     failed: &AtomicU64,
     skipped: &AtomicU64,
+    bytes_read: &AtomicU64,
+    bytes_written: &AtomicU64,
     stopped_early: &AtomicBool,
 ) {
     if ctx.cancel.is_cancelled() {
@@ -477,10 +545,53 @@ async fn process_file(
     };
     let mut had_error = false;
 
-    let size = tokio::fs::metadata(&file.path)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
+    // `symlink_metadata` (not `metadata`) mirrors what a previous scan
+    // captured into `NewMedia::mtime` — walkdir never follows symlinks
+    // either, so this is consistent with what was actually walked. A
+    // failed stat clears both `size` and `mtime`, which — same as no
+    // index entry at all — simply falls through to full processing below
+    // rather than risking a false skip.
+    let stat = tokio::fs::symlink_metadata(&file.path).await.ok();
+    let size = stat.as_ref().map(|m| m.len()).unwrap_or(0);
+    let mtime: Option<DateTime<Utc>> = stat
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .map(DateTime::<Utc>::from);
+
+    // Incremental-rescan skip: a file whose index entry's size/mtime
+    // (compared at second precision) match what's on disk right now, whose
+    // thumbnails already exist, and whose owning source is unchanged, is
+    // unchanged since the last scan — skip hashing, exiftool,
+    // thumbnailing, and the catalog upsert entirely. Any doubt (no entry,
+    // unreadable mtime, a mismatch, a missing thumbnail, a null/differing
+    // source) falls through to full processing instead, which writes a
+    // fresh index entry. Deleted-file pruning is out of scope here: a row
+    // whose file the walk never revisits (missing entirely) is left
+    // as-is, same as before this change — see
+    // `list_media_without_source`/organize's own dangling-row handling
+    // for that separate concern.
+    if let Some(m) = find_skip_match(skip_index, &rel, size, mtime, file.source_id, &deps.store) {
+        // The file itself is unchanged, but its XMP sidecar may have been
+        // edited since (e.g. in Lightroom) — cheap to check and worth
+        // catching without a full re-hash. The baseline falls back to the
+        // row's file mtime when no sidecar mtime was ever recorded
+        // (first-scan behavior, or a row that predates the column).
+        let sidecar_baseline = m.sidecar_mtime.unwrap_or(m.row_mtime);
+        maybe_import_newer_sidecar(
+            ctx,
+            deps,
+            job_id,
+            drive_id,
+            &file.path,
+            &rel,
+            m.id,
+            sidecar_baseline,
+        )
+        .await;
+        skipped.fetch_add(1, Ordering::SeqCst);
+        advance_progress(ctx, job_id, done, total, &rel).await;
+        return;
+    }
 
     let hash = match deps.hasher.hash_file(&file.path).await {
         Ok(h) => h,
@@ -491,6 +602,10 @@ async fn process_file(
             return;
         }
     };
+    // Counted once the file has actually been read (hashed), not merely
+    // discovered by the walk — a file that fails to hash never reaches
+    // here and so never counts toward `bytes_read`.
+    bytes_read.fetch_add(size, Ordering::SeqCst);
 
     // A thumbnail failure on a very small file usually means the file
     // isn't a real photo/video at all (a corrupt copy, an OS-generated
@@ -505,17 +620,34 @@ async fn process_file(
     let mut had_thumb_failure = false;
     let mut small_file_failures: Vec<DpError> = Vec::new();
     for size_px in THUMB_SIZES {
-        if deps.store.exists(&hash, size_px) {
+        // On a FULL rescan (`job.full`), the existence check is skipped
+        // entirely — every slot is unconditionally re-rendered and
+        // rewritten at the currently configured edge, regardless of
+        // whether a (possibly smaller, previously-downscaled) file
+        // already sits there. See the `ScanJob` doc comment.
+        if !job.full && deps.store.exists(&hash, size_px) {
             any_thumb_ok = true;
             continue;
         }
-        let render_result = deps.thumbs.render(&file.path, file.ext, size_px).await;
+        let render_edge = render_edge_for_slot(size_px, deps.preview_edge);
+        let render_result = deps.thumbs.render(&file.path, file.ext, render_edge).await;
         match render_result {
             Ok(img) => {
                 any_thumb_ok = true;
-                if let Err(e) = deps.store.write(&hash, size_px, &img).await {
-                    had_error = true;
-                    report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                match deps.store.write(&hash, size_px, &img).await {
+                    Ok(written_path) => {
+                        // `ThumbStore::write` returns the path it wrote,
+                        // not the encoded size, so the size actually
+                        // written is read back off disk rather than
+                        // re-deriving it here.
+                        if let Ok(meta) = tokio::fs::metadata(&written_path).await {
+                            bytes_written.fetch_add(meta.len(), Ordering::SeqCst);
+                        }
+                    }
+                    Err(e) => {
+                        had_error = true;
+                        report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                    }
                 }
             }
             Err(e) => {
@@ -586,6 +718,7 @@ async fn process_file(
         lon: metadata.lon,
         organized_at: None,
         source_id: Some(file.source_id),
+        mtime,
     };
 
     match deps.catalog.upsert_media(new_media).await {
@@ -607,10 +740,112 @@ async fn process_file(
     advance_progress(ctx, job_id, done, total, &rel).await;
 }
 
+/// A [`ScanIndexEntry`] that matched a walked file closely enough to skip
+/// re-processing it — just what [`maybe_import_newer_sidecar`] needs
+/// afterwards.
+struct SkipMatch {
+    id: i64,
+    /// The row's stored mtime — always `Some` on the entry that produced
+    /// this match (checked by [`find_skip_match`]), carried here already
+    /// unwrapped so callers never have to re-check it.
+    row_mtime: DateTime<Utc>,
+    /// The row's stored sidecar mtime, if one was ever recorded — see
+    /// [`ScanIndexEntry::sidecar_mtime`].
+    sidecar_mtime: Option<DateTime<Utc>>,
+}
+
+/// Whether a walked file (`rel`, with live stat `size`/`mtime`, owned by
+/// `source_id`) can be skipped: `skip_index` has an entry for `rel` whose
+/// stored `size` and `mtime` (compared at second precision — both
+/// truncated via [`DateTime::timestamp`]) match the live stat, whose
+/// `source_id` is `Some` and equal to the walked file's `source_id`, and
+/// whose both thumbnail sizes already exist in `store`. Returns `None` on
+/// any doubt — no entry, an unreadable live `mtime`, a size/mtime
+/// mismatch, a null or differing `source_id`, or a missing thumbnail —
+/// which sends the caller down the full processing path instead of
+/// risking a stale skip. The `source_id` check is what lets a re-scan
+/// attribute (or re-attribute) a legacy/source-less row instead of
+/// freezing it out of "re-scan to include these" forever.
+///
+/// Accepted risk: a same-second rewrite of identical length is skipped —
+/// the mtime comparison is at second precision, so a file rewritten
+/// within the same wall-clock second as its last scan, ending up the same
+/// size, is indistinguishable from unchanged.
+fn find_skip_match(
+    skip_index: &HashMap<String, ScanIndexEntry>,
+    rel: &str,
+    size: u64,
+    mtime: Option<DateTime<Utc>>,
+    source_id: i64,
+    store: &ThumbStore,
+) -> Option<SkipMatch> {
+    let mtime = mtime?;
+    let entry = skip_index.get(rel)?;
+    let row_mtime = entry.mtime?;
+    let entry_source_id = entry.source_id?;
+    if entry_source_id != source_id {
+        return None;
+    }
+    if entry.size != size || row_mtime.timestamp() != mtime.timestamp() {
+        return None;
+    }
+    if !THUMB_SIZES
+        .iter()
+        .all(|&size_px| store.exists(&entry.hash, size_px))
+    {
+        return None;
+    }
+    Some(SkipMatch {
+        id: entry.id,
+        row_mtime,
+        sidecar_mtime: entry.sidecar_mtime,
+    })
+}
+
+/// For a file the skip rule above chose not to re-hash: if its XMP
+/// sidecar exists and was modified more recently than `baseline` (the
+/// row's stored `sidecar_mtime`, or its file `mtime` when no
+/// `sidecar_mtime` was ever recorded — see [`ScanIndexEntry::sidecar_mtime`]),
+/// imports its subjects as catalog tags anyway via [`import_sidecar_tags`]
+/// — cheap (no hashing/thumbnailing involved), and catches a
+/// Lightroom-style tag edit that an otherwise-skipped rescan would
+/// silently miss forever. Otherwise a no-op: no sidecar, or one no newer
+/// than `baseline` already reflects.
+///
+/// `import_sidecar_tags` itself records the sidecar's mtime (via
+/// `Catalog::set_sidecar_mtime`) whenever it successfully reads it, which
+/// is what moves `baseline` forward for the *next* scan — without that,
+/// a sidecar that's genuinely unchanged would look newer than a
+/// never-updated `baseline` on every single rescan, forever.
+#[allow(clippy::too_many_arguments)]
+async fn maybe_import_newer_sidecar(
+    ctx: &JobCtx,
+    deps: &ScanDeps,
+    job_id: &str,
+    drive_id: i64,
+    media_path: &Path,
+    rel: &str,
+    media_id: i64,
+    baseline: DateTime<Utc>,
+) {
+    let sidecar_mtime = tokio::fs::metadata(sidecar_path(media_path))
+        .await
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(DateTime::<Utc>::from);
+    if matches!(sidecar_mtime, Some(t) if t > baseline) {
+        import_sidecar_tags(ctx, deps, job_id, drive_id, media_path, rel, media_id).await;
+    }
+}
+
 /// Imports `media_path`'s XMP sidecar subjects (if any) as catalog tags on
-/// `media_id`, right after it's been upserted. `Sidecars::read_subjects`
-/// already returns `Ok(vec![])` when no sidecar exists, so a file with no
-/// sidecar is a no-op here — no explicit existence check needed.
+/// `media_id`. Called both right after a full-processing upsert and from
+/// [`maybe_import_newer_sidecar`] on the incremental-skip path.
+/// `Sidecars::read_subjects` already returns `Ok(vec![])` when no sidecar
+/// exists, so a file with no sidecar is a no-op here — no explicit
+/// existence check needed. Every successful read also records the
+/// sidecar's on-disk mtime via `Catalog::set_sidecar_mtime`, whether or
+/// not it actually held any subjects — see the comment at that call site.
 ///
 /// Empty/whitespace-only subject strings are filtered out before reaching
 /// `tag_media`, so a stray blank entry in the sidecar can never become an
@@ -654,6 +889,27 @@ async fn import_sidecar_tags(
             return;
         }
     };
+
+    // A successful read means the sidecar's current state has just been
+    // "looked at" — recording its on-disk mtime here is what lets a
+    // later incremental scan's `maybe_import_newer_sidecar` tell
+    // "unchanged since we last read it" apart from "genuinely newer", so
+    // an unchanged sidecar doesn't get re-read via exiftool on every
+    // single rescan forever (see `ScanIndexEntry::sidecar_mtime`). No
+    // sidecar to stat (the common no-sidecar case) simply records
+    // nothing, same as before this column existed. A failure to record
+    // it is a bookkeeping miss, not a reason to fail the import itself.
+    if let Ok(meta) = tokio::fs::metadata(sidecar_path(media_path)).await {
+        if let Ok(sidecar_mtime) = meta.modified() {
+            if let Err(e) = deps
+                .catalog
+                .set_sidecar_mtime(media_id, DateTime::<Utc>::from(sidecar_mtime))
+                .await
+            {
+                tracing::warn!(media_id, error = %e, "failed to record sidecar mtime after import");
+            }
+        }
+    }
 
     let subjects: Vec<String> = subjects.into_iter().filter(|s| !s.trim().is_empty()).collect();
     if subjects.is_empty() {

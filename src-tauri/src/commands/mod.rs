@@ -1,11 +1,13 @@
 pub mod drives;
 pub mod media;
 pub mod media_item;
+pub mod metrics;
 pub mod organize;
 mod organize_plan;
 pub mod places;
 pub mod scan;
 pub mod search;
+pub mod settings;
 pub mod sidecars;
 pub mod sources;
 pub mod tags;

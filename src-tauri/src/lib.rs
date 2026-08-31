@@ -23,6 +23,9 @@ pub fn run() {
             commands::volumes::list_volumes,
             commands::drives::register_drive,
             commands::drives::list_drives,
+            commands::drives::forget_drive,
+            commands::drives::relink_drive,
+            commands::drives::count_drive_media,
             commands::media::query_media,
             commands::media::count_media,
             commands::media::get_media,
@@ -50,6 +53,12 @@ pub fn run() {
             commands::places::list_place_counts,
             commands::places::search_cities,
             commands::places::set_media_place,
+            commands::metrics::list_job_runs,
+            commands::settings::get_settings,
+            commands::settings::set_preview_quality,
+            commands::settings::storage_usage,
+            commands::settings::start_regen_previews,
+            commands::settings::reset_app_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -54,6 +54,7 @@ mod tests {
             source_id: None,
             sidecar_pending: false,
             place_id: None,
+            mtime: None,
         }
     }
 
@@ -62,6 +63,7 @@ mod tests {
             id: 1,
             name: "Kodachrome".into(),
             volume_uuid: None,
+            volume_label: None,
             mount_path: mount_path.map(String::from),
             role: DriveRole::Source,
             capacity: 100,

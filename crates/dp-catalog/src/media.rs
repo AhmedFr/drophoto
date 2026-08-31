@@ -1,6 +1,6 @@
 use crate::sqlite::db;
 use chrono::{DateTime, Utc};
-use dp_core::{DpError, DpResult, MediaKind, MediaRow, NewMedia};
+use dp_core::{DpError, DpResult, MediaKind, MediaRow, NewMedia, ScanIndexEntry};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn kind_to_str(kind: MediaKind) -> &'static str {
@@ -35,6 +35,7 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
     let taken_at: Option<String> = row.try_get("taken_at").map_err(db)?;
     let missing_at: Option<String> = row.try_get("missing_at").map_err(db)?;
     let organized_at: Option<String> = row.try_get("organized_at").map_err(db)?;
+    let mtime: Option<String> = row.try_get("mtime").map_err(db)?;
     let size: i64 = row.try_get("size").map_err(db)?;
     let width: Option<i64> = row.try_get("width").map_err(db)?;
     let height: Option<i64> = row.try_get("height").map_err(db)?;
@@ -66,14 +67,15 @@ pub(crate) fn row_to_media(row: &SqliteRow) -> DpResult<MediaRow> {
         source_id: row.try_get("source_id").map_err(db)?,
         sidecar_pending: sidecar_pending != 0,
         place_id: row.try_get("place_id").map_err(db)?,
+        mtime: from_rfc3339(mtime)?,
     })
 }
 
 pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64> {
     sqlx::query(
         "INSERT INTO media (drive_id, rel_path, hash, size, kind, ext, width, height, duration_ms, \
-         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, organized_at, source_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         taken_at, camera, lens, aperture, shutter, iso, focal_mm, lat, lon, organized_at, source_id, mtime) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(drive_id, rel_path) DO UPDATE SET \
          hash=excluded.hash, size=excluded.size, kind=excluded.kind, ext=excluded.ext, \
          width=excluded.width, height=excluded.height, duration_ms=excluded.duration_ms, \
@@ -81,7 +83,7 @@ pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64
          aperture=excluded.aperture, shutter=excluded.shutter, iso=excluded.iso, \
          focal_mm=excluded.focal_mm, lat=excluded.lat, lon=excluded.lon, missing_at=NULL, \
          organized_at=COALESCE(media.organized_at, excluded.organized_at), \
-         source_id=COALESCE(excluded.source_id, media.source_id)",
+         source_id=COALESCE(excluded.source_id, media.source_id), mtime=excluded.mtime",
     )
     .bind(m.drive_id)
     .bind(&m.rel_path)
@@ -103,6 +105,7 @@ pub(crate) async fn upsert_media(pool: &SqlitePool, m: NewMedia) -> DpResult<i64
     .bind(m.lon)
     .bind(to_rfc3339(m.organized_at))
     .bind(m.source_id)
+    .bind(to_rfc3339(m.mtime))
     .execute(pool)
     .await
     .map_err(db)?;
@@ -190,6 +193,55 @@ pub(crate) async fn delete_media(pool: &SqlitePool, id: i64) -> DpResult<bool> {
     Ok(deleted)
 }
 
+/// Every media row on `drive_id`'s identity/fingerprint for the
+/// incremental-rescan skip check — one query for the whole drive, meant to
+/// be loaded into a `HashMap<rel_path, ScanIndexEntry>` before a scan's
+/// walk starts. See [`ScanIndexEntry`].
+pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>> {
+    let rows = sqlx::query(
+        "SELECT id, rel_path, size, mtime, hash, source_id, sidecar_mtime FROM media WHERE drive_id = ?",
+    )
+    .bind(drive_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter()
+        .map(|r| {
+            let size: i64 = r.try_get("size").map_err(db)?;
+            let mtime: Option<String> = r.try_get("mtime").map_err(db)?;
+            let sidecar_mtime: Option<String> = r.try_get("sidecar_mtime").map_err(db)?;
+            Ok(ScanIndexEntry {
+                id: r.try_get("id").map_err(db)?,
+                rel_path: r.try_get("rel_path").map_err(db)?,
+                size: size as u64,
+                mtime: from_rfc3339(mtime)?,
+                hash: r.try_get("hash").map_err(db)?,
+                source_id: r.try_get("source_id").map_err(db)?,
+                sidecar_mtime: from_rfc3339(sidecar_mtime)?,
+            })
+        })
+        .collect()
+}
+
+/// Records the XMP sidecar's on-disk mtime as of the last time it was
+/// actually read (a scan importing subjects from it, or `SidecarSyncJob`
+/// writing it) — the incremental-rescan skip path's baseline for "has this
+/// sidecar changed since we last looked at it". See
+/// [`dp_core::ScanIndexEntry::sidecar_mtime`].
+pub(crate) async fn set_sidecar_mtime(
+    pool: &SqlitePool,
+    media_id: i64,
+    mtime: DateTime<Utc>,
+) -> DpResult<()> {
+    sqlx::query("UPDATE media SET sidecar_mtime = ? WHERE id = ?")
+        .bind(to_rfc3339(Some(mtime)))
+        .bind(media_id)
+        .execute(pool)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+
 pub(crate) async fn media_hash_exists(pool: &SqlitePool, hash: &str) -> DpResult<bool> {
     let exists: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE hash = ?)")
         .bind(hash)
@@ -215,4 +267,18 @@ pub(crate) async fn record_scan_error(
         .await
         .map_err(db)?;
     Ok(())
+}
+
+/// How many `scan_errors` rows `drive_id` currently has. `scan_errors` has
+/// no reader anywhere else in the workspace today (it exists purely so a
+/// future error panel has something to show) — this exists so
+/// [`crate::forget_drive::forget_drive`]'s cascade test can prove its
+/// `DELETE FROM scan_errors` actually runs, not to back any UI yet.
+pub(crate) async fn count_scan_errors(pool: &SqlitePool, drive_id: i64) -> DpResult<u64> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scan_errors WHERE drive_id = ?")
+        .bind(drive_id)
+        .fetch_one(pool)
+        .await
+        .map_err(db)?;
+    Ok(count as u64)
 }

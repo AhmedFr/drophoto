@@ -35,6 +35,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -47,6 +48,8 @@ async fn register_drive(catalog: &Arc<dyn Catalog>, mount_path: &Path) -> Drive 
             role: DriveRole::Source,
             capacity: 1_000_000,
             free: 500_000,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap()
@@ -151,6 +154,59 @@ async fn writes_pending_sidecars_and_clears_flags() {
     assert_eq!(b_subjects, vec!["Solo".to_string()]);
 
     assert!(pending_ids(&catalog, drive.id).await.is_empty());
+}
+
+/// `SidecarSyncJob` creates (or touches) the `.xmp` it writes — which,
+/// without recording its own mtime, would otherwise look perpetually
+/// "newer" than a media row that never got a baseline, forcing
+/// `dp_jobs::scan::maybe_import_newer_sidecar` to re-read it via exiftool
+/// on every single incremental rescan forever (see
+/// `ScanIndexEntry::sidecar_mtime`). This proves the write records that
+/// baseline.
+#[tokio::test]
+async fn a_successful_write_records_the_sidecars_mtime() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::write(drive_dir.path().join("a.jpg"), b"content-a").unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, drive_dir.path()).await;
+    let a_id = catalog.upsert_media(nm(drive.id, "a.jpg", "h-a")).await.unwrap();
+    catalog
+        .tag_media(&[a_id], &["one".to_string()], &[])
+        .await
+        .unwrap();
+
+    let index_before = catalog.list_scan_index(drive.id).await.unwrap();
+    assert_eq!(
+        index_before[0].sidecar_mtime, None,
+        "no sidecar has been written yet"
+    );
+
+    let (_events, terminal) = run_sync(&catalog, drive.clone()).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => assert_eq!((ok, failed), (1, 0)),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    let written_mtime = std::fs::metadata(drive_dir.path().join("a.jpg.xmp"))
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    let index_after = catalog.list_scan_index(drive.id).await.unwrap();
+    let recorded = index_after[0]
+        .sidecar_mtime
+        .expect("the write must have recorded a sidecar mtime");
+    assert_eq!(
+        recorded.timestamp(),
+        chrono::DateTime::<chrono::Utc>::from(written_mtime).timestamp(),
+        "the recorded mtime must match what's actually on disk"
+    );
 }
 
 #[tokio::test]

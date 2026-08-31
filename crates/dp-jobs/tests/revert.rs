@@ -44,6 +44,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str, size: u64) -> NewMedia {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -100,6 +101,8 @@ async fn register_drive(catalog: &Arc<dyn Catalog>, mount_path: &Path) -> Drive 
             role: DriveRole::Source,
             capacity: 1_000_000,
             free: 500_000,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap()

@@ -1,0 +1,92 @@
+import type { Drive } from "@/lib/api/drives";
+import type { Volume } from "@/lib/api/volumes";
+import { isVolumeClaimedByAnotherDrive } from "./driveIdentity";
+
+function volume(overrides: Partial<Volume> = {}): Volume {
+  return {
+    name: "T7",
+    mount_path: "/Volumes/T7",
+    total_bytes: 1_000,
+    free_bytes: 500,
+    is_removable: true,
+    uuid: null,
+    ...overrides,
+  };
+}
+
+function drive(overrides: Partial<Drive> = {}): Drive {
+  return {
+    id: 1,
+    name: "Some Drive",
+    volume_uuid: null,
+    volume_label: null,
+    mount_path: null,
+    role: "archive",
+    capacity: 100,
+    free: 40,
+    last_seen_at: null,
+    online: false,
+    ...overrides,
+  };
+}
+
+it("returns false when no drive claims the volume", () => {
+  expect(isVolumeClaimedByAnotherDrive(volume(), [drive()])).toBe(false);
+});
+
+it("returns true when a drive's volume_uuid matches the volume's uuid", () => {
+  const v = volume({ uuid: "uuid-1" });
+  const d = drive({ volume_uuid: "uuid-1" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(true);
+});
+
+it("returns true when a drive's volume_label matches the volume's name", () => {
+  const v = volume({ name: "T7" });
+  const d = drive({ volume_label: "T7" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(true);
+});
+
+it("never treats two null uuids as a match", () => {
+  const v = volume({ uuid: null });
+  const d = drive({ volume_uuid: null });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(false);
+});
+
+it("never treats two null labels as a match", () => {
+  const v = volume({ name: "T7" });
+  const d = drive({ volume_label: null });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(false);
+});
+
+it("returns false for an empty drives list", () => {
+  expect(isVolumeClaimedByAnotherDrive(volume(), [])).toBe(false);
+});
+
+// Re-review finding 2: a drive freshly reconnected via the prior-mount-path
+// tier is online at that path before its uuid/label are backfilled.
+it("returns true when a drive's mount_path matches the volume's mount_path", () => {
+  const v = volume({ mount_path: "/Volumes/Untitled" });
+  const d = drive({ mount_path: "/Volumes/Untitled" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(true);
+});
+
+it("does not match when the other drive has no mount_path at all", () => {
+  const v = volume({ mount_path: "/Volumes/T7" });
+  const d = drive({ mount_path: null });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(false);
+});
+
+// Review finding 11: the frontend must mirror the backend's
+// `exclude_drive_id` so the drive actually being relinked never
+// disqualifies its own candidate volumes.
+it("excludeDriveId excludes the drive being relinked from the claim check", () => {
+  const v = volume({ uuid: "uuid-1" });
+  const d = drive({ id: 2, volume_uuid: "uuid-1" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d], 2)).toBe(false);
+});
+
+it("excludeDriveId still catches a claim by a genuinely different drive", () => {
+  const v = volume({ uuid: "uuid-1" });
+  const d = drive({ id: 2, volume_uuid: "uuid-1" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d], 3)).toBe(true);
+});

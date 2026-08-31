@@ -30,7 +30,11 @@ export function GalleryToolbar({ count }: GalleryToolbarProps) {
       <TypeChips />
       <SortMenu />
       <DensityToggle />
-      {count !== undefined && <span className="font-mono text-[10px] text-faint">{count} items</span>}
+      {count !== undefined && (
+        <span className="inline-block min-w-[12ch] text-right font-mono text-[10px] text-faint tabular-nums">
+          {count} items
+        </span>
+      )}
     </div>
   );
 }

@@ -6,6 +6,7 @@ mod geocode;
 mod move_guards;
 mod organize;
 mod prune;
+mod regen;
 mod revert;
 mod runner;
 mod scan;
@@ -15,6 +16,7 @@ pub use detect::{detect_folders, detect_folders_with_progress};
 pub use geocode::{GeocodeDeps, GeocodeJob};
 pub use organize::{OrganizeDeps, OrganizeJob};
 pub use prune::prune_denied_legacy_rows;
+pub use regen::{RegenDeps, RegenJob};
 pub use revert::RevertJob;
 pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};
@@ -73,6 +75,15 @@ pub struct JobOutcome {
     pub failed: u64,
     pub skipped: u64,
     pub cancelled: bool,
+    /// Bytes read from source files during this run (scan: file size per
+    /// hashed file). `0` for job kinds that don't read file bytes
+    /// (organize/revert only rename; sidecar sync writes, doesn't read;
+    /// geocode touches no files).
+    pub bytes_read: u64,
+    /// Bytes written during this run (scan: rendered thumbnail sizes;
+    /// sidecar sync: written sidecar file size). `0` for organize/revert
+    /// (renames) and geocode (no files touched).
+    pub bytes_written: u64,
 }
 
 /// Shared context handed to a [`Job`] when it runs: where to send events,
@@ -87,6 +98,14 @@ pub struct JobCtx {
 #[async_trait]
 pub trait Job: Send + Sync {
     fn id(&self) -> &str;
+    /// The drive this job runs against, for [`JobRunner`]'s job-run
+    /// metrics recording (`NewJobRun::drive_id`). `None` by default —
+    /// every per-drive job overrides it with `Some(self.drive.id)`;
+    /// [`GeocodeJob`] (a global sweep, not scoped to any one drive) keeps
+    /// the default.
+    fn drive_id(&self) -> Option<i64> {
+        None
+    }
     async fn run(&self, ctx: JobCtx) -> DpResult<JobOutcome>;
 }
 

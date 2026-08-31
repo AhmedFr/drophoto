@@ -16,6 +16,7 @@ const onlineDrive = {
   id: 1,
   name: "Kodachrome",
   volume_uuid: null,
+  volume_label: null,
   mount_path: "/Volumes/Kodachrome",
   role: "archive" as const,
   capacity: 2_000_000_000,
@@ -128,7 +129,7 @@ it("calls start_scan for the given drive id", async () => {
 
   result.current.scan(1);
 
-  await waitFor(() => expect(scanArgs).toEqual({ driveId: 1 }));
+  await waitFor(() => expect(scanArgs).toEqual({ driveId: 1, full: false }));
 });
 
 it("invalidates unorganized and media-count queries when a job finishes", async () => {

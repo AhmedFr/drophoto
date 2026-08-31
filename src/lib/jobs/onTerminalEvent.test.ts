@@ -191,3 +191,51 @@ it("refreshes only places, search, and media even when a geocode sweep fails", (
 
   expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["places"], ["search"], ["media"]]);
 });
+
+it("is silent and refreshes only storage-usage for a clean regen sweep", () => {
+  const { queryClient, invalidateSpy } = client();
+  onTerminalEvent(
+    { kind: "finished", job_id: "regen-0", ok: 5, failed: 0, skipped: 1 },
+    queryClient,
+    "Regenerate previews",
+  );
+
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["storage-usage"]]);
+  expect(toast).not.toHaveBeenCalled();
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("refreshes only storage-usage for a cancelled regen sweep", () => {
+  const { queryClient, invalidateSpy } = client();
+  onTerminalEvent(
+    { kind: "cancelled", job_id: "regen-0", ok: 2, failed: 0, skipped: 0 },
+    queryClient,
+    "Regenerate previews",
+  );
+
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["storage-usage"]]);
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it("still shows an error toast for a regen sweep that finishes with failures", () => {
+  const { queryClient } = client();
+  onTerminalEvent(
+    { kind: "finished", job_id: "regen-0", ok: 1, failed: 2, skipped: 0 },
+    queryClient,
+    "Regenerate previews",
+  );
+
+  expect(toast.error).toHaveBeenCalledWith("Regenerate previews finished with 2 errors");
+});
+
+it("refreshes only storage-usage even when a regen sweep fails", () => {
+  const { queryClient, invalidateSpy } = client();
+  onTerminalEvent(
+    { kind: "finished", job_id: "regen-0", ok: 1, failed: 2, skipped: 0 },
+    queryClient,
+    "Regenerate previews",
+  );
+
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["storage-usage"]]);
+});

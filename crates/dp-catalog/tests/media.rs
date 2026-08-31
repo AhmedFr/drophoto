@@ -27,6 +27,7 @@ fn nm_taken(drive_id: i64, rel_path: &str, hash: &str, taken_at: Option<DateTime
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -38,6 +39,8 @@ async fn drive(c: &SqliteCatalog) -> i64 {
         role: DriveRole::Archive,
         capacity: 100,
         free: 40,
+        volume_uuid: None,
+        volume_label: None,
     })
     .await
     .unwrap()
@@ -144,6 +147,119 @@ async fn delete_media_removes_an_unreferenced_row() {
 
     assert!(c.delete_media(id).await.unwrap());
     assert_eq!(c.count_media(Some(drive_id)).await.unwrap(), 0);
+}
+
+/// `list_scan_index` is the incremental-rescan fingerprint query — one row
+/// per media row on the drive, with everything `dp_jobs::ScanJob` needs
+/// (id, size, mtime, hash) to decide whether a walked file is unchanged.
+/// A row written with no `mtime` (predates the column, or never set)
+/// round-trips as `None` rather than erroring.
+#[tokio::test]
+async fn list_scan_index_returns_every_rows_fingerprint() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let src = c
+        .upsert_source(NewSource {
+            drive_id,
+            rel_path: "".into(),
+        })
+        .await
+        .unwrap();
+    let mtime: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+
+    let a_id = c
+        .upsert_media(NewMedia {
+            mtime: Some(mtime),
+            source_id: Some(src.id),
+            ..nm(drive_id, "a.jpg", "hash-a")
+        })
+        .await
+        .unwrap();
+    let b_id = c.upsert_media(nm(drive_id, "b.jpg", "hash-b")).await.unwrap();
+
+    let mut index = c.list_scan_index(drive_id).await.unwrap();
+    index.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+
+    assert_eq!(index.len(), 2);
+    assert_eq!(index[0].id, a_id);
+    assert_eq!(index[0].rel_path, "a.jpg");
+    assert_eq!(index[0].size, 1234);
+    assert_eq!(index[0].mtime, Some(mtime));
+    assert_eq!(index[0].hash, "hash-a");
+    assert_eq!(
+        index[0].source_id,
+        Some(src.id),
+        "a row's owning source must round-trip"
+    );
+    assert_eq!(
+        index[0].sidecar_mtime, None,
+        "a row whose sidecar mtime was never recorded must round-trip as None"
+    );
+
+    assert_eq!(index[1].id, b_id);
+    assert_eq!(index[1].rel_path, "b.jpg");
+    assert_eq!(
+        index[1].mtime, None,
+        "a row written with no mtime must round-trip as None"
+    );
+    assert_eq!(
+        index[1].source_id, None,
+        "a row never attributed to a source must round-trip as None"
+    );
+}
+
+/// `Catalog::set_sidecar_mtime` is the narrow setter the incremental-rescan
+/// skip path (and `SidecarSyncJob`) uses to record "we last looked at this
+/// sidecar as of `mtime`" — `list_scan_index` must reflect it afterwards.
+#[tokio::test]
+async fn set_sidecar_mtime_is_reflected_in_the_scan_index() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let media_id = c.upsert_media(nm(drive_id, "a.jpg", "hash-a")).await.unwrap();
+
+    let index = c.list_scan_index(drive_id).await.unwrap();
+    assert_eq!(
+        index[0].sidecar_mtime, None,
+        "a fresh row must start with no recorded sidecar mtime"
+    );
+
+    let sidecar_mtime: DateTime<Utc> = "2026-02-14T09:30:00Z".parse().unwrap();
+    c.set_sidecar_mtime(media_id, sidecar_mtime).await.unwrap();
+
+    let index = c.list_scan_index(drive_id).await.unwrap();
+    assert_eq!(index[0].sidecar_mtime, Some(sidecar_mtime));
+}
+
+#[tokio::test]
+async fn list_scan_index_is_scoped_to_the_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_a = drive(&c).await;
+    let drive_b = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            capacity: 100,
+            free: 40,
+            volume_uuid: None,
+            volume_label: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    c.upsert_media(nm(drive_a, "a.jpg", "hash-a")).await.unwrap();
+    c.upsert_media(nm(drive_b, "b.jpg", "hash-b")).await.unwrap();
+
+    let index = c.list_scan_index(drive_a).await.unwrap();
+    assert_eq!(index.len(), 1);
+    assert_eq!(index[0].rel_path, "a.jpg");
+}
+
+#[tokio::test]
+async fn list_scan_index_is_empty_for_a_drive_with_no_media() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    assert!(c.list_scan_index(drive_id).await.unwrap().is_empty());
 }
 
 /// A row an `organize_items` row still points at is deliberately left in

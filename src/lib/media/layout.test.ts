@@ -31,6 +31,7 @@ function makeItem(width: number | null, height: number | null, takenAt: string |
       organized_at: null,
       source_id: null,
       place_id: null,
+      mtime: null,
     },
     thumb_path: `thumb-${id}.jpg`,
     preview_path: `preview-${id}.jpg`,

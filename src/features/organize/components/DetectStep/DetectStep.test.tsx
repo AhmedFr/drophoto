@@ -8,6 +8,7 @@ function drive(id: number, name: string, online = true) {
     id,
     name,
     volume_uuid: null,
+    volume_label: null,
     mount_path: `/Volumes/${name}`,
     role: "archive" as const,
     capacity: 2_000_000_000,

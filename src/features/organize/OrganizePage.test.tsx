@@ -20,7 +20,7 @@ beforeEach(async () => {
   // Tauri event themselves — only `useUnorganized` still listens
   // directly. Reset the store so a job id from one test can't leak
   // into the next.
-  useJobsStore.setState({ events: {}, labels: {} });
+  useJobsStore.setState({ events: {}, labels: {}, samples: {} });
 });
 
 /** Records every `listen(name, cb)` handler so `emit` can broadcast to all of them, matching real Tauri fan-out. */
@@ -58,6 +58,7 @@ const onlineDrive = {
   id: 1,
   name: "Kodachrome",
   volume_uuid: null,
+  volume_label: null,
   mount_path: "/Volumes/Kodachrome",
   role: "archive" as const,
   capacity: 2_000_000_000,

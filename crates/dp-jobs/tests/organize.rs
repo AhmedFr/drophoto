@@ -41,6 +41,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -93,6 +94,8 @@ async fn register_drive(catalog: &Arc<dyn Catalog>, mount_path: &Path) -> dp_cor
             role: DriveRole::Source,
             capacity: 1_000_000,
             free: 500_000,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap()
@@ -690,6 +693,34 @@ impl Catalog for FailingCatalog {
         self.0.set_drive_presence(id, mount_path, free).await
     }
 
+    async fn backfill_drive_volume_identity(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+    ) -> DpResult<()> {
+        self.0
+            .backfill_drive_volume_identity(id, volume_uuid, volume_label)
+            .await
+    }
+
+    async fn relink_drive(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+        mount_path: &str,
+        free: Option<u64>,
+    ) -> DpResult<()> {
+        self.0
+            .relink_drive(id, volume_uuid, volume_label, mount_path, free)
+            .await
+    }
+
+    async fn forget_drive(&self, id: i64) -> DpResult<()> {
+        self.0.forget_drive(id).await
+    }
+
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64> {
         self.0.upsert_media(m).await
     }
@@ -722,12 +753,24 @@ impl Catalog for FailingCatalog {
         self.0.list_media_without_source(drive_id).await
     }
 
+    async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<dp_core::ScanIndexEntry>> {
+        self.0.list_scan_index(drive_id).await
+    }
+
+    async fn set_sidecar_mtime(&self, media_id: i64, mtime: DateTime<Utc>) -> DpResult<()> {
+        self.0.set_sidecar_mtime(media_id, mtime).await
+    }
+
     async fn delete_media(&self, id: i64) -> DpResult<bool> {
         self.0.delete_media(id).await
     }
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         self.0.record_scan_error(drive_id, path, code, message).await
+    }
+
+    async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64> {
+        self.0.count_scan_errors(drive_id).await
     }
 
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {
@@ -883,6 +926,22 @@ impl Catalog for FailingCatalog {
 
     async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
         self.0.list_ungeocoded(after_id, limit).await
+    }
+
+    async fn record_job_run(&self, run: dp_core::NewJobRun) -> DpResult<()> {
+        self.0.record_job_run(run).await
+    }
+
+    async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<dp_core::JobRunRow>> {
+        self.0.list_job_runs(limit).await
+    }
+
+    async fn get_settings(&self) -> DpResult<dp_core::AppSettings> {
+        self.0.get_settings().await
+    }
+
+    async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
+        self.0.set_preview_edge(edge).await
     }
 }
 

@@ -11,6 +11,8 @@ async fn seed() -> (SqliteCatalog, i64) {
             role: DriveRole::Archive,
             capacity: 1,
             free: 1,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap();
@@ -34,6 +36,7 @@ async fn seed() -> (SqliteCatalog, i64) {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     };
     c.upsert_media(mk("a.jpg", MediaKind::Photo, "jpg", Some(1)))

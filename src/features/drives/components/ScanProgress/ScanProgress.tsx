@@ -40,7 +40,9 @@ export function ScanProgress({ event, onCancel }: ScanProgressProps) {
         </span>
         {event.kind === "finished" && (
           <span className="font-mono text-[10px] text-muted-foreground">
-            {event.ok} ok · {event.failed} failed
+            {event.ok === 0 && event.failed === 0 && event.skipped > 0
+              ? `Up to date · ${event.skipped} skipped`
+              : `${event.ok} ok · ${event.failed} failed${event.skipped > 0 ? ` · ${event.skipped} skipped` : ""}`}
           </span>
         )}
         {event.kind === "cancelled" && (

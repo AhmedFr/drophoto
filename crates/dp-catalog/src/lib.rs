@@ -1,18 +1,23 @@
 mod drives;
+mod forget_drive;
 mod fts;
+mod job_runs;
 mod media;
 mod organize;
 mod organize_jobs;
 mod places;
 mod query;
+mod settings;
 mod sources;
 mod sqlite;
 mod tags;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use dp_core::{
-    DpResult, Drive, MediaQuery, MediaRow, NewDrive, NewMedia, NewPlace, NewSource, OrganizeItemRow,
-    OrganizeJobRow, OrganizeRule, Place, PlaceCount, Source, Tag, UnorganizedSummary,
+    AppSettings, DpResult, Drive, JobRunRow, MediaQuery, MediaRow, NewDrive, NewJobRun, NewMedia, NewPlace,
+    NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, ScanIndexEntry, Source, Tag,
+    UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -23,6 +28,39 @@ pub trait Catalog: Send + Sync {
     async fn register_drive(&self, d: NewDrive) -> DpResult<Drive>;
     async fn list_drives(&self) -> DpResult<Vec<Drive>>;
     async fn set_drive_presence(&self, id: i64, mount_path: Option<&str>, free: Option<u64>) -> DpResult<()>;
+    /// Fills `volume_uuid`/`volume_label` on drive `id` from a currently
+    /// matched volume's identity, but only where each is still `NULL` —
+    /// self-heals a legacy drive row the first time it's matched to a
+    /// mounted volume since either column existed. See
+    /// [`dp_core::Drive::volume_label`].
+    async fn backfill_drive_volume_identity(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+    ) -> DpResult<()>;
+    /// Adopts a currently-mounted volume into drive `id`, **overwriting**
+    /// its stored identity/mount_path unconditionally — the deliberate,
+    /// user-initiated RELINK action for a drive `resolve_presence` can
+    /// never re-attach on its own (no matching uuid/label/name/prior
+    /// mount path). See [`crate::drives::relink_drive`] for why this
+    /// bypasses the `backfill_drive_volume_identity` COALESCE rule.
+    async fn relink_drive(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+        mount_path: &str,
+        free: Option<u64>,
+    ) -> DpResult<()>;
+    /// Permanently deletes drive `id` and everything that references it —
+    /// sources, media (and by extension tags/places/FTS), and its
+    /// organize/revert job history — in one transaction. Never touches
+    /// the filesystem: thumbnails are content-addressed and possibly
+    /// shared across drives, so they're left in the thumb store; the
+    /// user's photos/folders/sidecars on the drive itself are never
+    /// touched either. See [`crate::forget_drive`] for the exact cascade.
+    async fn forget_drive(&self, id: i64) -> DpResult<()>;
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64>;
     async fn list_media(&self, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>>;
     async fn query_media(&self, q: &MediaQuery) -> DpResult<Vec<(MediaRow, Drive)>>;
@@ -33,11 +71,24 @@ pub trait Catalog: Send + Sync {
     /// Every media row on `drive_id` never attributed to a source
     /// (`source_id IS NULL`) — see [`dp_core::MediaRow::source_id`].
     async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    /// One query for a whole drive's [`ScanIndexEntry`]s — the
+    /// incremental-rescan skip index a scan loads (into a
+    /// `HashMap<rel_path, ScanIndexEntry>`) before walking, so a scan can
+    /// decide per file whether to skip it without a per-file query.
+    async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>>;
+    /// Records the XMP sidecar's on-disk mtime as of the last time it was
+    /// actually read — see [`dp_core::ScanIndexEntry::sidecar_mtime`].
+    /// Called by `dp_jobs::ScanJob` after any sidecar import, and by
+    /// `dp_jobs::SidecarSyncJob` after any write it performs.
+    async fn set_sidecar_mtime(&self, media_id: i64, mtime: DateTime<Utc>) -> DpResult<()>;
     /// Deletes media row `id` unless an `organize_items` row references
     /// it; `Ok(false)` means it was left in place. See the `SqliteCatalog`
     /// implementation for why the guard exists.
     async fn delete_media(&self, id: i64) -> DpResult<bool>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
+    /// How many `scan_errors` rows `drive_id` currently has — see
+    /// [`crate::media::count_scan_errors`]'s doc comment.
+    async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64>;
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule>;
     async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()>;
     async fn list_unorganized(&self, drive_id: i64, root: &str) -> DpResult<Vec<MediaRow>>;
@@ -117,6 +168,19 @@ pub trait Catalog: Send + Sync {
     /// row when earlier rows in the same run gain a `place_id` (and so drop
     /// out of the result set) between pages.
     async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>>;
+    /// Records one job's terminal run metrics — called by
+    /// `dp_jobs::JobRunner` on every done/cancelled/failed job.
+    async fn record_job_run(&self, run: NewJobRun) -> DpResult<()>;
+    /// The most recent `limit` job runs, newest first — for the
+    /// dashboard's "LAST RUNS" card.
+    async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<JobRunRow>>;
+    /// Current app-wide settings, falling back to defaults for any key
+    /// never written — see [`dp_core::DEFAULT_PREVIEW_EDGE`].
+    async fn get_settings(&self) -> DpResult<AppSettings>;
+    /// Sets the preview-quality edge (px) — see
+    /// [`dp_core::AppSettings::preview_edge`]. Does not itself trigger a
+    /// regen; that's the caller's job (see `start_regen_previews`).
+    async fn set_preview_edge(&self, edge: u32) -> DpResult<()>;
 }
 
 #[async_trait]
@@ -131,6 +195,30 @@ impl Catalog for SqliteCatalog {
 
     async fn set_drive_presence(&self, id: i64, mount_path: Option<&str>, free: Option<u64>) -> DpResult<()> {
         drives::set_drive_presence(&self.pool, id, mount_path, free).await
+    }
+
+    async fn backfill_drive_volume_identity(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+    ) -> DpResult<()> {
+        drives::backfill_drive_volume_identity(&self.pool, id, volume_uuid, volume_label).await
+    }
+
+    async fn relink_drive(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+        mount_path: &str,
+        free: Option<u64>,
+    ) -> DpResult<()> {
+        drives::relink_drive(&self.pool, id, volume_uuid, volume_label, mount_path, free).await
+    }
+
+    async fn forget_drive(&self, id: i64) -> DpResult<()> {
+        forget_drive::forget_drive(&self.pool, id).await
     }
 
     async fn upsert_media(&self, m: NewMedia) -> DpResult<i64> {
@@ -165,12 +253,24 @@ impl Catalog for SqliteCatalog {
         media::list_media_without_source(&self.pool, drive_id).await
     }
 
+    async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>> {
+        media::list_scan_index(&self.pool, drive_id).await
+    }
+
+    async fn set_sidecar_mtime(&self, media_id: i64, mtime: DateTime<Utc>) -> DpResult<()> {
+        media::set_sidecar_mtime(&self.pool, media_id, mtime).await
+    }
+
     async fn delete_media(&self, id: i64) -> DpResult<bool> {
         media::delete_media(&self.pool, id).await
     }
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         media::record_scan_error(&self.pool, drive_id, path, code, message).await
+    }
+
+    async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64> {
+        media::count_scan_errors(&self.pool, drive_id).await
     }
 
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {
@@ -322,5 +422,21 @@ impl Catalog for SqliteCatalog {
 
     async fn list_ungeocoded(&self, after_id: i64, limit: u32) -> DpResult<Vec<MediaRow>> {
         places::list_ungeocoded(&self.pool, after_id, limit).await
+    }
+
+    async fn record_job_run(&self, run: NewJobRun) -> DpResult<()> {
+        job_runs::record_job_run(&self.pool, run).await
+    }
+
+    async fn list_job_runs(&self, limit: u32) -> DpResult<Vec<JobRunRow>> {
+        job_runs::list_job_runs(&self.pool, limit).await
+    }
+
+    async fn get_settings(&self) -> DpResult<AppSettings> {
+        settings::get_settings(&self.pool).await
+    }
+
+    async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
+        settings::set_preview_edge(&self.pool, edge).await
     }
 }

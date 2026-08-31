@@ -25,6 +25,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -46,6 +47,8 @@ async fn drive(c: &SqliteCatalog) -> i64 {
         role: DriveRole::Archive,
         capacity: 100,
         free: 40,
+        volume_uuid: None,
+        volume_label: None,
     })
     .await
     .unwrap()
@@ -253,6 +256,8 @@ async fn list_rel_paths_returns_all_paths_for_drive_regardless_of_organized_stat
             role: DriveRole::Archive,
             capacity: 100,
             free: 40,
+            volume_uuid: None,
+            volume_label: None,
         })
         .await
         .unwrap()

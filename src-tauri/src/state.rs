@@ -43,6 +43,12 @@ pub struct AppState {
     /// [`AppState::start_organize`] checks them against
     /// [`JobRunner::is_running`].
     active_jobs: Mutex<HashMap<(String, i64), String>>,
+    /// The app's own data directory (`tauri::path::BaseDirectory::AppData`)
+    /// — where `catalog.db` (plus its `-wal`/`-shm` siblings) and the
+    /// `thumbs/` directory live. Resolved once at startup and reused by
+    /// `storage_usage` and `reset_app_data`, rather than re-querying
+    /// `AppHandle::path()` on every call.
+    pub app_data_dir: PathBuf,
 }
 
 impl AppState {
@@ -53,14 +59,14 @@ impl AppState {
         })?;
         std::fs::create_dir_all(&dir).map_err(|e| DpError::io(&e, dir.display().to_string()))?;
         let db_path = dir.join("catalog.db");
-        let catalog = SqliteCatalog::open(&db_path).await?;
+        let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open(&db_path).await?);
 
         let thumbs_root = dir.join("thumbs");
         std::fs::create_dir_all(&thumbs_root)
             .map_err(|e| DpError::io(&e, thumbs_root.display().to_string()))?;
 
         let (tx, mut rx) = mpsc::channel(JOB_EVENT_CHANNEL_CAPACITY);
-        let runner = JobRunner::new(tx);
+        let runner = JobRunner::new(tx).with_recorder(catalog.clone());
 
         let events_app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -81,8 +87,8 @@ impl AppState {
         let geocoder: Arc<dyn Geocoder> = Arc::new(BundledGeocoder::load()?);
 
         Ok(Self {
-            volumes: Arc::new(SysinfoVolumes),
-            catalog: Arc::new(catalog),
+            volumes: Arc::new(SysinfoVolumes::default()),
+            catalog,
             strategy: default_strategy(hasher.clone()),
             hasher,
             metadata: Arc::new(ExiftoolProvider::from_path()),
@@ -93,6 +99,7 @@ impl AppState {
             runner,
             home,
             active_jobs: Mutex::new(HashMap::new()),
+            app_data_dir: dir,
         })
     }
 
@@ -152,6 +159,21 @@ impl AppState {
         self.start_job("geocode", 0, make_job)
     }
 
+    /// Starts the preview-regen sweep, unless one is already running — in
+    /// which case its id is returned instead of starting a duplicate.
+    ///
+    /// Same sentinel-`drive_id`-`0` convention as [`Self::start_geocode`]
+    /// (see its doc comment): a [`dp_jobs::RegenJob`] is GLOBAL, so it's
+    /// tracked under a `"regen"` bucket at drive id `0` rather than a real
+    /// drive. That also means a regen sweep and a geocode sweep block each
+    /// other (both occupy drive id `0`, under different kinds) — an
+    /// acceptable trade rather than a deliberate one: it keeps at most one
+    /// global background job running at a time, same as every per-drive
+    /// job already only allows one job per drive.
+    pub fn start_regen(&self, make_job: impl FnOnce(String) -> Arc<dyn Job>) -> DpResult<String> {
+        self.start_job("regen", 0, make_job)
+    }
+
     /// Starts a revert job for `drive_id`, admitted under the exact same
     /// `"organize"` bucket as [`Self::start_organize`] — a scan, an
     /// organize, and a revert are mutually exclusive on a drive. Unlike
@@ -180,6 +202,25 @@ impl AppState {
         let jobs = lock_active_jobs(&self.active_jobs);
         let job_id = jobs.get(&(kind.to_string(), drive_id))?;
         self.runner.is_running(job_id).then(|| job_id.clone())
+    }
+
+    /// A read-only preview of what [`Self::start_job`] would do for a
+    /// non-exclusive `kind` job on `drive_id` right now — built from the
+    /// exact same [`job_admission`]/[`resolve_admission`] pair `start_job`
+    /// itself uses, so it can never disagree with the real decision made a
+    /// moment later. `None` means it would actually spawn (not a
+    /// guarantee — a concurrent call could still race in before the real
+    /// `start_job` runs, same as always); `Some` carries the id to reuse
+    /// or the refusal `start_job` would produce.
+    ///
+    /// Lets a command bail out of expensive prep work it would just throw
+    /// away on a deduped or refused call — e.g. `start_scan` building its
+    /// ~16k-row skip index before knowing whether the scan will even run
+    /// (review finding 10) — before doing anything else.
+    pub fn precheck(&self, kind: &str, drive_id: i64) -> Option<DpResult<String>> {
+        let jobs = lock_active_jobs(&self.active_jobs);
+        let decision = job_admission(&jobs, kind, drive_id, |id| self.runner.is_running(id));
+        precheck_resolution(resolve_admission(decision, kind, false, drive_id))
     }
 
     /// Starts a `kind` job ("scan" or "organize") for `drive_id`: reuses
@@ -217,7 +258,7 @@ impl AppState {
         let mut jobs = lock_active_jobs(&self.active_jobs);
         let decision = job_admission(&jobs, admission_kind, drive_id, |id| self.runner.is_running(id));
 
-        match resolve_admission(decision, id_prefix, exclusive) {
+        match resolve_admission(decision, id_prefix, exclusive, drive_id) {
             Resolution::Reuse(job_id) => Ok(job_id),
             Resolution::Refuse(message) => Err(DpError::Unsupported { message, path: None }),
             Resolution::Spawn => {
@@ -306,10 +347,19 @@ enum Resolution {
 /// `exclusive` additionally changes the *message* on `Blocked` — a
 /// specific "a {kind} job is already running" everywhere else, or the
 /// generic message revert wants for either sub-case.
-fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> Resolution {
+///
+/// `drive_id` is only consulted for its wording, not the decision itself
+/// (that's entirely `job_admission`'s call): the sentinel `0` identifies
+/// a GLOBAL job (geocode/regen — see `AppState::start_geocode`/
+/// `start_regen`), for which "on this drive" is nonsense — there's no
+/// drive to name. No real drive ever has id `0` (SQLite's `INTEGER
+/// PRIMARY KEY` autoincrement starts at `1`), so this can't misfire on
+/// an actual per-drive job.
+fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool, drive_id: i64) -> Resolution {
     const GENERIC_CONFLICT: &str = "another job is running on this drive";
     const SIDECAR_CONFLICT: &str =
         "a background sidecar sync is finishing on this drive — try again in a moment";
+    let is_global = drive_id == 0;
 
     match decision {
         Admission::Start => Resolution::Spawn,
@@ -331,10 +381,28 @@ fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> R
                 // they did something wrong, and says nothing about what
                 // to do. It's also always short, so say that instead.
                 Resolution::Refuse(SIDECAR_CONFLICT.into())
+            } else if is_global {
+                // Two global sweeps (geocode, regen) serialize under the
+                // same drive-0 bucket — see `start_regen`'s doc comment.
+                // Neither is "on this drive".
+                Resolution::Refuse(format!("a {other_kind} sweep is already running"))
             } else {
                 Resolution::Refuse(format!("a {other_kind} job is already running on this drive"))
             }
         }
+    }
+}
+
+/// Turns a [`Resolution`] into what [`AppState::precheck`] returns to its
+/// caller — factored out as a pure function so it's unit-testable without
+/// a real `AppState`. `Spawn` means "nothing to report, go ahead and do
+/// the expensive prep work"; `Reuse`/`Refuse` are exactly what the real
+/// `start_job` call would produce a moment later.
+fn precheck_resolution(resolution: Resolution) -> Option<DpResult<String>> {
+    match resolution {
+        Resolution::Spawn => None,
+        Resolution::Reuse(job_id) => Some(Ok(job_id)),
+        Resolution::Refuse(message) => Some(Err(DpError::Unsupported { message, path: None })),
     }
 }
 
@@ -408,11 +476,11 @@ mod tests {
     #[test]
     fn resolve_admission_always_spawns_on_start_regardless_of_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Start, "organize", false),
+            resolve_admission(Admission::Start, "organize", false, 1),
             Resolution::Spawn
         );
         assert_eq!(
-            resolve_admission(Admission::Start, "revert", true),
+            resolve_admission(Admission::Start, "revert", true, 1),
             Resolution::Spawn
         );
     }
@@ -420,7 +488,7 @@ mod tests {
     #[test]
     fn resolve_admission_reuses_an_existing_id_when_it_matches_the_prefix_and_not_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Existing("organize-0".into()), "organize", false),
+            resolve_admission(Admission::Existing("organize-0".into()), "organize", false, 1),
             Resolution::Reuse("organize-0".into())
         );
     }
@@ -434,7 +502,7 @@ mod tests {
     #[test]
     fn resolve_admission_refuses_an_existing_id_from_a_different_prefix_even_when_not_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Existing("revert-3".into()), "organize", false),
+            resolve_admission(Admission::Existing("revert-3".into()), "organize", false, 1),
             Resolution::Refuse("another job is running on this drive".into())
         );
     }
@@ -447,7 +515,7 @@ mod tests {
     #[test]
     fn resolve_admission_refuses_an_existing_id_from_a_different_revert_even_when_not_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Existing("organize-7".into()), "revert", false),
+            resolve_admission(Admission::Existing("organize-7".into()), "revert", false, 1),
             Resolution::Refuse("another job is running on this drive".into())
         );
     }
@@ -459,9 +527,39 @@ mod tests {
     #[test]
     fn resolve_admission_leaves_scan_dedupe_unaffected_by_the_prefix_check() {
         assert_eq!(
-            resolve_admission(Admission::Existing("scan-0".into()), "scan", false),
+            resolve_admission(Admission::Existing("scan-0".into()), "scan", false, 1),
             Resolution::Reuse("scan-0".into())
         );
+    }
+
+    // Review finding 10: `precheck` (built on `precheck_resolution`) lets
+    // `start_scan` bail out of building its skip index before knowing
+    // whether the scan would even run.
+    #[test]
+    fn precheck_resolution_reports_nothing_for_spawn() {
+        assert!(precheck_resolution(Resolution::Spawn).is_none());
+    }
+
+    #[test]
+    fn precheck_resolution_reports_the_existing_id_to_reuse() {
+        // `DpResult<String>`'s `Err` arm (`DpError`) has no `PartialEq`, so
+        // this can't be a plain `assert_eq!` against the whole `Option`.
+        match precheck_resolution(Resolution::Reuse("scan-0".into())) {
+            Some(Ok(job_id)) => assert_eq!(job_id, "scan-0"),
+            other => panic!("expected Some(Ok(\"scan-0\")), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn precheck_resolution_reports_the_refusal_as_an_unsupported_error() {
+        let result = precheck_resolution(Resolution::Refuse("another job is running on this drive".into()));
+        match result {
+            Some(Err(DpError::Unsupported { message, path })) => {
+                assert_eq!(message, "another job is running on this drive");
+                assert_eq!(path, None);
+            }
+            other => panic!("expected Some(Err(Unsupported)), got {other:?}"),
+        }
     }
 
     /// The core of finding #3: an exclusive caller (`start_revert`) must
@@ -471,7 +569,7 @@ mod tests {
     #[test]
     fn resolve_admission_refuses_an_existing_id_when_exclusive_never_returning_it() {
         assert_eq!(
-            resolve_admission(Admission::Existing("revert-0".into()), "revert", true),
+            resolve_admission(Admission::Existing("revert-0".into()), "revert", true, 1),
             Resolution::Refuse("another job is running on this drive".into())
         );
     }
@@ -484,7 +582,8 @@ mod tests {
                     other_kind: "scan".into()
                 },
                 "organize",
-                false
+                false,
+                1
             ),
             Resolution::Refuse("a scan job is already running on this drive".into())
         );
@@ -498,7 +597,8 @@ mod tests {
                     other_kind: "scan".into()
                 },
                 "revert",
-                true
+                true,
+                1
             ),
             Resolution::Refuse("another job is running on this drive".into())
         );
@@ -516,11 +616,48 @@ mod tests {
                     other_kind: "sidecar".into()
                 },
                 "organize",
-                false
+                false,
+                1
             ),
             Resolution::Refuse(
                 "a background sidecar sync is finishing on this drive — try again in a moment".into()
             )
+        );
+    }
+
+    /// The core of the drive-0 wording fix: two global sweeps (geocode,
+    /// regen) block each other under the same sentinel drive id — see
+    /// `AppState::start_regen`'s doc comment — but the refusal must never
+    /// say "on this drive", since neither sweep is scoped to one.
+    #[test]
+    fn resolve_admission_uses_sweep_wording_for_a_blocked_global_job() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "geocode".into()
+                },
+                "regen",
+                false,
+                0
+            ),
+            Resolution::Refuse("a geocode sweep is already running".into())
+        );
+    }
+
+    /// The mirror image: a regen already running blocks a new geocode
+    /// sweep with the same drive-agnostic wording.
+    #[test]
+    fn resolve_admission_uses_sweep_wording_regardless_of_which_global_kind_is_blocking() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "regen".into()
+                },
+                "geocode",
+                false,
+                0
+            ),
+            Resolution::Refuse("a regen sweep is already running".into())
         );
     }
 }
