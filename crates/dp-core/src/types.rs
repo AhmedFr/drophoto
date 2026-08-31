@@ -335,9 +335,9 @@ pub struct NewJobRun {
     /// The runner-assigned job id, e.g. `"scan-3"`.
     pub job_id: String,
     /// `job_id`'s prefix before its first `-` (`"scan"`, `"organize"`,
-    /// `"revert"`, `"sidecar"`, `"geocode"`).
+    /// `"revert"`, `"sidecar"`, `"geocode"`, `"regen"`).
     pub kind: String,
-    /// `None` for a global job (geocode); `Some` for every per-drive job.
+    /// `None` for a global job (geocode, regen); `Some` for every per-drive job.
     pub drive_id: Option<i64>,
     /// `done` | `cancelled` | `failed` — `failed` only for a job-level
     /// failure (the `Job::run` future itself returned `Err` or panicked);

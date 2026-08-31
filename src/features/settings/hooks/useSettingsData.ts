@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   getSettings,
   PREVIEW_EDGES,
@@ -47,7 +48,20 @@ export function useSettingsData(): UseSettingsDataResult {
     },
   });
 
-  const regenMutation = useMutation({ mutationFn: startRegenPreviews });
+  // `start_regen_previews` is refusable (`RegenJob` and `GeocodeJob` share
+  // the sentinel `drive_id = 0` admission bucket, and a geocode sweep
+  // auto-fires after every finished scan — see `JobEventsBridge`), so a
+  // click can realistically fail with nothing else in the UI reacting
+  // (`regenRunning` never flips). Toasted here — matching the error-toast
+  // shape `onTerminalEvent` uses for a job's own terminal failure — since
+  // there's no persistent surface (the click itself is the whole
+  // interaction) worth an inline error for.
+  const regenMutation = useMutation({
+    mutationFn: startRegenPreviews,
+    onError: (e) => {
+      toast.error(e instanceof Error ? e.message : "Failed to start regenerating previews.");
+    },
+  });
   const resetMutation = useMutation({ mutationFn: resetAppData });
 
   const events = useJobsStore((s) => s.events);
@@ -78,5 +92,9 @@ export function useSettingsData(): UseSettingsDataResult {
 
     confirmResetAppData: () => resetMutation.mutate(),
     resetting: resetMutation.isPending,
+    // Rendered inside `ResetAppDataDialog` (which stays open on failure),
+    // matching how `ForgetDriveDialog`/`RelinkDriveDialog` surface their
+    // own mutation errors.
+    resetError: resetMutation.error ? (resetMutation.error as Error).message : null,
   };
 }

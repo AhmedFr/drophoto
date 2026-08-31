@@ -89,12 +89,19 @@ async fn forget_drive_cascades_every_referencing_row_in_one_drive() {
         .upsert_media(nm(drive_id, "a.jpg", "hash-shared"))
         .await
         .unwrap();
-    c.tag_media(&[media_id], &["Trip".into()], &[]).await.unwrap();
+    // "Trip" is tagged on both drives' media (shared); "Solo" only ever
+    // exists on the forgotten drive's media.
+    c.tag_media(&[media_id], &["Trip".into(), "Solo".into()], &[])
+        .await
+        .unwrap();
 
     // A media row on the surviving drive, same hash — proves the cascade
     // is scoped by drive_id, not by content hash.
     let other_media_id = c
         .upsert_media(nm(other_drive_id, "b.jpg", "hash-shared"))
+        .await
+        .unwrap();
+    c.tag_media(&[other_media_id], &["Trip".into()], &[])
         .await
         .unwrap();
 
@@ -123,7 +130,7 @@ async fn forget_drive_cascades_every_referencing_row_in_one_drive() {
         .await
         .unwrap();
 
-    let found = c.search_media("Trip", 10).await.unwrap();
+    let found = c.search_media("Solo", 10).await.unwrap();
     assert_eq!(
         found.len(),
         1,
@@ -145,6 +152,16 @@ async fn forget_drive_cascades_every_referencing_row_in_one_drive() {
     let tags_for_gone = c.tags_for_media(&[media_id]).await.unwrap();
     assert!(tags_for_gone.is_empty());
 
+    // Review finding 12: a tag used only by the forgotten drive's media
+    // ("Solo") is pruned entirely; a tag shared with another drive's media
+    // ("Trip") survives, since it's still referenced by `other_media_id`.
+    let remaining_tag_names: Vec<String> = c.list_tags().await.unwrap().into_iter().map(|t| t.name).collect();
+    assert!(!remaining_tag_names.contains(&"Solo".to_string()));
+    assert!(remaining_tag_names.contains(&"Trip".to_string()));
+    let other_tags = c.tags_for_media(&[other_media_id]).await.unwrap();
+    assert_eq!(other_tags.len(), 1);
+    assert_eq!(other_tags[0].1.name, "Trip");
+
     // Its organize job/item are gone.
     assert!(c.get_organize_job(job_id).await.unwrap().is_none());
     assert!(c.list_organize_items(job_id, 10).await.unwrap().is_empty());
@@ -155,9 +172,12 @@ async fn forget_drive_cascades_every_referencing_row_in_one_drive() {
     assert!(runs.iter().all(|r| r.job_id != "scan-1"));
     assert!(runs.iter().any(|r| r.job_id == "geocode-1"));
 
-    // FTS no longer surfaces the forgotten media.
-    let found_after = c.search_media("Trip", 10).await.unwrap();
+    // FTS no longer surfaces the forgotten media ("Solo") but still finds
+    // the surviving drive's own "Trip"-tagged media.
+    let found_after = c.search_media("Solo", 10).await.unwrap();
     assert!(found_after.is_empty());
+    let trip_after = c.search_media("Trip", 10).await.unwrap();
+    assert_eq!(trip_after.len(), 1);
 
     // Its scan_errors are gone (drive ids are reused — no AUTOINCREMENT —
     // so leaving these behind could one day misattribute a stale error to

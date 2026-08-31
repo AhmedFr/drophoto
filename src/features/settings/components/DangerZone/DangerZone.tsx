@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { ResetAppDataDialog } from "../ResetAppDataDialog";
 import type { DangerZoneProps } from "./DangerZone.types";
 
-export function DangerZone({ onConfirmReset, resetting }: DangerZoneProps) {
+export function DangerZone({ onConfirmReset, resetting, resetError }: DangerZoneProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
 
   return (
@@ -24,6 +24,7 @@ export function DangerZone({ onConfirmReset, resetting }: DangerZoneProps) {
         onOpenChange={setDialogOpen}
         onConfirm={onConfirmReset}
         resetting={resetting}
+        error={resetError}
       />
     </div>
   );

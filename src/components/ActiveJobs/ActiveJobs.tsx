@@ -5,9 +5,17 @@ import { DotLoader } from "@/components/DotLoader";
 import { formatDurationShort } from "@/lib/format/duration";
 import { activeJobs, etaSeconds, jobRate, useJobsStore } from "@/lib/jobs/jobsStore";
 
-/** Scan and sidecar-sync jobs live under `/drives`; organize and revert jobs both live under the `/organize` wizard. */
+/**
+ * Scan and sidecar-sync jobs live under `/drives`; a regen-previews sweep
+ * is triggered from (and its progress/errors matter to) `/settings`;
+ * organize and revert jobs both live under the `/organize` wizard.
+ * `geocode-*` has the same pre-existing quirk of falling through to
+ * `/organize` (review finding 6 only covers `regen-*`, which is new).
+ */
 function targetPath(jobId: string): string {
-  return jobId.startsWith("scan-") || jobId.startsWith("sidecar-") ? "/drives" : "/organize";
+  if (jobId.startsWith("scan-") || jobId.startsWith("sidecar-")) return "/drives";
+  if (jobId.startsWith("regen-")) return "/settings";
+  return "/organize";
 }
 
 /**

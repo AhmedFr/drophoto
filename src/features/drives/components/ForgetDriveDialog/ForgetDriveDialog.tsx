@@ -41,10 +41,10 @@ export function ForgetDriveDialog({
 
         <p className="text-[13px] text-muted-foreground">
           {mediaCountError
-            ? "Couldn't determine how many photos are on this drive — you can still forget it; every photo currently catalogued for it will be removed, along with their tags/places. Files on the drive itself are NEVER touched."
+            ? "Couldn't determine how many photos are on this drive — you can still forget it; every photo currently catalogued for it will be removed, along with any tags no longer used by anything else. Files on the drive itself are NEVER touched."
             : mediaCount == null
               ? "Checking how many photos are in the catalog for this drive…"
-              : `Removes ${mediaCount} photo${mediaCount === 1 ? "" : "s"} from the catalog and all their tags/places; files on the drive itself are NEVER touched.`}
+              : `Removes ${mediaCount} photo${mediaCount === 1 ? "" : "s"} from the catalog, along with any tags no longer used by anything else; files on the drive itself are NEVER touched.`}
         </p>
         <p className="text-[13px] text-muted-foreground">
           Thumbnails already generated for those photos stay in the local thumbnail store — they may

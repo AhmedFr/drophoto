@@ -75,3 +75,18 @@ it("does not match when the other drive has no mount_path at all", () => {
   const d = drive({ mount_path: null });
   expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(false);
 });
+
+// Review finding 11: the frontend must mirror the backend's
+// `exclude_drive_id` so the drive actually being relinked never
+// disqualifies its own candidate volumes.
+it("excludeDriveId excludes the drive being relinked from the claim check", () => {
+  const v = volume({ uuid: "uuid-1" });
+  const d = drive({ id: 2, volume_uuid: "uuid-1" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d], 2)).toBe(false);
+});
+
+it("excludeDriveId still catches a claim by a genuinely different drive", () => {
+  const v = volume({ uuid: "uuid-1" });
+  const d = drive({ id: 2, volume_uuid: "uuid-1" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d], 3)).toBe(true);
+});

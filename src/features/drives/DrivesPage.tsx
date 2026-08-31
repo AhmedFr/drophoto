@@ -26,14 +26,21 @@ import { useJobEvents } from "./hooks/useJobEvents";
 import { useSources } from "./hooks/useSources";
 
 /**
- * The id of the still-running (`started`/`progress`) `scan-*` job mapped to
- * `driveId` via `jobsStore`'s `driveIds`, if any — reading from the global
- * store (rather than page-local state) is what lets a card keep showing its
- * scan's progress after `DrivesPage` unmounts and remounts (e.g. navigating
- * away and back). `matches` should never hold more than one entry in
- * practice — `DriveCard` disables Scan/Full while a scan is already running
- * for that drive — but takes the last (in `Object.entries` insertion order)
- * as a defensive fallback rather than assuming that invariant holds.
+ * The id of the `scan-*` job mapped to `driveId` via `jobsStore`'s
+ * `driveIds`, if any — reading from the global store (rather than
+ * page-local state) is what lets a card keep showing its scan's progress
+ * (or, once it's done, its terminal readout — `ScanProgress`'s
+ * `"N ok · N failed · N skipped"` / `"Up to date · N skipped"` line) after
+ * `DrivesPage` unmounts and remounts (e.g. navigating away and back), and
+ * after the scan itself finishes or is cancelled. This deliberately does
+ * *not* filter to `started`/`progress`: a `finished`/`cancelled` event must
+ * still be returned so the card keeps rendering it. `matches` should never
+ * hold more than one entry in practice — `DriveCard` disables Scan/Full
+ * while a scan is already running for that drive — but takes the last (in
+ * `Object.entries` insertion order, i.e. the most recently applied event)
+ * as a defensive fallback rather than assuming that invariant holds; this
+ * is also what lets a *new* scan's `started` event, once applied, take over
+ * from a prior scan's lingering terminal event for the same drive.
  */
 function activeScanJobId(
   driveId: number,
@@ -41,12 +48,7 @@ function activeScanJobId(
   driveIds: Record<string, number>,
 ): string | undefined {
   const matches = Object.entries(events)
-    .filter(
-      ([jobId, event]) =>
-        jobId.startsWith("scan-") &&
-        driveIds[jobId] === driveId &&
-        (event.kind === "started" || event.kind === "progress"),
-    )
+    .filter(([jobId]) => jobId.startsWith("scan-") && driveIds[jobId] === driveId)
     .map(([jobId]) => jobId);
   return matches[matches.length - 1];
 }
@@ -146,7 +148,7 @@ export function DrivesPage() {
     (v) => !registeredMountPaths.has(v.mount_path),
   );
   const relinkCandidates = (volumes.data ?? []).filter(
-    (v) => !isVolumeClaimedByAnotherDrive(v, drives.data ?? []),
+    (v) => !isVolumeClaimedByAnotherDrive(v, drives.data ?? [], driveToRelink?.id),
   );
 
   return (

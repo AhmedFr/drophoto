@@ -25,4 +25,6 @@ export type UseSettingsDataResult = {
 
   confirmResetAppData: () => void;
   resetting: boolean;
+  /** `reset_app_data`'s rejection message, if the last attempt failed — rendered inside `ResetAppDataDialog`, which stays open. */
+  resetError: string | null;
 };

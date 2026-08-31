@@ -327,6 +327,39 @@ it("shows a drive's running scan and lets it be cancelled after navigating away 
   await waitFor(() => expect(cancelArgs).toEqual({ jobId: "scan-7" }));
 });
 
+// Regression test for review finding 1: `activeScanJobId` used to filter to
+// `started`/`progress` events only, so once a scan's job reached a terminal
+// state its id dropped out of the lookup and `DriveCard` rendered nothing —
+// the "Up to date · N skipped" readout `ScanProgress` already knows how to
+// render was unreachable in the real app. Goes through the real store path
+// (`applyEvent`, not a hand-built event object) the way `JobEventsBridge`
+// would drive it.
+it("keeps showing the finished scan readout (with skipped count) after the scan completes", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
+    return undefined;
+  });
+
+  act(() => {
+    useJobsStore.getState().setJobDrive("scan-9", 1);
+    useJobsStore.getState().applyEvent({ kind: "started", job_id: "scan-9" });
+    useJobsStore
+      .getState()
+      .applyEvent({ kind: "progress", job_id: "scan-9", done: 5, total: 10, current: "a.jpg" });
+    useJobsStore
+      .getState()
+      .applyEvent({ kind: "finished", job_id: "scan-9", ok: 0, failed: 0, skipped: 3 });
+  });
+
+  renderPage();
+
+  expect(await screen.findByText("Up to date · 3 skipped")).toBeInTheDocument();
+  // The Scan button is re-enabled once the job reaches a terminal state.
+  expect(screen.getByRole("button", { name: "Scan" })).not.toBeDisabled();
+});
+
 it("starts a full rescan when the Full button is clicked", async () => {
   let startScanArgs: unknown;
   mockIPC((cmd, args) => {
@@ -633,6 +666,41 @@ it("excludes a volume already claimed by another registered drive from the Relin
 
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByText(/No unclaimed mounted volumes found/)).toBeInTheDocument();
+});
+
+// Regression test for review finding 11: `relinkCandidates` must exclude
+// the drive actually being relinked (via `excludeDriveId`), mirroring the
+// backend's `exclude_drive_id` — otherwise a drive whose own stale
+// `mount_path` happens to equal a mounted volume's `mount_path` would
+// wrongly disqualify that volume as "claimed by another drive" (by
+// itself).
+it("does not let the drive being relinked disqualify its own candidate volume via a stale mount_path", async () => {
+  const staleOfflineDrive = { ...offlineDrive, mount_path: "/Volumes/T7" };
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [staleOfflineDrive];
+    if (cmd === "list_volumes") {
+      return [
+        {
+          name: "T7",
+          mount_path: "/Volumes/T7",
+          total_bytes: 2_000_000_000,
+          free_bytes: 1_500_000_000,
+          is_removable: true,
+          uuid: "uuid-real",
+        },
+      ];
+    }
+    if (cmd === "list_sources") return [];
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Relink…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("T7")).toBeInTheDocument();
+  expect(within(dialog).queryByText(/No unclaimed mounted volumes found/)).not.toBeInTheDocument();
 });
 
 // Re-review finding 1: the drive can self-heal online while the Relink

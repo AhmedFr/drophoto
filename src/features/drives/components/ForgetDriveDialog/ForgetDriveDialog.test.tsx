@@ -55,7 +55,7 @@ it("shows the media count and explains what is and isn't touched", () => {
   );
   expect(
     screen.getByText(
-      "Removes 12 photos from the catalog and all their tags/places; files on the drive itself are NEVER touched.",
+      "Removes 12 photos from the catalog, along with any tags no longer used by anything else; files on the drive itself are NEVER touched.",
     ),
   ).toBeInTheDocument();
   expect(screen.getByText(/Thumbnails already generated/)).toBeInTheDocument();

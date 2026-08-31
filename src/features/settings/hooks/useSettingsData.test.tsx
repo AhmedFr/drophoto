@@ -3,11 +3,17 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
+import { toast } from "sonner";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
 import { useSettingsData } from "./useSettingsData";
 
+vi.mock("sonner", () => ({
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+}));
+
 beforeEach(() => {
   useJobsStore.setState({ events: {}, labels: {}, samples: {} });
+  vi.mocked(toast.error).mockClear();
 });
 
 function wrapperFor(queryClient: QueryClient) {
@@ -169,6 +175,53 @@ it("startRegen calls start_regen_previews", async () => {
 
   act(() => result.current.startRegen());
   await waitFor(() => expect(startRegenSpy).toHaveBeenCalledTimes(1));
+});
+
+// Regression test for review finding 2: `start_regen_previews` can be
+// refused (e.g. the auto-fired geocode sweep already holds the drive-0
+// admission bucket) with nothing else in the UI reacting — `regenRunning`
+// never flips — so the failure must be toasted rather than swallowed.
+it("toasts start_regen_previews' rejection message", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "storage_usage") {
+      return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
+    }
+    if (cmd === "start_regen_previews") {
+      throw { code: "unsupported", message: "a geocode sweep is already running" };
+    }
+    return undefined;
+  });
+
+  const { result } = render();
+  await waitFor(() => expect(result.current.settings).not.toBeNull());
+
+  act(() => result.current.startRegen());
+
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith("a geocode sweep is already running"),
+  );
+});
+
+it("confirmResetAppData surfaces reset_app_data's rejection message via resetError", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "storage_usage") {
+      return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
+    }
+    if (cmd === "reset_app_data") {
+      throw { code: "io", message: "couldn't delete thumbs directory" };
+    }
+    return undefined;
+  });
+
+  const { result } = render();
+  await waitFor(() => expect(result.current.settings).not.toBeNull());
+  expect(result.current.resetError).toBeNull();
+
+  act(() => result.current.confirmResetAppData());
+
+  await waitFor(() => expect(result.current.resetError).toBe("couldn't delete thumbs directory"));
 });
 
 it("confirmResetAppData calls reset_app_data and reports resetting while in flight", async () => {

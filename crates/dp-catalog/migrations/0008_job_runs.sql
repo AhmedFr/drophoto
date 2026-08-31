@@ -1,11 +1,11 @@
 -- Per-job run metrics: one row per terminal job run (done/cancelled/failed),
 -- recorded by `dp_jobs::JobRunner` via `Catalog::record_job_run`. Not tied to
 -- `organize_jobs` (which only ever covers organize/revert) — this covers
--- every job kind (scan, organize, revert, sidecar, geocode).
+-- every job kind (scan, organize, revert, sidecar, geocode, regen).
 CREATE TABLE job_runs (
     id INTEGER PRIMARY KEY,
     job_id TEXT NOT NULL,            -- "scan-3"
-    kind TEXT NOT NULL,              -- prefix: scan|organize|revert|sidecar|geocode
+    kind TEXT NOT NULL,              -- prefix: scan|organize|revert|sidecar|geocode|regen
     drive_id INTEGER,                -- NULL for global jobs
     status TEXT NOT NULL,            -- done|cancelled|failed
     ok INTEGER NOT NULL, failed INTEGER NOT NULL, skipped INTEGER NOT NULL,

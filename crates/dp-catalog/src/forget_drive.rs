@@ -51,6 +51,13 @@ use sqlx::SqlitePool;
 ///    into `media_tags` (`ON DELETE CASCADE` on `media_id`); `sources`
 ///    (`ON DELETE CASCADE` on `drive_id`); and `organize_rules`
 ///    (`ON DELETE CASCADE` on `drive_id`).
+/// 7. Every `tags` row left with no `media_tags` reference at all, once
+///    step 6's cascade has removed this drive's own `media_tags` rows —
+///    a tag that only ever existed on the forgotten drive would otherwise
+///    linger forever in the tag picker with nothing tagged. A tag still
+///    shared with any other drive's media survives untouched. `tags` has
+///    no FK of its own to cascade this, so it's pruned explicitly, in the
+///    same transaction, after the cascade that could have orphaned it.
 pub(crate) async fn forget_drive(pool: &SqlitePool, id: i64) -> DpResult<()> {
     let mut tx = pool.begin().await.map_err(db)?;
 
@@ -88,6 +95,11 @@ pub(crate) async fn forget_drive(pool: &SqlitePool, id: i64) -> DpResult<()> {
 
     sqlx::query("DELETE FROM drives WHERE id = ?")
         .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+
+    sqlx::query("DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)")
         .execute(&mut *tx)
         .await
         .map_err(db)?;

@@ -204,6 +204,25 @@ impl AppState {
         self.runner.is_running(job_id).then(|| job_id.clone())
     }
 
+    /// A read-only preview of what [`Self::start_job`] would do for a
+    /// non-exclusive `kind` job on `drive_id` right now — built from the
+    /// exact same [`job_admission`]/[`resolve_admission`] pair `start_job`
+    /// itself uses, so it can never disagree with the real decision made a
+    /// moment later. `None` means it would actually spawn (not a
+    /// guarantee — a concurrent call could still race in before the real
+    /// `start_job` runs, same as always); `Some` carries the id to reuse
+    /// or the refusal `start_job` would produce.
+    ///
+    /// Lets a command bail out of expensive prep work it would just throw
+    /// away on a deduped or refused call — e.g. `start_scan` building its
+    /// ~16k-row skip index before knowing whether the scan will even run
+    /// (review finding 10) — before doing anything else.
+    pub fn precheck(&self, kind: &str, drive_id: i64) -> Option<DpResult<String>> {
+        let jobs = lock_active_jobs(&self.active_jobs);
+        let decision = job_admission(&jobs, kind, drive_id, |id| self.runner.is_running(id));
+        precheck_resolution(resolve_admission(decision, kind, false, drive_id))
+    }
+
     /// Starts a `kind` job ("scan" or "organize") for `drive_id`: reuses
     /// the running job's id if one of the same kind is already active,
     /// refuses with [`DpError::Unsupported`] if a job of a *different*
@@ -374,6 +393,19 @@ fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool, driv
     }
 }
 
+/// Turns a [`Resolution`] into what [`AppState::precheck`] returns to its
+/// caller — factored out as a pure function so it's unit-testable without
+/// a real `AppState`. `Spawn` means "nothing to report, go ahead and do
+/// the expensive prep work"; `Reuse`/`Refuse` are exactly what the real
+/// `start_job` call would produce a moment later.
+fn precheck_resolution(resolution: Resolution) -> Option<DpResult<String>> {
+    match resolution {
+        Resolution::Spawn => None,
+        Resolution::Reuse(job_id) => Some(Ok(job_id)),
+        Resolution::Refuse(message) => Some(Err(DpError::Unsupported { message, path: None })),
+    }
+}
+
 /// Locks `active_jobs`, recovering from mutex poisoning instead of
 /// unwrapping — the guarded section is a trivial `HashMap` lookup/insert
 /// that can't leave the map in a state worth propagating a poisoned-lock
@@ -498,6 +530,36 @@ mod tests {
             resolve_admission(Admission::Existing("scan-0".into()), "scan", false, 1),
             Resolution::Reuse("scan-0".into())
         );
+    }
+
+    // Review finding 10: `precheck` (built on `precheck_resolution`) lets
+    // `start_scan` bail out of building its skip index before knowing
+    // whether the scan would even run.
+    #[test]
+    fn precheck_resolution_reports_nothing_for_spawn() {
+        assert!(precheck_resolution(Resolution::Spawn).is_none());
+    }
+
+    #[test]
+    fn precheck_resolution_reports_the_existing_id_to_reuse() {
+        // `DpResult<String>`'s `Err` arm (`DpError`) has no `PartialEq`, so
+        // this can't be a plain `assert_eq!` against the whole `Option`.
+        match precheck_resolution(Resolution::Reuse("scan-0".into())) {
+            Some(Ok(job_id)) => assert_eq!(job_id, "scan-0"),
+            other => panic!("expected Some(Ok(\"scan-0\")), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn precheck_resolution_reports_the_refusal_as_an_unsupported_error() {
+        let result = precheck_resolution(Resolution::Refuse("another job is running on this drive".into()));
+        match result {
+            Some(Err(DpError::Unsupported { message, path })) => {
+                assert_eq!(message, "another job is running on this drive");
+                assert_eq!(path, None);
+            }
+            other => panic!("expected Some(Err(Unsupported)), got {other:?}"),
+        }
     }
 
     /// The core of finding #3: an exclusive caller (`start_revert`) must

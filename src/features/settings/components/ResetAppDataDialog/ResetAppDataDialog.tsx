@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { RESET_CONFIRM_PHRASE } from "./ResetAppDataDialog.constants";
 import type { ResetAppDataDialogProps } from "./ResetAppDataDialog.types";
 
-export function ResetAppDataDialog({ open, onOpenChange, onConfirm, resetting }: ResetAppDataDialogProps) {
+export function ResetAppDataDialog({ open, onOpenChange, onConfirm, resetting, error }: ResetAppDataDialogProps) {
   const [typed, setTyped] = useState("");
   const confirmed = typed === RESET_CONFIRM_PHRASE;
 
@@ -28,6 +28,7 @@ export function ResetAppDataDialog({ open, onOpenChange, onConfirm, resetting }:
         <p className="text-[13px] text-muted-foreground">
           To fully uninstall, quit and drag drophoto to the Trash afterwards.
         </p>
+        {error && <p className="font-mono text-[11px] text-red-400">{error}</p>}
 
         <label className="flex flex-col gap-1.5">
           <span className="font-mono text-[10px] tracking-[1.5px] text-faint">

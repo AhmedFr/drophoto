@@ -22,6 +22,7 @@ export function SettingsPage() {
     regenRunning,
     confirmResetAppData,
     resetting,
+    resetError,
   } = useSettingsData();
 
   return (
@@ -50,7 +51,7 @@ export function SettingsPage() {
           />
         )}
 
-        <DangerZone onConfirmReset={confirmResetAppData} resetting={resetting} />
+        <DangerZone onConfirmReset={confirmResetAppData} resetting={resetting} resetError={resetError} />
       </div>
     </div>
   );

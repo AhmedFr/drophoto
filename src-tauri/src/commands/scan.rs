@@ -43,6 +43,14 @@ pub async fn start_scan(
         });
     }
 
+    // Admission-check up front: a duplicate Scan click (dedupe) or a click
+    // while another job holds the drive (refusal) must not first pay for
+    // building the skip index below just to throw the result away — see
+    // `AppState::precheck`'s doc comment (review finding 10).
+    if let Some(result) = state.precheck("scan", drive_id) {
+        return result;
+    }
+
     let full = full.unwrap_or(false);
     let skip_index = if full {
         HashMap::new()

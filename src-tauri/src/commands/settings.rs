@@ -98,9 +98,13 @@ pub async fn start_regen_previews(state: State<'_, AppState>) -> Result<String, 
 /// it. Uses `state.app_data_dir` (resolved once at startup, in
 /// `AppState::init`) rather than re-resolving it here — one less place
 /// that could, even in principle, disagree with what `storage_usage`
-/// computed against. Nothing cancels an in-flight scan/regen job first;
-/// harmless in practice since `exit(0)` follows immediately and a
-/// half-finished write left behind is cleaned up by the delete anyway.
+/// computed against. Nothing cancels an in-flight scan/regen job first, so
+/// a concurrent write can make a deletion fail (e.g. `ENOTEMPTY`); `?`
+/// propagates that as an error instead of exiting, so the frontend gets to
+/// show it (see `useSettingsData`'s `resetError`) rather than the app
+/// silently continuing to run against a partially-deleted app-data dir.
+/// `exit(0)` only ever runs once every deletion in [`reset_app_data_at`]
+/// (in its documented `thumbs/`-then-`catalog.db*` order) has succeeded.
 #[tauri::command]
 pub async fn reset_app_data(state: State<'_, AppState>) -> Result<(), DpError> {
     reset_app_data_at(&state.app_data_dir)?;
@@ -109,22 +113,31 @@ pub async fn reset_app_data(state: State<'_, AppState>) -> Result<(), DpError> {
 
 /// The actual deletion [`reset_app_data`] performs, factored out so it can
 /// be unit-tested against a temp directory — never the real app-data path.
-/// Deletes `catalog.db` plus its `-wal`/`-shm` siblings (if present, WAL
-/// mode) and the whole `thumbs/` directory, all directly under `dir`.
+/// Deletes the whole `thumbs/` directory, then `catalog.db` plus its
+/// `-wal`/`-shm` siblings (if present, WAL mode), all directly under `dir`.
 /// Missing files/directories are silently skipped rather than erroring —
 /// a partial or already-reset app-data dir is a normal, safe starting
 /// point, not a failure.
+///
+/// `thumbs/` is deleted *before* `catalog.db*` deliberately: nothing
+/// cancels an in-flight job first (see [`reset_app_data`]'s doc comment),
+/// so a concurrent write can make `remove_dir_all(thumbs)` fail (e.g.
+/// `ENOTEMPTY`). On failure this returns `Err` without touching anything
+/// else, and [`reset_app_data`] propagates it (via `?`) instead of exiting
+/// — so the worst case is "thumbs partially cleared, catalog.db untouched,
+/// app keeps running and the dialog shows the error", not "catalog.db is
+/// gone out from under a still-running app with no visible error".
 fn reset_app_data_at(dir: &Path) -> DpResult<()> {
+    let thumbs = dir.join("thumbs");
+    if thumbs.exists() {
+        std::fs::remove_dir_all(&thumbs).map_err(|e| DpError::io(&e, thumbs.display().to_string()))?;
+    }
+
     for suffix in ["", "-wal", "-shm"] {
         let path = dir.join(format!("catalog.db{suffix}"));
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| DpError::io(&e, path.display().to_string()))?;
         }
-    }
-
-    let thumbs = dir.join("thumbs");
-    if thumbs.exists() {
-        std::fs::remove_dir_all(&thumbs).map_err(|e| DpError::io(&e, thumbs.display().to_string()))?;
     }
 
     Ok(())
@@ -272,6 +285,35 @@ mod tests {
     fn reset_app_data_at_is_a_no_op_on_an_already_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         assert!(reset_app_data_at(dir.path()).is_ok());
+    }
+
+    // Review finding 4: `thumbs/` must be deleted before `catalog.db*`, and
+    // a failed deletion must be returned as an `Err` (not silently
+    // swallowed by an `exit(0)` that never runs) rather than leaving
+    // `catalog.db` gone out from under a still-running app.
+    #[test]
+    #[cfg(unix)]
+    fn reset_app_data_at_deletes_thumbs_before_catalog_db_and_returns_err_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "catalog.db", b"db");
+        write(dir.path(), "thumbs/hash1/400.webp", b"thumb");
+
+        let thumbs = dir.path().join("thumbs");
+        // Strip write permission from `thumbs` itself so an entry inside
+        // it can't be unlinked — `remove_dir_all` fails partway through.
+        std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = reset_app_data_at(dir.path());
+
+        // Restore permissions so the tempdir can clean itself up.
+        std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(matches!(result, Err(DpError::Io { .. })));
+        // catalog.db must still be present: thumbs/ is attempted first, so
+        // a failure there must return before catalog.db is ever touched.
+        assert!(dir.path().join("catalog.db").exists());
     }
 
     #[test]

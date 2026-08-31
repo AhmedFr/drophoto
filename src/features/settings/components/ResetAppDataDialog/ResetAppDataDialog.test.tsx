@@ -4,12 +4,12 @@ import { vi } from "vitest";
 import { ResetAppDataDialog } from "./ResetAppDataDialog";
 
 it("renders nothing when closed", () => {
-  render(<ResetAppDataDialog open={false} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={false} />);
+  render(<ResetAppDataDialog open={false} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={false} error={null} />);
   expect(screen.queryByText("Reset app data")).not.toBeInTheDocument();
 });
 
 it("explains exactly what will and won't be touched", () => {
-  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={false} />);
+  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={false} error={null} />);
   expect(
     screen.getByText(
       "Deletes the catalog and every cached thumbnail. Your photos, folders and .xmp sidecar files on your drives are NEVER touched.",
@@ -19,7 +19,7 @@ it("explains exactly what will and won't be touched", () => {
 });
 
 it("keeps the confirm button disabled until RESET is typed exactly", async () => {
-  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={false} />);
+  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={false} error={null} />);
   const confirmButton = screen.getByRole("button", { name: "Reset app data" });
   const input = screen.getByLabelText("Type RESET to confirm");
 
@@ -39,7 +39,7 @@ it("keeps the confirm button disabled until RESET is typed exactly", async () =>
 
 it("calls onConfirm only once RESET is typed and the button is clicked", async () => {
   const onConfirm = vi.fn();
-  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={onConfirm} resetting={false} />);
+  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={onConfirm} resetting={false} error={null} />);
 
   await userEvent.type(screen.getByLabelText("Type RESET to confirm"), "RESET");
   await userEvent.click(screen.getByRole("button", { name: "Reset app data" }));
@@ -48,15 +48,29 @@ it("calls onConfirm only once RESET is typed and the button is clicked", async (
 });
 
 it("disables both buttons and relabels confirm while resetting", () => {
-  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={true} />);
+  render(<ResetAppDataDialog open={true} onOpenChange={vi.fn()} onConfirm={vi.fn()} resetting={true} error={null} />);
   expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Resetting…" })).toBeDisabled();
+});
+
+it("shows the reset error when the last attempt failed, without closing the dialog", () => {
+  render(
+    <ResetAppDataDialog
+      open={true}
+      onOpenChange={vi.fn()}
+      onConfirm={vi.fn()}
+      resetting={false}
+      error="couldn't delete thumbs directory"
+    />,
+  );
+  expect(screen.getByText("couldn't delete thumbs directory")).toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
 
 it("clears the typed text when the dialog is closed and reopened", async () => {
   const onOpenChange = vi.fn();
   const { rerender } = render(
-    <ResetAppDataDialog open={true} onOpenChange={onOpenChange} onConfirm={vi.fn()} resetting={false} />,
+    <ResetAppDataDialog open={true} onOpenChange={onOpenChange} onConfirm={vi.fn()} resetting={false} error={null} />,
   );
   await userEvent.type(screen.getByLabelText("Type RESET to confirm"), "RESET");
   expect(screen.getByRole("button", { name: "Reset app data" })).toBeEnabled();
@@ -64,8 +78,8 @@ it("clears the typed text when the dialog is closed and reopened", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(onOpenChange).toHaveBeenCalledWith(false);
 
-  rerender(<ResetAppDataDialog open={false} onOpenChange={onOpenChange} onConfirm={vi.fn()} resetting={false} />);
-  rerender(<ResetAppDataDialog open={true} onOpenChange={onOpenChange} onConfirm={vi.fn()} resetting={false} />);
+  rerender(<ResetAppDataDialog open={false} onOpenChange={onOpenChange} onConfirm={vi.fn()} resetting={false} error={null} />);
+  rerender(<ResetAppDataDialog open={true} onOpenChange={onOpenChange} onConfirm={vi.fn()} resetting={false} error={null} />);
 
   expect(screen.getByLabelText("Type RESET to confirm")).toHaveValue("");
   expect(screen.getByRole("button", { name: "Reset app data" })).toBeDisabled();

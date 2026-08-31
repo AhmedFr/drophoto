@@ -83,6 +83,18 @@ it("links a sidecar sync job to /drives", async () => {
   expect(await screen.findByText("Sidecar sync")).toBeInTheDocument();
 });
 
+// Regression test for review finding 6: a `regen-*` row used to fall
+// through `targetPath`'s catch-all and route to `/organize`, so clicking
+// "REGENERATE PREVIEWS" in the sidebar sent the user into the Organize
+// wizard instead of back to Settings, where the sweep was started from.
+it("links a regen-previews job to /settings", async () => {
+  useJobsStore.getState().applyEvent({ kind: "started", job_id: "regen-0" });
+  renderWithRouter(<ActiveJobs />);
+
+  expect(await screen.findByRole("link")).toHaveAttribute("href", "/settings");
+  expect(await screen.findByText("Regenerate previews")).toBeInTheDocument();
+});
+
 it("renders one row per active job", async () => {
   useJobsStore.getState().applyEvent({ kind: "started", job_id: "scan-0" });
   useJobsStore.getState().applyEvent({ kind: "started", job_id: "organize-0" });
