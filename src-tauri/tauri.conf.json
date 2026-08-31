@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,6 +38,12 @@
     ],
     "macOS": {
       "signingIdentity": "Developer ID Application: Ahmed ABOUELLEIL SAYED (82S6RGN448)"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "UPDATER_PUBKEY_TBD",
+      "endpoints": ["https://github.com/AhmedFr/drophoto/releases/latest/download/latest.json"]
     }
   }
 }

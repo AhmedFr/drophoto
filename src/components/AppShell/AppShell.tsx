@@ -1,5 +1,6 @@
 import { Toaster } from "sonner";
 import { JobEventsBridge } from "@/components/JobEventsBridge";
+import { UpdateNotifier } from "@/components/UpdateNotifier";
 import type { AppShellProps } from "./AppShell.types";
 
 export function AppShell({ sidebar, children }: AppShellProps) {
@@ -9,6 +10,10 @@ export function AppShell({ sidebar, children }: AppShellProps) {
           tracking, and completion gets toasted, no matter which page is
           on screen — see `JobEventsBridge`. */}
       <JobEventsBridge />
+      {/* Mounted once here too — the app's single startup update check,
+          independent of whether Settings is ever opened; see
+          `UpdateNotifier`'s own docs. */}
+      <UpdateNotifier />
       {sidebar}
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">{children}</main>
       <Toaster

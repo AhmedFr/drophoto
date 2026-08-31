@@ -2,11 +2,26 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { vi } from "vitest";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
+import { checkForUpdate, getCurrentVersion } from "@/lib/api/updater";
 import { SettingsPage } from "./SettingsPage";
+
+// `UpdatesSection`'s `useUpdater` goes through `src/lib/api/updater`, which
+// wraps the updater/process Tauri plugins directly rather than `invoke` —
+// `mockIPC` doesn't cover those plugin channels, so the wrapper is mocked
+// instead (per the wrapper's own test-strategy note).
+vi.mock("@/lib/api/updater", () => ({
+  checkForUpdate: vi.fn(),
+  downloadAndInstallUpdate: vi.fn(),
+  relaunchApp: vi.fn(),
+  getCurrentVersion: vi.fn(),
+}));
 
 beforeEach(() => {
   useJobsStore.setState({ events: {}, labels: {}, samples: {} });
+  vi.mocked(checkForUpdate).mockResolvedValue(null);
+  vi.mocked(getCurrentVersion).mockResolvedValue("0.3.0");
 });
 
 function renderPage() {
@@ -39,6 +54,19 @@ it("renders the Settings header", async () => {
   mockDefaults();
   renderPage();
   expect(await screen.findByRole("heading")).toHaveTextContent("SETTINGS");
+});
+
+it("renders the updates section first, above storage", async () => {
+  mockDefaults();
+  renderPage();
+  const labels = await screen.findAllByText(/^(UPDATES|STORAGE)$/);
+  expect(labels.map((el) => el.textContent)).toEqual(["UPDATES", "STORAGE"]);
+});
+
+it("shows the current app version in the updates section", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByText("Current: v0.3.0")).toBeInTheDocument();
 });
 
 it("renders the storage breakdown once it loads", async () => {

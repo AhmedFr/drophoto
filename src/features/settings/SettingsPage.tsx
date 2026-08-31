@@ -1,9 +1,11 @@
 import { PageHeader } from "@/components/PageHeader";
 import { PREVIEW_EDGES } from "@/lib/api/settings";
+import { UpdatesSection } from "./components/UpdatesSection";
 import { StorageSection } from "./components/StorageSection";
 import { QualityPicker } from "./components/QualityPicker";
 import { DangerZone } from "./components/DangerZone";
 import { useSettingsData } from "./hooks/useSettingsData";
+import { useUpdater } from "./hooks/useUpdater";
 
 export function SettingsPage() {
   const {
@@ -24,11 +26,14 @@ export function SettingsPage() {
     resetting,
     resetError,
   } = useSettingsData();
+  const updater = useUpdater();
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Settings" />
       <div className="flex-1 overflow-y-auto">
+        <UpdatesSection {...updater} />
+
         <StorageSection
           usage={storage}
           loading={storageLoading}
