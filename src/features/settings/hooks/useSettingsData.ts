@@ -7,6 +7,7 @@ import {
   setPreviewQuality,
   startRegenPreviews,
   storageUsage,
+  uninstallApp,
 } from "@/lib/api/settings";
 import type { JobEvent } from "@/lib/api/scan";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
@@ -63,6 +64,7 @@ export function useSettingsData(): UseSettingsDataResult {
     },
   });
   const resetMutation = useMutation({ mutationFn: resetAppData });
+  const uninstallMutation = useMutation({ mutationFn: uninstallApp });
 
   const events = useJobsStore((s) => s.events);
   const regenRunning = isRegenRunning(events);
@@ -96,5 +98,11 @@ export function useSettingsData(): UseSettingsDataResult {
     // matching how `ForgetDriveDialog`/`RelinkDriveDialog` surface their
     // own mutation errors.
     resetError: resetMutation.error ? (resetMutation.error as Error).message : null,
+
+    confirmUninstall: () => uninstallMutation.mutate(),
+    uninstalling: uninstallMutation.isPending,
+    // Rendered inside `UninstallDialog` (which stays open on failure) —
+    // same pattern as `resetError` above.
+    uninstallError: uninstallMutation.error ? (uninstallMutation.error as Error).message : null,
   };
 }

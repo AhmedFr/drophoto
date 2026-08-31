@@ -64,3 +64,16 @@ export const startRegenPreviews = () => invokeApi<string>("start_regen_previews"
  * not something to await for a response.
  */
 export const resetAppData = () => invokeApi<void>("reset_app_data");
+
+/**
+ * Danger-zone action: deletes the app's own catalog and cached thumbnails
+ * (same as `resetAppData`), then moves the running `.app` bundle itself to
+ * the Trash — never a permanent delete — and exits. Never touches the
+ * user's photos, drives, or `.xmp` sidecar files. Rejects with an
+ * `ApiError` (code `"unsupported"`) when not running from an installed
+ * `.app` bundle (e.g. a dev build). Like `resetAppData`, the promise this
+ * returns will generally never resolve on success — the app process exits
+ * as part of handling the command — so callers should treat firing it as
+ * the point of no return, not something to await for a response.
+ */
+export const uninstallApp = () => invokeApi<void>("uninstall_app");

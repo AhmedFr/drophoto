@@ -61,6 +61,7 @@ pub fn run() {
             commands::settings::storage_usage,
             commands::settings::start_regen_previews,
             commands::settings::reset_app_data,
+            commands::settings::uninstall_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -247,3 +247,48 @@ it("confirmResetAppData calls reset_app_data and reports resetting while in flig
   resolveReset();
   await waitFor(() => expect(result.current.resetting).toBe(false));
 });
+
+it("confirmUninstall surfaces uninstall_app's rejection message via uninstallError", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "storage_usage") {
+      return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
+    }
+    if (cmd === "uninstall_app") {
+      throw { code: "unsupported", message: "not running from an installed .app bundle" };
+    }
+    return undefined;
+  });
+
+  const { result } = render();
+  await waitFor(() => expect(result.current.settings).not.toBeNull());
+  expect(result.current.uninstallError).toBeNull();
+
+  act(() => result.current.confirmUninstall());
+
+  await waitFor(() => expect(result.current.uninstallError).toBe("not running from an installed .app bundle"));
+});
+
+it("confirmUninstall calls uninstall_app and reports uninstalling while in flight", async () => {
+  let resolveUninstall: () => void = () => {};
+  const uninstallPromise = new Promise<void>((resolve) => {
+    resolveUninstall = resolve;
+  });
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "storage_usage") {
+      return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
+    }
+    if (cmd === "uninstall_app") return uninstallPromise;
+    return undefined;
+  });
+
+  const { result } = render();
+  await waitFor(() => expect(result.current.settings).not.toBeNull());
+
+  act(() => result.current.confirmUninstall());
+  await waitFor(() => expect(result.current.uninstalling).toBe(true));
+
+  resolveUninstall();
+  await waitFor(() => expect(result.current.uninstalling).toBe(false));
+});

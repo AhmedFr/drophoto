@@ -157,3 +157,20 @@ it("triggers reset_app_data once the danger-zone dialog is confirmed", async () 
 
   expect(resetAppData).toHaveBeenCalledTimes(1);
 });
+
+it("triggers uninstall_app once the danger-zone uninstall dialog is confirmed", async () => {
+  const uninstallApp = vi.fn().mockReturnValue(undefined);
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return settings;
+    if (cmd === "storage_usage") return usage;
+    if (cmd === "uninstall_app") return uninstallApp();
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Uninstall drophoto…" }));
+  await userEvent.type(screen.getByLabelText("Type UNINSTALL to confirm"), "UNINSTALL");
+  await userEvent.click(screen.getByRole("button", { name: "Uninstall drophoto" }));
+
+  expect(uninstallApp).toHaveBeenCalledTimes(1);
+});

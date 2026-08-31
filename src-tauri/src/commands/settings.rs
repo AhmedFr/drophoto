@@ -143,6 +143,57 @@ fn reset_app_data_at(dir: &Path) -> DpResult<()> {
     Ok(())
 }
 
+/// Danger-zone action: moves the running `.app` bundle itself to the Trash
+/// (never a permanent delete) after deleting the app's own data — same
+/// deletion [`reset_app_data`] performs, via the same [`reset_app_data_at`]
+/// helper — then exits. NEVER touches the user's photos, drives, or `.xmp`
+/// sidecar files, and never touches anything outside the app's own data
+/// dir and its own `.app` bundle.
+///
+/// Order: (1) [`plan_uninstall`] resolves the bundle path from
+/// `current_exe()` — pure, no filesystem access, fails fast before
+/// anything is touched if this isn't an installed `.app` (e.g. `cargo
+/// tauri dev`); (2) delete app data; (3) `trash::delete` the bundle — to
+/// Trash, never `remove_dir_all`; (4) `exit(0)`. Any failure in (1)-(3) is
+/// returned as `Err` instead of exiting, so the frontend can show it (see
+/// `useSettingsData`'s `uninstallError`) rather than the app silently
+/// continuing to run, or exiting having only half-finished.
+#[tauri::command]
+pub async fn uninstall_app(state: State<'_, AppState>) -> Result<(), DpError> {
+    let exe_path = std::env::current_exe().map_err(|e| DpError::io(&e, None))?;
+    let bundle_path = plan_uninstall(&exe_path)?;
+
+    reset_app_data_at(&state.app_data_dir)?;
+
+    trash::delete(&bundle_path).map_err(|e| DpError::Io {
+        message: e.to_string(),
+        path: Some(bundle_path.display().to_string()),
+    })?;
+
+    std::process::exit(0);
+}
+
+/// The pure, unit-testable part of [`uninstall_app`]: finds the nearest
+/// (innermost) `.app` bundle ancestor containing `exe_path` — no
+/// filesystem access, so no real bundle needs to exist on disk to test
+/// this. In a normal signed install this is e.g.
+/// `/Applications/drophoto.app` for an exe at
+/// `/Applications/drophoto.app/Contents/MacOS/drophoto`. A dev run's exe
+/// (e.g. `target/debug/drophoto`) has no `.app` path component at all, so
+/// there's nothing to trash — this refuses with [`DpError::Unsupported`]
+/// rather than trashing something arbitrary; [`uninstall_app`] surfaces
+/// that to the UI plainly instead of silently doing nothing.
+fn plan_uninstall(exe_path: &Path) -> DpResult<PathBuf> {
+    exe_path
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|ext| ext == "app"))
+        .map(PathBuf::from)
+        .ok_or_else(|| DpError::Unsupported {
+            message: "not running from an installed .app bundle".to_string(),
+            path: Some(exe_path.display().to_string()),
+        })
+}
+
 /// Walks `thumbs_root` (one level of hash directories, each holding at
 /// most a `400.webp` and a `2000.webp`) summing bytes by filename, then
 /// adds `catalog_path`'s size plus its `-wal`/`-shm` siblings when
@@ -333,5 +384,29 @@ mod tests {
     fn validate_preview_edge_rejects_an_off_step_value() {
         let err = validate_preview_edge(999).unwrap_err();
         assert!(matches!(err, DpError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn plan_uninstall_finds_the_app_bundle_ancestor_of_the_running_executable() {
+        let exe = Path::new("/Applications/drophoto.app/Contents/MacOS/drophoto");
+        let bundle = plan_uninstall(exe).unwrap();
+        assert_eq!(bundle, PathBuf::from("/Applications/drophoto.app"));
+    }
+
+    #[test]
+    fn plan_uninstall_refuses_a_dev_run_with_no_app_bundle_ancestor() {
+        let exe = Path::new("target/debug/drophoto");
+        let err = plan_uninstall(exe).unwrap_err();
+        assert!(matches!(err, DpError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn plan_uninstall_returns_the_innermost_app_ancestor_when_nested() {
+        let exe = Path::new("/Applications/Outer.app/Contents/Resources/Inner.app/Contents/MacOS/drophoto");
+        let bundle = plan_uninstall(exe).unwrap();
+        assert_eq!(
+            bundle,
+            PathBuf::from("/Applications/Outer.app/Contents/Resources/Inner.app")
+        );
     }
 }

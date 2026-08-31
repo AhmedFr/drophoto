@@ -5,6 +5,7 @@ import {
   setPreviewQuality,
   startRegenPreviews,
   storageUsage,
+  uninstallApp,
   PREVIEW_EDGES,
 } from "./settings";
 import { ApiError } from "./client";
@@ -123,4 +124,24 @@ it("wraps structured errors from reset_app_data", async () => {
     throw { code: "io", message: "boom" };
   });
   await expect(resetAppData()).rejects.toBeInstanceOf(ApiError);
+});
+
+it("calls uninstall_app with no arguments", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "uninstall_app") {
+      received = args;
+      return null;
+    }
+    return undefined;
+  });
+  await uninstallApp();
+  expect(received).toEqual({});
+});
+
+it("wraps structured errors from uninstall_app", async () => {
+  mockIPC(() => {
+    throw { code: "unsupported", message: "not running from an installed .app bundle" };
+  });
+  await expect(uninstallApp()).rejects.toBeInstanceOf(ApiError);
 });

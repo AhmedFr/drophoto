@@ -25,6 +25,9 @@ export function SettingsPage() {
     confirmResetAppData,
     resetting,
     resetError,
+    confirmUninstall,
+    uninstalling,
+    uninstallError,
   } = useSettingsData();
   const updater = useUpdater();
 
@@ -56,7 +59,14 @@ export function SettingsPage() {
           />
         )}
 
-        <DangerZone onConfirmReset={confirmResetAppData} resetting={resetting} resetError={resetError} />
+        <DangerZone
+          onConfirmReset={confirmResetAppData}
+          resetting={resetting}
+          resetError={resetError}
+          onConfirmUninstall={confirmUninstall}
+          uninstalling={uninstalling}
+          uninstallError={uninstallError}
+        />
       </div>
     </div>
   );
