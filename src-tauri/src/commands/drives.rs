@@ -3,16 +3,27 @@ use dp_core::{DpError, Drive, NewDrive, Volume};
 use tauri::State;
 
 /// Whether `volume` is already claimed by a *registered* drive other than
-/// `exclude_drive_id` — either by uuid or by its own display name — used
-/// by [`plan_relink`] to refuse adopting a volume into a second drive row
-/// (the same one-volume-one-drive invariant `resolve_presence` enforces
-/// at match time, checked here up front instead of only ever discovering
-/// the collision on the next presence tick).
+/// `exclude_drive_id` — by uuid, by its own display name, or by its
+/// current `mount_path` — used by [`plan_relink`] to refuse adopting a
+/// volume into a second drive row (the same one-volume-one-drive
+/// invariant `resolve_presence` enforces at match time, checked here up
+/// front instead of only ever discovering the collision on the next
+/// presence tick).
+///
+/// The `mount_path` arm exists for a narrow window `resolve_presence`'s
+/// own `uuid`/`label` tiers can't see yet: a drive freshly matched via
+/// its *prior-mount-path* tier (right after reconnecting) is online at
+/// this exact `mount_path` even though the presence watcher's backfill
+/// for that tick — which would otherwise fill in `volume_uuid`/
+/// `volume_label` — hasn't run yet. Without this arm, a second, offline
+/// drive could be relinked to the very volume the first drive is
+/// currently, correctly, attached to (re-review finding 2).
 fn volume_claimed_by_another_drive(volume: &Volume, drives: &[Drive], exclude_drive_id: i64) -> bool {
     drives.iter().any(|d| {
         d.id != exclude_drive_id
             && ((volume.uuid.is_some() && d.volume_uuid.as_deref() == volume.uuid.as_deref())
-                || d.volume_label.as_deref() == Some(volume.name.as_str()))
+                || d.volume_label.as_deref() == Some(volume.name.as_str())
+                || d.mount_path.as_deref() == Some(volume.mount_path.as_str()))
     })
 }
 
@@ -29,12 +40,37 @@ struct RelinkPlan {
     free: Option<u64>,
 }
 
+/// Decides what [`relink_drive`] should do, given `drives` and `volumes`
+/// both freshly read from the catalog/volume-provider at command time
+/// (never a UI-held snapshot) — this is what makes the online check below
+/// authoritative against a race rather than just redundant with the
+/// frontend's own `!drive.online` gate on the `Relink…` menu item.
+///
+/// Refuses when `drive_id`'s own row is currently online: a drive that's
+/// already correctly attached to a volume has no business being relinked
+/// at all, and the realistic way this call is even reached for an online
+/// drive is a UI race — the dialog was opened while the drive was
+/// offline, then the drive self-healed online (a normal reconnect) while
+/// the dialog stayed open with a stale snapshot, and the user then picked
+/// a candidate. Silently proceeding would durably overwrite an
+/// already-correct drive's identity/mount_path with a different physical
+/// volume's — deliberate-overwrite `relink_drive` never re-derives
+/// anything from presence on its own, so nothing else catches this.
 fn plan_relink(
     volumes: &[Volume],
     drives: &[Drive],
     drive_id: i64,
     mount_path: &str,
 ) -> Result<RelinkPlan, DpError> {
+    if let Some(target) = drives.iter().find(|d| d.id == drive_id) {
+        if target.online {
+            return Err(DpError::Unsupported {
+                message: "drive is already online — relink is only for offline drives".to_string(),
+                path: None,
+            });
+        }
+    }
+
     let volume = volumes
         .iter()
         .find(|v| v.mount_path == mount_path)
@@ -110,10 +146,12 @@ pub async fn forget_drive(state: State<'_, AppState>, drive_id: i64) -> Result<(
 /// that produced this feature's original field report — see
 /// `dp_catalog::drives::relink_drive`'s doc comment.
 ///
-/// Refuses with [`DpError::Unsupported`] if `mount_path` isn't currently
-/// mounted, or if the volume there is already claimed (by uuid or label)
-/// by a *different* registered drive — relinking must never silently
-/// double-claim a volume another drive row already owns.
+/// Refuses with [`DpError::Unsupported`] if `drive_id` is currently
+/// online (re-checked live here, not trusted from the UI — see
+/// [`plan_relink`]'s doc comment), if `mount_path` isn't currently
+/// mounted, or if the volume there is already claimed (by uuid, label, or
+/// current mount_path) by a *different* registered drive — relinking must
+/// never silently double-claim a volume another drive row already owns.
 #[tauri::command]
 pub async fn relink_drive(
     state: State<'_, AppState>,
@@ -235,5 +273,88 @@ mod tests {
         let v = volume("Untitled", "/Volumes/Untitled", None);
         let drives = vec![drive(2, None, None)];
         assert!(!volume_claimed_by_another_drive(&v, &drives, 1));
+    }
+
+    /// Re-review finding 1 (MAJOR): the server-side guard against
+    /// relinking a currently-online drive — the exact case a stale UI
+    /// snapshot (the dialog opened while offline, the drive then
+    /// self-healed online while the dialog stayed open) can otherwise
+    /// reach without any adversarial input.
+    #[test]
+    fn plan_relink_refuses_a_drive_that_is_currently_online() {
+        let volumes = vec![volume("T7", "/Volumes/T7", Some("uuid-real"))];
+        let online_drive = Drive {
+            online: true,
+            mount_path: Some("/Volumes/AlreadyHere".into()),
+            ..drive(1, None, None)
+        };
+
+        let err = plan_relink(&volumes, &[online_drive], 1, "/Volumes/T7").unwrap_err();
+
+        assert!(matches!(err, DpError::Unsupported { .. }));
+        let DpError::Unsupported { message, .. } = err else {
+            unreachable!()
+        };
+        assert!(message.contains("already online"), "message was: {message}");
+    }
+
+    /// An offline drive must still be relinkable — the online guard must
+    /// only ever fire for a genuinely online target.
+    #[test]
+    fn plan_relink_allows_an_offline_drive() {
+        let volumes = vec![volume("T7", "/Volumes/T7", Some("uuid-real"))];
+        let offline_drive = drive(1, None, None);
+        assert!(!offline_drive.online);
+
+        assert!(plan_relink(&volumes, &[offline_drive], 1, "/Volumes/T7").is_ok());
+    }
+
+    /// A drive_id with no matching row at all (already forgotten
+    /// concurrently, say) must not itself trip the online guard — there's
+    /// no "currently online" state to contradict.
+    #[test]
+    fn plan_relink_does_not_require_the_target_drive_to_exist_in_drives() {
+        let volumes = vec![volume("T7", "/Volumes/T7", Some("uuid-real"))];
+        assert!(plan_relink(&volumes, &[], 1, "/Volumes/T7").is_ok());
+    }
+
+    /// Re-review finding 2 (MINOR): a volume must also count as claimed
+    /// when its mount_path equals another registered drive's *current*
+    /// mount_path — the window before that drive's uuid/label have been
+    /// backfilled for the tick it reconnected in (matched via
+    /// `resolve_presence`'s prior-mount-path tier only).
+    #[test]
+    fn volume_claimed_by_another_drive_treats_a_matching_mount_path_as_claimed() {
+        let v = volume("Untitled", "/Volumes/Untitled", None);
+        let other_drive = Drive {
+            mount_path: Some("/Volumes/Untitled".into()),
+            online: true,
+            ..drive(2, None, None) // no uuid/label backfilled yet
+        };
+        assert!(volume_claimed_by_another_drive(&v, &[other_drive], 1));
+    }
+
+    #[test]
+    fn volume_claimed_by_another_drive_ignores_a_mount_path_match_on_the_excluded_drive() {
+        let v = volume("T7", "/Volumes/T7", None);
+        let self_drive = Drive {
+            mount_path: Some("/Volumes/T7".into()),
+            ..drive(1, None, None)
+        };
+        assert!(!volume_claimed_by_another_drive(&v, &[self_drive], 1));
+    }
+
+    #[test]
+    fn plan_relink_refuses_a_volume_already_claimed_by_another_drive_via_mount_path() {
+        let volumes = vec![volume("Untitled", "/Volumes/Untitled", None)];
+        let claimed_by = Drive {
+            mount_path: Some("/Volumes/Untitled".into()),
+            online: true,
+            ..drive(2, None, None)
+        };
+        let drives = vec![drive(1, None, None), claimed_by];
+
+        let err = plan_relink(&volumes, &drives, 1, "/Volumes/Untitled").unwrap_err();
+        assert!(matches!(err, DpError::Unsupported { .. }));
     }
 }

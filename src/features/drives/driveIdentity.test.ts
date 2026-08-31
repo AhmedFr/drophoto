@@ -61,3 +61,17 @@ it("never treats two null labels as a match", () => {
 it("returns false for an empty drives list", () => {
   expect(isVolumeClaimedByAnotherDrive(volume(), [])).toBe(false);
 });
+
+// Re-review finding 2: a drive freshly reconnected via the prior-mount-path
+// tier is online at that path before its uuid/label are backfilled.
+it("returns true when a drive's mount_path matches the volume's mount_path", () => {
+  const v = volume({ mount_path: "/Volumes/Untitled" });
+  const d = drive({ mount_path: "/Volumes/Untitled" });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(true);
+});
+
+it("does not match when the other drive has no mount_path at all", () => {
+  const v = volume({ mount_path: "/Volumes/T7" });
+  const d = drive({ mount_path: null });
+  expect(isVolumeClaimedByAnotherDrive(v, [d])).toBe(false);
+});

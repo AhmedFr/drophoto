@@ -634,3 +634,46 @@ it("excludes a volume already claimed by another registered drive from the Relin
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByText(/No unclaimed mounted volumes found/)).toBeInTheDocument();
 });
+
+// Re-review finding 1: the drive can self-heal online while the Relink
+// dialog is already open on a stale snapshot; the backend's server-side
+// guard must refuse, and the dialog must surface that refusal rather than
+// silently succeeding or failing invisibly.
+it("surfaces the backend's refusal when the drive went online while the Relink dialog was open", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [offlineDrive];
+    if (cmd === "list_volumes") {
+      return [
+        {
+          name: "T7",
+          mount_path: "/Volumes/T7",
+          total_bytes: 2_000_000_000,
+          free_bytes: 1_500_000_000,
+          is_removable: true,
+          uuid: "uuid-real",
+        },
+      ];
+    }
+    if (cmd === "list_sources") return [];
+    if (cmd === "relink_drive") {
+      throw {
+        code: "unsupported",
+        message: "drive is already online — relink is only for offline drives",
+      };
+    }
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Relink…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Relink" }));
+
+  expect(
+    await within(dialog).findByText("drive is already online — relink is only for offline drives"),
+  ).toBeInTheDocument();
+  // The dialog stays open rather than silently closing as if it succeeded.
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
