@@ -29,6 +29,7 @@ function item(id: number): MediaItem {
       organized_at: null,
       source_id: null,
       place_id: null,
+      mtime: null,
     },
     thumb_path: `/thumbs/${id}/400.webp`,
     preview_path: `/thumbs/${id}/2000.webp`,

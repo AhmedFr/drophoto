@@ -13,7 +13,8 @@ mod tags;
 use async_trait::async_trait;
 use dp_core::{
     DpResult, Drive, JobRunRow, MediaQuery, MediaRow, NewDrive, NewJobRun, NewMedia, NewPlace, NewSource,
-    OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, Source, Tag, UnorganizedSummary,
+    OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, ScanIndexEntry, Source, Tag,
+    UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -34,6 +35,11 @@ pub trait Catalog: Send + Sync {
     /// Every media row on `drive_id` never attributed to a source
     /// (`source_id IS NULL`) — see [`dp_core::MediaRow::source_id`].
     async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    /// One query for a whole drive's [`ScanIndexEntry`]s — the
+    /// incremental-rescan skip index a scan loads (into a
+    /// `HashMap<rel_path, ScanIndexEntry>`) before walking, so a scan can
+    /// decide per file whether to skip it without a per-file query.
+    async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>>;
     /// Deletes media row `id` unless an `organize_items` row references
     /// it; `Ok(false)` means it was left in place. See the `SqliteCatalog`
     /// implementation for why the guard exists.
@@ -170,6 +176,10 @@ impl Catalog for SqliteCatalog {
 
     async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
         media::list_media_without_source(&self.pool, drive_id).await
+    }
+
+    async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>> {
+        media::list_scan_index(&self.pool, drive_id).await
     }
 
     async fn delete_media(&self, id: i64) -> DpResult<bool> {

@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use dp_catalog::Catalog;
 use dp_core::denylist::is_denied_path;
-use dp_core::{DpError, DpResult, Drive, MediaKind, MediaMetadata, NewMedia, Source};
+use dp_core::{DpError, DpResult, Drive, MediaKind, MediaMetadata, NewMedia, ScanIndexEntry, Source};
 use dp_hash::Hasher;
-use dp_metadata::{MetadataProvider, Sidecars};
+use dp_metadata::{sidecar_path, MetadataProvider, Sidecars};
 use dp_thumbs::{ThumbChain, ThumbStore, THUMB_SIZES};
 use futures::stream::{self, StreamExt};
 use tokio::sync::mpsc;
@@ -56,20 +58,37 @@ pub struct ScanDeps {
 /// A [`Job`] that walks each of a drive's *enabled* [`Source`]s, hashing,
 /// thumbnailing, and reading metadata for every media file found, then
 /// upserting it into the catalog with that source's id attached.
+///
+/// `skip_index` is the incremental-rescan index: every already-cataloged
+/// row on this drive, keyed by `rel_path` (see [`ScanIndexEntry`]). A
+/// walked file whose stat size/mtime match its index entry, and whose
+/// thumbnails already exist on disk, is skipped entirely — no hashing, no
+/// exiftool, no thumbnail render, no catalog upsert (see
+/// [`process_file`]). Pass an empty map for a full rescan (`start_scan`'s
+/// `full: true`), which makes every file look unindexed and so always
+/// falls through to full processing.
 pub struct ScanJob {
     id: String,
     drive: Drive,
     sources: Vec<Source>,
     deps: ScanDeps,
+    skip_index: HashMap<String, ScanIndexEntry>,
 }
 
 impl ScanJob {
-    pub fn new(id: String, drive: Drive, sources: Vec<Source>, deps: ScanDeps) -> Self {
+    pub fn new(
+        id: String,
+        drive: Drive,
+        sources: Vec<Source>,
+        deps: ScanDeps,
+        skip_index: HashMap<String, ScanIndexEntry>,
+    ) -> Self {
         Self {
             id,
             drive,
             sources,
             deps,
+            skip_index,
         }
     }
 }
@@ -170,6 +189,7 @@ impl Job for ScanJob {
         }
 
         let total = walk.files.len() as u64;
+        let skip_index = &self.skip_index;
         stream::iter(walk.files)
             .for_each_concurrent(SCAN_CONCURRENCY, |file| {
                 let ctx = ctx.clone();
@@ -188,6 +208,7 @@ impl Job for ScanJob {
                         &mount,
                         file,
                         total,
+                        skip_index,
                         done,
                         ok,
                         failed,
@@ -457,6 +478,7 @@ async fn process_file(
     mount: &Path,
     file: ScannedFile,
     total: u64,
+    skip_index: &HashMap<String, ScanIndexEntry>,
     done: &AtomicU64,
     ok: &AtomicU64,
     failed: &AtomicU64,
@@ -491,10 +513,39 @@ async fn process_file(
     };
     let mut had_error = false;
 
-    let size = tokio::fs::metadata(&file.path)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
+    // `symlink_metadata` (not `metadata`) mirrors what a previous scan
+    // captured into `NewMedia::mtime` — walkdir never follows symlinks
+    // either, so this is consistent with what was actually walked. A
+    // failed stat clears both `size` and `mtime`, which — same as no
+    // index entry at all — simply falls through to full processing below
+    // rather than risking a false skip.
+    let stat = tokio::fs::symlink_metadata(&file.path).await.ok();
+    let size = stat.as_ref().map(|m| m.len()).unwrap_or(0);
+    let mtime: Option<DateTime<Utc>> = stat
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .map(DateTime::<Utc>::from);
+
+    // Incremental-rescan skip: a file whose index entry's size/mtime
+    // (compared at second precision) match what's on disk right now, and
+    // whose thumbnails already exist, is unchanged since the last scan —
+    // skip hashing, exiftool, thumbnailing, and the catalog upsert
+    // entirely. Any doubt (no entry, unreadable mtime, a mismatch, a
+    // missing thumbnail) falls through to full processing instead, which
+    // writes a fresh index entry. Deleted-file pruning is out of scope
+    // here: a row whose file the walk never revisits (missing entirely)
+    // is left as-is, same as before this change — see
+    // `list_media_without_source`/organize's own dangling-row handling
+    // for that separate concern.
+    if let Some(m) = find_skip_match(skip_index, &rel, size, mtime, &deps.store) {
+        // The file itself is unchanged, but its XMP sidecar may have been
+        // edited since (e.g. in Lightroom) — cheap to check and worth
+        // catching without a full re-hash.
+        maybe_import_newer_sidecar(ctx, deps, job_id, drive_id, &file.path, &rel, m.id, m.row_mtime).await;
+        skipped.fetch_add(1, Ordering::SeqCst);
+        advance_progress(ctx, job_id, done, total, &rel).await;
+        return;
+    }
 
     let hash = match deps.hasher.hash_file(&file.path).await {
         Ok(h) => h,
@@ -615,6 +666,7 @@ async fn process_file(
         lon: metadata.lon,
         organized_at: None,
         source_id: Some(file.source_id),
+        mtime,
     };
 
     match deps.catalog.upsert_media(new_media).await {
@@ -634,6 +686,78 @@ async fn process_file(
     }
 
     advance_progress(ctx, job_id, done, total, &rel).await;
+}
+
+/// A [`ScanIndexEntry`] that matched a walked file closely enough to skip
+/// re-processing it — just what [`maybe_import_newer_sidecar`] needs
+/// afterwards.
+struct SkipMatch {
+    id: i64,
+    /// The row's stored mtime — always `Some` on the entry that produced
+    /// this match (checked by [`find_skip_match`]), carried here already
+    /// unwrapped so callers never have to re-check it.
+    row_mtime: DateTime<Utc>,
+}
+
+/// Whether a walked file (`rel`, with live stat `size`/`mtime`) can be
+/// skipped: `skip_index` has an entry for `rel` whose stored `size` and
+/// `mtime` (compared at second precision — both truncated via
+/// [`DateTime::timestamp`]) match the live stat, *and* both thumbnail
+/// sizes already exist in `store`. Returns `None` on any doubt — no entry,
+/// an unreadable live `mtime`, a size/mtime mismatch, or a missing
+/// thumbnail — which sends the caller down the full processing path
+/// instead of risking a stale skip.
+fn find_skip_match(
+    skip_index: &HashMap<String, ScanIndexEntry>,
+    rel: &str,
+    size: u64,
+    mtime: Option<DateTime<Utc>>,
+    store: &ThumbStore,
+) -> Option<SkipMatch> {
+    let mtime = mtime?;
+    let entry = skip_index.get(rel)?;
+    let row_mtime = entry.mtime?;
+    if entry.size != size || row_mtime.timestamp() != mtime.timestamp() {
+        return None;
+    }
+    if !THUMB_SIZES
+        .iter()
+        .all(|&size_px| store.exists(&entry.hash, size_px))
+    {
+        return None;
+    }
+    Some(SkipMatch {
+        id: entry.id,
+        row_mtime,
+    })
+}
+
+/// For a file the skip rule above chose not to re-hash: if its XMP
+/// sidecar exists and was modified more recently than the row's stored
+/// `mtime`, imports its subjects as catalog tags anyway via
+/// [`import_sidecar_tags`] — cheap (no hashing/thumbnailing involved),
+/// and catches a Lightroom-style tag edit that an otherwise-skipped
+/// rescan would silently miss forever. Otherwise a no-op: no sidecar, or
+/// one no newer than the row already reflects.
+#[allow(clippy::too_many_arguments)]
+async fn maybe_import_newer_sidecar(
+    ctx: &JobCtx,
+    deps: &ScanDeps,
+    job_id: &str,
+    drive_id: i64,
+    media_path: &Path,
+    rel: &str,
+    media_id: i64,
+    row_mtime: DateTime<Utc>,
+) {
+    let sidecar_mtime = tokio::fs::metadata(sidecar_path(media_path))
+        .await
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(DateTime::<Utc>::from);
+    if matches!(sidecar_mtime, Some(t) if t > row_mtime) {
+        import_sidecar_tags(ctx, deps, job_id, drive_id, media_path, rel, media_id).await;
+    }
 }
 
 /// Imports `media_path`'s XMP sidecar subjects (if any) as catalog tags on

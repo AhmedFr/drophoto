@@ -266,8 +266,8 @@ it("starts a scan, shows live progress from job events, and cancels", async () =
   renderPage();
   await screen.findByText("1 source");
 
-  fireEvent.click(await screen.findByRole("button", { name: /scan/i }));
-  await waitFor(() => expect(startScanArgs).toEqual({ driveId: 1 }));
+  fireEvent.click(await screen.findByRole("button", { name: "Scan" }));
+  await waitFor(() => expect(startScanArgs).toEqual({ driveId: 1, full: false }));
 
   // In the real app `JobEventsBridge` (mounted in `AppShell`, not under
   // test here) is what applies "job" Tauri events to the store; seed it
@@ -279,6 +279,25 @@ it("starts a scan, shows live progress from job events, and cancels", async () =
 
   fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
   await waitFor(() => expect(cancelArgs).toEqual({ jobId: "scan-0" }));
+});
+
+it("starts a full rescan when the Full button is clicked", async () => {
+  let startScanArgs: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
+    if (cmd === "start_scan") {
+      startScanArgs = args;
+      return "scan-0";
+    }
+    return undefined;
+  });
+  renderPage();
+  await screen.findByText("1 source");
+
+  fireEvent.click(await screen.findByRole("button", { name: "Full" }));
+  await waitFor(() => expect(startScanArgs).toEqual({ driveId: 1, full: true }));
 });
 
 it("records the drive's name as the job's label when a scan starts", async () => {

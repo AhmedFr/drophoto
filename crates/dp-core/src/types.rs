@@ -184,6 +184,12 @@ pub struct MediaRow {
     /// manual pick). `None` here also means "not yet geocoded"; see
     /// [`Catalog::list_ungeocoded`] for how that state is detected.
     pub place_id: Option<i64>,
+    /// The source file's on-disk modification time, as captured by the
+    /// scan that last wrote this row (`symlink_metadata().modified()`).
+    /// `None` for rows scanned before this field existed. Compared at
+    /// second precision against the walked file's live mtime to decide
+    /// whether a rescan can skip it — see `dp_jobs::ScanJob`.
+    pub mtime: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -208,6 +214,25 @@ pub struct NewMedia {
     pub lon: Option<f64>,
     pub organized_at: Option<DateTime<Utc>>,
     pub source_id: Option<i64>,
+    /// The source file's on-disk modification time — see
+    /// [`MediaRow::mtime`].
+    pub mtime: Option<DateTime<Utc>>,
+}
+
+/// One media row's identity/fingerprint for the incremental-rescan skip
+/// check — everything `dp_jobs::ScanJob` needs to decide, before hashing a
+/// walked file, whether it's unchanged since the last scan. Returned by
+/// `Catalog::list_scan_index`, one query for a whole drive, loaded into a
+/// `HashMap<rel_path, ScanIndexEntry>` before the walk starts.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ScanIndexEntry {
+    pub id: i64,
+    pub rel_path: String,
+    pub size: u64,
+    pub mtime: Option<DateTime<Utc>>,
+    /// Needed for the skip rule's thumb-existence checks
+    /// (`store.exists(hash, 400)` / `store.exists(hash, 2000)`).
+    pub hash: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -26,6 +26,9 @@ export type MediaRow = {
   organized_at: string | null;
   source_id: number | null;
   place_id: number | null;
+  /** The source file's on-disk modification time, as captured by the
+   * scan that last wrote this row — see `dp_core::MediaRow::mtime`. */
+  mtime: string | null;
 };
 
 export type MediaItem = {

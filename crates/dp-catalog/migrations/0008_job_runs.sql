@@ -14,3 +14,12 @@ CREATE TABLE job_runs (
     cpu_ms INTEGER NOT NULL DEFAULT 0,      -- process rusage delta (user+sys)
     started_at TEXT NOT NULL, finished_at TEXT NOT NULL
 );
+
+-- The source file's on-disk modification time, captured by the scan that
+-- last wrote each row (`symlink_metadata().modified()`). Drives the
+-- incremental-rescan skip check in `dp_jobs::ScanJob`: a walked file whose
+-- stat size/mtime match the stored row (and whose thumbnails already
+-- exist) is skipped without re-hashing. NULL for rows written before this
+-- column existed, which never matches and so always gets fully
+-- reprocessed once.
+ALTER TABLE media ADD COLUMN mtime TEXT;

@@ -39,7 +39,10 @@ export function DrivesPage() {
   });
 
   const scanMutation = useMutation({
-    mutationFn: async (driveId: number) => ({ driveId, jobId: await startScan(driveId) }),
+    mutationFn: async ({ driveId, full = false }: { driveId: number; full?: boolean }) => ({
+      driveId,
+      jobId: await startScan(driveId, full),
+    }),
     onSuccess: ({ driveId, jobId }) => {
       setScanJobs((prev) => ({ ...prev, [driveId]: jobId }));
       // Cheap to do here — the drive's name is already on hand — so the
@@ -82,7 +85,8 @@ export function DrivesPage() {
                   drive={d}
                   sources={sourcesByDrive[d.id]}
                   sourcesLoading={sourcesLoading}
-                  onScan={() => scanMutation.mutate(d.id)}
+                  onScan={() => scanMutation.mutate({ driveId: d.id })}
+                  onFullScan={() => scanMutation.mutate({ driveId: d.id, full: true })}
                   scanEvent={jobId ? jobEvents[jobId] : undefined}
                   onCancelScan={jobId ? () => cancelJob(jobId) : undefined}
                   onOpenSources={() => setSourcesDrive(d)}

@@ -30,6 +30,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str, lat: Option<f64>, lon: Option<f
         lat,
         lon,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }

@@ -41,6 +41,7 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -720,6 +721,10 @@ impl Catalog for FailingCatalog {
 
     async fn list_media_without_source(&self, drive_id: i64) -> DpResult<Vec<dp_core::MediaRow>> {
         self.0.list_media_without_source(drive_id).await
+    }
+
+    async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<dp_core::ScanIndexEntry>> {
+        self.0.list_scan_index(drive_id).await
     }
 
     async fn delete_media(&self, id: i64) -> DpResult<bool> {

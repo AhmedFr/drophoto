@@ -1,11 +1,21 @@
 use crate::state::AppState;
 use dp_core::DpError;
 use dp_jobs::{ScanDeps, ScanJob};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
 
+/// Starts a scan of `drive_id`. Incremental by default: unchanged files
+/// (matching stat size/mtime, thumbnails already on disk) are skipped
+/// without re-hashing — see `dp_jobs::ScanJob`. `full: Some(true)` bypasses
+/// that skip index entirely, re-hashing and re-thumbnailing every file (the
+/// UI's "FULL" button).
 #[tauri::command]
-pub async fn start_scan(state: State<'_, AppState>, drive_id: i64) -> Result<String, DpError> {
+pub async fn start_scan(
+    state: State<'_, AppState>,
+    drive_id: i64,
+    full: Option<bool>,
+) -> Result<String, DpError> {
     let drive = state
         .catalog
         .list_drives()
@@ -30,6 +40,18 @@ pub async fn start_scan(state: State<'_, AppState>, drive_id: i64) -> Result<Str
         });
     }
 
+    let skip_index = if full.unwrap_or(false) {
+        HashMap::new()
+    } else {
+        state
+            .catalog
+            .list_scan_index(drive_id)
+            .await?
+            .into_iter()
+            .map(|e| (e.rel_path.clone(), e))
+            .collect()
+    };
+
     let deps = ScanDeps {
         catalog: state.catalog.clone(),
         hasher: state.hasher.clone(),
@@ -41,7 +63,7 @@ pub async fn start_scan(state: State<'_, AppState>, drive_id: i64) -> Result<Str
     };
 
     state.start_scan(drive_id, |job_id| {
-        Arc::new(ScanJob::new(job_id, drive, sources, deps))
+        Arc::new(ScanJob::new(job_id, drive, sources, deps, skip_index))
     })
 }
 

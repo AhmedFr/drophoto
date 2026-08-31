@@ -34,6 +34,7 @@ async fn seed() -> (SqliteCatalog, i64) {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     };
     c.upsert_media(mk("a.jpg", MediaKind::Photo, "jpg", Some(1)))

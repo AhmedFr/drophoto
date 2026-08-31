@@ -54,6 +54,7 @@ mod tests {
             source_id: None,
             sidecar_pending: false,
             place_id: None,
+            mtime: None,
         }
     }
 

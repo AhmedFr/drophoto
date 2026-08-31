@@ -9,6 +9,7 @@ export function DriveCard({
   sources = [],
   sourcesLoading = false,
   onScan,
+  onFullScan,
   onCancelScan,
   onOpenSources,
   scanEvent,
@@ -51,6 +52,17 @@ export function DriveCard({
             onClick={onScan}
           >
             Scan
+          </Button>
+        )}
+        {onFullScan && sources.length > 0 && (
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={!drive.online || scanInProgress || sourcesLoading || noEnabledSources}
+            title="Re-hash and re-thumbnail every file"
+            onClick={onFullScan}
+          >
+            Full
           </Button>
         )}
       </div>

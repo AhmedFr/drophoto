@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{Drive, DriveRole, MediaKind, NewDrive, NewMedia, NewSource, Source};
+use dp_core::{DpResult, Drive, DriveRole, MediaKind, NewDrive, NewMedia, NewSource, ScanIndexEntry, Source};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
 use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, Sidecars};
@@ -19,6 +21,25 @@ fn fx(name: &str) -> PathBuf {
 
 fn has_exiftool() -> bool {
     which::which("exiftool").is_ok()
+}
+
+/// An empty skip index — every test that isn't specifically exercising
+/// incremental-rescan behaviour scans as if nothing was ever indexed
+/// before (the same as passing `full: true` at the command layer).
+fn no_index() -> HashMap<String, ScanIndexEntry> {
+    HashMap::new()
+}
+
+/// The real skip index for `drive_id`, as a scan would load it: every
+/// existing row keyed by `rel_path`.
+async fn scan_index(catalog: &Arc<dyn Catalog>, drive_id: i64) -> HashMap<String, ScanIndexEntry> {
+    catalog
+        .list_scan_index(drive_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.rel_path.clone(), e))
+        .collect()
 }
 
 #[cfg(unix)]
@@ -61,6 +82,39 @@ fn default_deps(catalog: Arc<dyn Catalog>, store: Arc<ThumbStore>) -> ScanDeps {
         sidecars: Arc::new(ExiftoolSidecars::from_path()),
         home: None,
     }
+}
+
+/// A [`Hasher`] wrapper that counts every `hash_file` call while
+/// delegating the real work to [`Blake3Hasher`] — the incremental-rescan
+/// tests use this to prove a skipped file is never hashed at all.
+struct CountingHasher {
+    calls: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl Hasher for CountingHasher {
+    async fn hash_file(&self, path: &Path) -> DpResult<String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Blake3Hasher.hash_file(path).await
+    }
+}
+
+/// Spawns and drains a [`ScanJob`] built from `drive`/`sources`/`deps`/
+/// `skip_index`, returning every event seen plus the terminal one —
+/// shared by the incremental-rescan tests below, which each need to run
+/// more than one scan of the same drive.
+async fn run_scan(
+    drive: Drive,
+    sources: Vec<Source>,
+    deps: ScanDeps,
+    skip_index: HashMap<String, ScanIndexEntry>,
+) -> (Vec<JobEvent>, JobEvent) {
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, sources, deps, skip_index));
+    runner.spawn(job_id, job);
+    drain_until_terminal(&mut rx).await
 }
 
 async fn register_drive(catalog: &Arc<dyn Catalog>, name: &str, mount_path: &Path) -> Drive {
@@ -116,6 +170,7 @@ fn legacy_media(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         lat: None,
         lon: None,
         organized_at: None,
+        mtime: None,
         source_id: None,
     }
 }
@@ -150,7 +205,7 @@ async fn scans_drive_hashes_thumbnails_and_upserts_media() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -220,7 +275,7 @@ async fn scan_records_bytes_read_and_bytes_written_via_the_recorder() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx).with_recorder(catalog.clone());
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id.clone(), job);
 
     drain_until_terminal(&mut rx).await;
@@ -278,7 +333,13 @@ async fn a_scan_prunes_legacy_rows_under_denied_paths_and_keeps_the_rest() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive.clone(), vec![src], deps));
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive.clone(),
+        vec![src],
+        deps,
+        no_index(),
+    ));
     runner.spawn(job_id, job);
     drain_until_terminal(&mut rx).await;
 
@@ -315,7 +376,7 @@ async fn cancelling_immediately_emits_cancelled() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id.clone(), job);
     runner.cancel(&job_id);
 
@@ -353,7 +414,7 @@ async fn cancelling_immediately_records_status_cancelled() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx).with_recorder(catalog.clone());
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id.clone(), job);
     runner.cancel(&job_id);
 
@@ -393,7 +454,7 @@ async fn run_direct_with_pre_cancelled_token_flags_cancelled_and_processes_nothi
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
     let deps = default_deps(catalog.clone(), store);
 
-    let job = ScanJob::new("scan-direct-precancel".into(), drive, vec![src], deps);
+    let job = ScanJob::new("scan-direct-precancel".into(), drive, vec![src], deps, no_index());
 
     // Cancel *before* run() is even called, isolating the "stopped early"
     // path from any race with the runner's own bookkeeping.
@@ -431,7 +492,7 @@ async fn run_direct_with_live_token_processes_everything_and_flags_not_cancelled
     let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
     let deps = default_deps(catalog.clone(), store);
 
-    let job = ScanJob::new("scan-direct-live".into(), drive, vec![src], deps);
+    let job = ScanJob::new("scan-direct-live".into(), drive, vec![src], deps, no_index());
 
     // A token that is never cancelled — proves `cancelled` is derived from
     // an actual early exit, not merely the token's live/dead state.
@@ -501,7 +562,7 @@ async fn unreadable_subdirectory_is_reported_as_an_io_item_error() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id, job);
 
     let (events, _terminal) = drain_until_terminal(&mut rx).await;
@@ -548,6 +609,7 @@ async fn scan_with_two_sources_only_indexes_those_trees() {
         drive,
         vec![dcim.clone(), pictures.clone()],
         deps,
+        no_index(),
     ));
     runner.spawn(job_id, job);
 
@@ -598,7 +660,7 @@ async fn denied_subdir_inside_a_source_is_skipped() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![dcim], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![dcim], deps, no_index()));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -646,6 +708,7 @@ async fn nested_sources_are_deduped_keeping_the_shallowest() {
         drive,
         vec![root.clone(), dcim.clone()],
         deps,
+        no_index(),
     ));
     runner.spawn(job_id, job);
 
@@ -720,7 +783,13 @@ async fn case_insensitive_duplicate_sources_are_walked_once() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![upper, lower], deps));
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive,
+        vec![upper, lower],
+        deps,
+        no_index(),
+    ));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -761,7 +830,13 @@ async fn symlinked_duplicate_source_is_walked_once_without_panicking() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![dcim, link], deps));
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive,
+        vec![dcim, link],
+        deps,
+        no_index(),
+    ));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -800,7 +875,13 @@ async fn missing_source_root_reports_io_error_but_other_sources_still_scanned() 
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![pictures, missing], deps));
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive,
+        vec![pictures, missing],
+        deps,
+        no_index(),
+    ));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -845,7 +926,7 @@ async fn tiny_garbage_file_is_rejected_as_a_stub_and_not_inserted() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -895,7 +976,7 @@ async fn walk_progress_events_precede_the_first_per_file_progress() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id, job);
 
     let (events, _terminal) = drain_until_terminal(&mut rx).await;
@@ -963,7 +1044,13 @@ async fn scan_imports_sidecar_subjects_as_tags() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive.clone(), vec![src], deps));
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive.clone(),
+        vec![src],
+        deps,
+        no_index(),
+    ));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -1033,6 +1120,7 @@ async fn scan_leaves_row_pending_when_catalog_has_a_tag_the_sidecar_lacks() {
             lat: None,
             lon: None,
             organized_at: None,
+            mtime: None,
             source_id: Some(src.id),
         })
         .await
@@ -1059,7 +1147,13 @@ async fn scan_leaves_row_pending_when_catalog_has_a_tag_the_sidecar_lacks() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive.clone(), vec![src], deps));
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive.clone(),
+        vec![src],
+        deps,
+        no_index(),
+    ));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -1124,7 +1218,7 @@ async fn scan_records_error_for_corrupt_sidecar_but_still_scans_the_file() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -1181,7 +1275,7 @@ async fn xmp_sidecar_files_are_never_indexed_as_media() {
     let (tx, mut rx) = mpsc::channel(256);
     let runner = JobRunner::new(tx);
     let job_id = runner.next_id("scan");
-    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps));
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, vec![src], deps, no_index()));
     runner.spawn(job_id, job);
 
     let (events, terminal) = drain_until_terminal(&mut rx).await;
@@ -1202,4 +1296,325 @@ async fn xmp_sidecar_files_are_never_indexed_as_media() {
         "no row's rel_path should end in .xmp, got {rows:?}"
     );
     assert_eq!(rows[0].rel_path, "c.jpg");
+}
+
+// --- Task 5a.2: incremental rescan ------------------------------------
+//
+// A drive whose files haven't changed since the last scan should skip
+// hashing, exiftool, and thumbnailing entirely for those files — see
+// `find_skip_match` in `dp_jobs::scan`. Every test below runs an initial
+// full scan (empty skip index) to populate the catalog and thumbnails,
+// then a second scan built from `list_scan_index`'s real fingerprint,
+// asserting on what that second scan did or didn't touch.
+
+/// The base case: nothing on disk changed between two scans of the same
+/// drive, so the second scan must skip every file without ever calling
+/// the hasher — proven with [`CountingHasher`], not just by asserting the
+/// tallies (a bug that skipped the *catalog* work but still hashed would
+/// otherwise pass).
+#[tokio::test]
+async fn second_scan_of_unchanged_fixtures_skips_everything_without_hashing() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Incremental Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 2),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    let hash_calls = Arc::new(AtomicU64::new(0));
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.hasher = Arc::new(CountingHasher {
+        calls: hash_calls.clone(),
+    });
+    let index = scan_index(&catalog, drive.id).await;
+
+    let (events, terminal) = run_scan(drive, vec![src], deps, index).await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert_eq!(skipped, 2, "events: {events:?}");
+    assert_eq!(
+        hash_calls.load(Ordering::SeqCst),
+        0,
+        "an unchanged file must never reach the hasher"
+    );
+}
+
+/// Touching just one file's mtime (rewriting it with identical bytes, so
+/// only its mtime moves) must cause exactly that file to be reprocessed —
+/// the other, truly-unchanged file must still be skipped.
+#[tokio::test]
+async fn touching_one_files_mtime_reprocesses_only_that_file() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let jpg_path = drive_dir.path().join("sample.jpg");
+    std::fs::copy(fx("sample.jpg"), &jpg_path).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Touch Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 2),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    // The skip rule compares mtime at second precision, so the rewrite
+    // below needs to land in a different wall-clock second than the
+    // first scan's stat to register as a change.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    std::fs::write(&jpg_path, std::fs::read(fx("sample.jpg")).unwrap()).unwrap();
+
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive, vec![src], default_deps(catalog.clone(), store), index).await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 1,
+        "only the touched file should be reprocessed, events: {events:?}"
+    );
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert_eq!(
+        skipped, 1,
+        "the untouched file should still be skipped, events: {events:?}"
+    );
+}
+
+/// A missing thumbnail file (e.g. the thumbs directory got partially
+/// cleaned up) must force reprocessing even though size/mtime still
+/// match — the skip rule requires both thumbnail sizes to exist on disk.
+#[tokio::test]
+async fn missing_thumbnail_forces_reprocessing() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Missing Thumb Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 2),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    let jpg_hash = Blake3Hasher.hash_file(&fx("sample.jpg")).await.unwrap();
+    std::fs::remove_file(store.path(&jpg_hash, 400)).unwrap();
+
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(
+        drive,
+        vec![src],
+        default_deps(catalog.clone(), store.clone()),
+        index,
+    )
+    .await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 1,
+        "the file missing a thumbnail must be reprocessed, events: {events:?}"
+    );
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert_eq!(skipped, 1, "events: {events:?}");
+    assert!(
+        store.exists(&jpg_hash, 400),
+        "the missing thumbnail must be regenerated"
+    );
+}
+
+/// A skipped file's sidecar may still have been edited since the last
+/// scan (e.g. in Lightroom) — the skip rule must still import its
+/// subjects as tags, without re-hashing the file itself.
+#[tokio::test]
+async fn sidecar_newer_than_row_mtime_imports_tags_on_a_skipped_file() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let media_path = drive_dir.path().join("a.jpg");
+    std::fs::copy(fx("sample.jpg"), &media_path).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Sidecar Skip Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 1, "events: {events:?}"),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1, "rows: {rows:?}");
+    let media_id = rows[0].id;
+
+    // Write the sidecar strictly after the row's stored mtime.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let sidecars = ExiftoolSidecars::from_path();
+    sidecars
+        .write_subjects(&media_path, &["beach".to_string()])
+        .await
+        .unwrap();
+
+    let hash_calls = Arc::new(AtomicU64::new(0));
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.hasher = Arc::new(CountingHasher {
+        calls: hash_calls.clone(),
+    });
+    let index = scan_index(&catalog, drive.id).await;
+
+    let (events, terminal) = run_scan(drive, vec![src], deps, index).await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert_eq!(skipped, 1, "events: {events:?}");
+    assert_eq!(
+        hash_calls.load(Ordering::SeqCst),
+        0,
+        "importing a newer sidecar on a skipped file must not re-hash it"
+    );
+
+    let tags = catalog.tags_for_media(&[media_id]).await.unwrap();
+    let tag_names: Vec<&str> = tags.iter().map(|(_, t)| t.name.as_str()).collect();
+    assert_eq!(tag_names, vec!["beach"], "tags: {tags:?}");
+}
+
+/// `full: true` at the command layer bypasses the skip index entirely —
+/// simulated here the same way the command builds it (an empty map) — so
+/// a rescan with nothing changed on disk must still reprocess every file.
+#[tokio::test]
+async fn full_rescan_bypasses_the_skip_index_and_reprocesses_everything() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), drive_dir.path().join("sample.png")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Full Rescan Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 2),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    // The real skip index would let both files skip — passing an empty
+    // map instead (what `full: true` does at the command layer) must
+    // force full reprocessing regardless.
+    let hash_calls = Arc::new(AtomicU64::new(0));
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.hasher = Arc::new(CountingHasher {
+        calls: hash_calls.clone(),
+    });
+
+    let (events, terminal) = run_scan(drive, vec![src], deps, no_index()).await;
+    let (ok, failed, skipped) = match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => (ok, failed, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 2, "events: {events:?}");
+    assert_eq!(failed, 0, "events: {events:?}");
+    assert_eq!(skipped, 0, "events: {events:?}");
+    assert_eq!(
+        hash_calls.load(Ordering::SeqCst),
+        2,
+        "every file must be re-hashed under a full rescan"
+    );
 }

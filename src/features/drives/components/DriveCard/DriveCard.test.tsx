@@ -167,3 +167,47 @@ it("keeps Scan disabled while sources are still loading", () => {
   render(<DriveCard drive={baseDrive} sourcesLoading onScan={vi.fn()} />);
   expect(screen.getByRole("button", { name: "Scan" })).toBeDisabled();
 });
+
+it("renders a Full button that calls onFullScan when clicked", () => {
+  const onFullScan = vi.fn();
+  render(<DriveCard drive={baseDrive} sources={[enabledSource]} onFullScan={onFullScan} />);
+  fireEvent.click(screen.getByRole("button", { name: "Full" }));
+  expect(onFullScan).toHaveBeenCalled();
+});
+
+it("shows a title on the Full button explaining what it does", () => {
+  render(<DriveCard drive={baseDrive} sources={[enabledSource]} onFullScan={vi.fn()} />);
+  expect(screen.getByRole("button", { name: "Full" })).toHaveAttribute(
+    "title",
+    "Re-hash and re-thumbnail every file",
+  );
+});
+
+it("does not render the Full button when there are no sources configured at all", () => {
+  render(<DriveCard drive={baseDrive} sources={[]} onFullScan={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "Full" })).not.toBeInTheDocument();
+});
+
+it("does not render the Full button when onFullScan is not given", () => {
+  render(<DriveCard drive={baseDrive} sources={[enabledSource]} />);
+  expect(screen.queryByRole("button", { name: "Full" })).not.toBeInTheDocument();
+});
+
+it("disables the Full button while a scan is in progress", () => {
+  const scanEvent: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  render(
+    <DriveCard
+      drive={baseDrive}
+      sources={[enabledSource]}
+      onFullScan={vi.fn()}
+      scanEvent={scanEvent}
+      onCancelScan={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Full" })).toBeDisabled();
+});
+
+it("disables the Full button when there are sources but none enabled", () => {
+  render(<DriveCard drive={baseDrive} sources={[disabledSource]} onFullScan={vi.fn()} />);
+  expect(screen.getByRole("button", { name: "Full" })).toBeDisabled();
+});

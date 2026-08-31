@@ -247,6 +247,7 @@ it("returns the resolved items once the search settles", async () => {
               organized_at: null,
               source_id: null,
               place_id: null,
+              mtime: null,
             },
             thumb_path: "/t/1/400.webp",
             preview_path: "/t/1/2000.webp",

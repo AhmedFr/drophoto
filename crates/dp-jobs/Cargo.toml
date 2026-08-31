@@ -26,3 +26,4 @@ tokio = { workspace = true }
 tempfile = "3"
 which = "7"
 chrono = { workspace = true }
+async-trait = { workspace = true }

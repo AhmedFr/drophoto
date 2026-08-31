@@ -128,7 +128,7 @@ it("calls start_scan for the given drive id", async () => {
 
   result.current.scan(1);
 
-  await waitFor(() => expect(scanArgs).toEqual({ driveId: 1 }));
+  await waitFor(() => expect(scanArgs).toEqual({ driveId: 1, full: false }));
 });
 
 it("invalidates unorganized and media-count queries when a job finishes", async () => {
