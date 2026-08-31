@@ -21,8 +21,10 @@ import { useSources } from "./hooks/useSources";
  * `driveId` via `jobsStore`'s `driveIds`, if any — reading from the global
  * store (rather than page-local state) is what lets a card keep showing its
  * scan's progress after `DrivesPage` unmounts and remounts (e.g. navigating
- * away and back). Picks the most recently-applied match in the unlikely
- * case more than one is present at once.
+ * away and back). `matches` should never hold more than one entry in
+ * practice — `DriveCard` disables Scan/Full while a scan is already running
+ * for that drive — but takes the last (in `Object.entries` insertion order)
+ * as a defensive fallback rather than assuming that invariant holds.
  */
 function activeScanJobId(
   driveId: number,

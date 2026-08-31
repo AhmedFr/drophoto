@@ -31,7 +31,7 @@ export function GalleryToolbar({ count }: GalleryToolbarProps) {
       <SortMenu />
       <DensityToggle />
       {count !== undefined && (
-        <span className="inline-block min-w-[9ch] text-right font-mono text-[10px] text-faint tabular-nums">
+        <span className="inline-block min-w-[12ch] text-right font-mono text-[10px] text-faint tabular-nums">
           {count} items
         </span>
       )}

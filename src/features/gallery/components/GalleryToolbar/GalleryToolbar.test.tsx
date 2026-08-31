@@ -30,7 +30,15 @@ describe("GalleryToolbar", () => {
   it("gives the count a stable reserved width so filter changes don't shift the toolbar", async () => {
     renderWithRouter(<GalleryToolbar count={12} />);
     const countEl = await screen.findByText("12 items");
-    expect(countEl).toHaveClass("tabular-nums", "inline-block", "min-w-[9ch]", "text-right");
+    expect(countEl).toHaveClass("tabular-nums", "inline-block", "min-w-[12ch]", "text-right");
+  });
+
+  it("reserves enough width to fit a five-digit library count (e.g. 16234 items) without shifting", async () => {
+    renderWithRouter(<GalleryToolbar count={16234} />);
+    const countEl = await screen.findByText("16234 items");
+    // "16234 items" is 11 characters; the reserved min-width must be >= that
+    // so a real ~16k-photo library doesn't push the toolbar around.
+    expect(countEl).toHaveClass("tabular-nums", "inline-block", "min-w-[12ch]", "text-right");
   });
 
   it("renders no count while undefined", async () => {
