@@ -90,7 +90,34 @@
 
 ---
 
-### Task 5b.4: Finalize
+### Task 5b.4: Scan UX — smooth progress + error visibility
+
+Field report (2026-08-31, screenshot): "During scans the UI jumps and twitches so bad it's scary" — the scan emits a progress event per file (~787 files/s observed), every event hits the Zustand store and re-renders every subscriber hundreds of times per second, and `ScanProgress` swaps entire sub-trees between event kinds (DotLoader ↔ Progress bar ↔ finished line), so the drive card and the sidebar chip jump constantly (the sidebar rate/ETA text also wraps to two lines). And: "a scan fail with a huge amount of errors but no reason, no place to check the errors" — `scan_errors` rows are recorded in the catalog but have NO UI.
+
+**Files:**
+- Modify: `crates/dp-jobs/src/runner.rs` (or the event-emission path in `scan.rs`/shared progress helper — find where `JobEvent::Progress` is sent): coalesce progress events at the source — emit at most one Progress per job per 100ms (always emit the FIRST progress, always emit terminal events immediately; the latest pending progress must flush on the next tick, never be lost forever). Keep `item_error` events as-is (they're rare per file). Unit test with a fast fake job: N=1000 items in a tight loop produce ≤ ~(duration/100ms)+2 progress events but exactly one terminal event with correct tallies.
+- Modify: `src/features/drives/components/ScanProgress/ScanProgress.tsx` (+test): stable layout — one fixed-height block (progress bar row + counts row + current-file row) rendered for ALL non-terminal states; during the walk phase the bar renders indeterminate (CSS animation) instead of swapping in a different component; the current-file row has a fixed height and `truncate` so path-length changes never resize the card; counts use `tabular-nums` with reserved width (`min-w` sized for the drive's total digits).
+- Modify: `src/components/ActiveJobs/ActiveJobRow` (or equivalent): the `rate · ETA` text gets a reserved width / `whitespace-nowrap` so it never wraps to a second line or shifts siblings.
+- Create: `src/features/drives/components/ScanErrorsDialog/{index.ts,ScanErrorsDialog.tsx,ScanErrorsDialog.types.ts,ScanErrorsDialog.test.tsx}` — lists that drive's scan errors newest-first: rel path (truncated, full path in title attr), code chip, message; paged "Load more" (page size 100); header shows total count; empty state "No scan errors".
+- Modify: `crates/dp-catalog` (`lib.rs` + the module holding `record_scan_error`): `list_scan_errors(drive_id, limit, offset) -> DpResult<Vec<ScanErrorRow>>` + `count_scan_errors(drive_id)` if not already public; `ScanErrorRow { id, drive_id, path, code, message, at }` in dp-core with serde. Tests.
+- Modify: `src-tauri/src/commands/scan.rs` (new `list_scan_errors` command, limit clamped to 500), `src/lib/api/scan.ts` (+test).
+- Modify: `src/features/drives/components/ScanProgress/ScanProgress.tsx` + `DrivesPage.tsx`: the terminal readout's "N failed" becomes a button opening ScanErrorsDialog for that drive (only when failed > 0); DriveCard also gets an "Errors…" item in its actions dropdown when the drive has any recorded errors (count from a cheap query, cached).
+- Modify: `src/lib/jobs/onTerminalEvent.ts` (+test): the failed-scan toast copy says where to look: `"Scan finished with N errors — see the drive's Errors list"`.
+
+**Interfaces:**
+- Consumes: `scan_errors` table (exists since Phase 3.5; schema `id, drive_id, path, code, message, at`), jobsStore/ScanProgress from 5a.4.
+- Produces: `ScanErrorRow` (TS mirror in `src/lib/api/scan.ts`), `listScanErrors(driveId, limit, offset)`.
+- NOTE: the Rust-side coalescing changes event cadence for ALL jobs (scan, organize, geocode, regen, sidecar) — existing dp-jobs tests that count progress events must be updated deliberately (assert coalescing bounds, not exact per-item counts); tests that only drain until terminal are unaffected.
+
+- [ ] Step 1: Failing Rust test for progress coalescing (bounds + terminal correctness) → implement in the emission path.
+- [ ] Step 2: Failing tests for stable ScanProgress layout (walk/progress/terminal all render the same block shape; no unmount between phases — assert via container child structure) and ActiveJobs no-wrap → implement.
+- [ ] Step 3: Failing catalog tests for `list_scan_errors` paging → implement + command + api wrapper.
+- [ ] Step 4: ScanErrorsDialog + wiring (failed-count button, dropdown item, toast copy) with tests.
+- [ ] Step 5: All gates. Commit `fix(ux): coalesced scan progress, stable layout, scan error browser`.
+
+---
+
+### Task 5b.5: Finalize
 
 - [ ] Full gates incl. `pnpm tauri build --debug --no-bundle`; whole-branch review + one fix wave (controller-driven); push; PR `Closes #24` titled `feat: in-app updates, uninstall, metadata fix (Phase 5b)`; merge.
 - [ ] Keygen: run `scripts/updater-keygen.sh`, put the real pubkey in `tauri.conf.json` (committed — pubkey only), verify the private key file exists and REMIND the user to back it up.
