@@ -1,5 +1,5 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { registerDrive, listDrives, forgetDrive, countDriveMedia } from "./drives";
+import { registerDrive, listDrives, forgetDrive, countDriveMedia, relinkDrive } from "./drives";
 import { ApiError } from "./client";
 import type { Drive } from "./drives";
 
@@ -99,4 +99,17 @@ it("counts a drive's media", async () => {
     return undefined;
   });
   await expect(countDriveMedia(7)).resolves.toBe(42);
+});
+
+it("relinks a drive to a mounted volume", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "relink_drive") {
+      received = args;
+      return undefined;
+    }
+    return undefined;
+  });
+  await relinkDrive(7, "/Volumes/T7");
+  expect(received).toEqual({ driveId: 7, mountPath: "/Volumes/T7" });
 });

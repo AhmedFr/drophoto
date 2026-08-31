@@ -1026,6 +1026,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dp-core",
+ "dp-volumes",
  "sqlx",
  "tempfile",
  "tokio",

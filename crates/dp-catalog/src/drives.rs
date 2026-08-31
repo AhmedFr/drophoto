@@ -109,6 +109,69 @@ pub(crate) async fn backfill_drive_volume_identity(
     Ok(())
 }
 
+/// Adopts the volume at `mount_path` into drive `id`, **overwriting**
+/// `volume_uuid`/`volume_label`/`mount_path` (and `free`/`last_seen_at`)
+/// unconditionally — the one deliberate overwrite path in this module,
+/// unlike [`backfill_drive_volume_identity`]'s COALESCE-only self-heal.
+///
+/// It exists for exactly the case COALESCE can never fix: a drive whose
+/// stored identity (or complete lack of one — a pre-identity legacy row
+/// whose `mount_path` was already nulled by [`set_drive_presence`] while
+/// offline) no longer matches ANY currently-mounted volume, so
+/// `dp_volumes::resolve_presence` can never re-attach it on its own — the
+/// exact drive that produced this feature's original field report. The
+/// user is explicitly telling the app "this is the same physical drive,
+/// now under a different volume identity" via the RELINK action on an
+/// offline `DriveCard`; overwriting is correct here (unlike backfill)
+/// because it's a one-time, user-initiated, unambiguous correction rather
+/// than an automatic write running on every presence-watcher tick.
+///
+/// Preserves the row's `id` — and therefore every `media`/`sources`/tag/
+/// organize-history row that references it — which is the whole point
+/// versus Forget + re-register, which would discard all of that.
+pub(crate) async fn relink_drive(
+    pool: &SqlitePool,
+    id: i64,
+    volume_uuid: Option<&str>,
+    volume_label: Option<&str>,
+    mount_path: &str,
+    free: Option<u64>,
+) -> DpResult<()> {
+    let now = Utc::now().to_rfc3339();
+    match free {
+        Some(f) => {
+            sqlx::query(
+                "UPDATE drives SET volume_uuid = ?, volume_label = ?, mount_path = ?, \
+                 free = ?, last_seen_at = ? WHERE id = ?",
+            )
+            .bind(volume_uuid)
+            .bind(volume_label)
+            .bind(mount_path)
+            .bind(f as i64)
+            .bind(&now)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(db)?;
+        }
+        None => {
+            sqlx::query(
+                "UPDATE drives SET volume_uuid = ?, volume_label = ?, mount_path = ?, \
+                 last_seen_at = ? WHERE id = ?",
+            )
+            .bind(volume_uuid)
+            .bind(volume_label)
+            .bind(mount_path)
+            .bind(&now)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(db)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn list_drives(pool: &SqlitePool) -> DpResult<Vec<Drive>> {
     let rows = sqlx::query("SELECT * FROM drives ORDER BY name")
         .fetch_all(pool)

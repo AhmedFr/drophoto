@@ -1,6 +1,6 @@
 use crate::VolumeProvider;
 use dp_core::{DpResult, Volume};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use sysinfo::Disks;
 
@@ -98,6 +98,23 @@ impl SysinfoVolumes {
         lock_cache(&self.uuid_cache).insert(mount_path.to_string(), uuid.clone());
         uuid
     }
+
+    /// Evicts every cache entry whose mount path is not in
+    /// `current_mounts` — called at the top of every [`Self::list()`]
+    /// before resolving this tick's uuids. macOS re-uses a mount path
+    /// (`/Volumes/Untitled`, `/Volumes/NO NAME`) as soon as the previous
+    /// occupant is ejected, so a bare mount-path cache would otherwise
+    /// keep returning the *ejected* card's uuid for whatever new card
+    /// mounts at that same path — binding a registered drive to the
+    /// wrong physical volume (review finding 1). Pruning here guarantees
+    /// a card swap always produces at least one `list()` tick where the
+    /// path is absent from `current_mounts` (an eject-then-reinsert can't
+    /// happen faster than the 5-second poll interval), evicting the stale
+    /// entry before the new card's path can ever hit a cached, wrong
+    /// value.
+    fn prune_cache(&self, current_mounts: &HashSet<String>) {
+        lock_cache(&self.uuid_cache).retain(|mount_path, _| current_mounts.contains(mount_path));
+    }
 }
 
 #[async_trait::async_trait]
@@ -123,6 +140,9 @@ impl VolumeProvider for SysinfoVolumes {
             .collect();
         out.sort_by(|a, b| a.mount_path.cmp(&b.mount_path));
         out.dedup_by(|a, b| a.mount_path == b.mount_path);
+
+        let current_mounts: HashSet<String> = out.iter().map(|v| v.mount_path.clone()).collect();
+        self.prune_cache(&current_mounts);
 
         for v in &mut out {
             v.uuid = self.uuid_for(&v.mount_path).await;
@@ -181,22 +201,29 @@ mod tests {
         }
     }
 
+    /// Counts calls via a shared `Arc<AtomicUsize>` (rather than a counter
+    /// only the trait object itself can see) so a test can keep its own
+    /// handle to assert on after the identity has been moved into a
+    /// `Box<dyn DiskIdentity>`.
     struct CountingIdentity {
-        calls: std::sync::atomic::AtomicUsize,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        uuid: Option<String>,
     }
 
     #[async_trait::async_trait]
     impl DiskIdentity for CountingIdentity {
         async fn volume_uuid(&self, _mount_path: &str) -> Option<String> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Some("fixed-uuid".to_string())
+            self.uuid.clone()
         }
     }
 
     #[tokio::test]
     async fn uuid_for_caches_by_mount_path() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counting = CountingIdentity {
-            calls: std::sync::atomic::AtomicUsize::new(0),
+            calls: calls.clone(),
+            uuid: Some("fixed-uuid".to_string()),
         };
         let provider = SysinfoVolumes::new(Box::new(counting));
 
@@ -205,15 +232,84 @@ mod tests {
 
         assert_eq!(first, Some("fixed-uuid".to_string()));
         assert_eq!(second, Some("fixed-uuid".to_string()));
-        // Second lookup should have come from the cache, not the identity
-        // provider — inspect the cache directly since the trait object no
-        // longer exposes the counter.
-        assert_eq!(lock_cache(&provider.uuid_cache).len(), 1);
+        // The identity provider (the thing that actually shells out to
+        // `diskutil`) must only ever be consulted once for a repeatedly
+        // looked-up mount path — asserting the shared counter, not just
+        // the cache's size, is what actually proves the second lookup
+        // came from the cache rather than a second `diskutil` spawn.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn uuid_for_returns_none_when_identity_has_none() {
         let provider = SysinfoVolumes::new(Box::new(FakeIdentity(None)));
         assert_eq!(provider.uuid_for("/Volumes/Unknown").await, None);
+    }
+
+    /// Review finding 1: pruning the cache to the currently-mounted set
+    /// must evict a mount path that's no longer present, so that a *new*
+    /// physical volume mounting at that same reused path (macOS reuses
+    /// `/Volumes/Untitled`-style paths as soon as the previous occupant is
+    /// ejected) gets a fresh `diskutil` lookup rather than the old
+    /// occupant's cached uuid.
+    #[tokio::test]
+    async fn prune_cache_evicts_a_path_no_longer_mounted_so_a_reused_path_is_relooked_up() {
+        // Tick 1: card A is mounted at this path — cache stores A's uuid.
+        let current_uuid = std::sync::Arc::new(std::sync::Mutex::new(Some("A-UUID".to_string())));
+        let provider = SysinfoVolumes::new(Box::new(SharedIdentity(current_uuid.clone())));
+        assert_eq!(
+            provider.uuid_for("/Volumes/Untitled").await,
+            Some("A-UUID".to_string())
+        );
+
+        // Tick 2: card A is ejected — the path is absent from this tick's
+        // mounted set, so it must be pruned from the cache.
+        provider.prune_cache(&HashSet::new());
+
+        // Tick 3: card B mounts at the SAME path — a different physical
+        // volume, so `diskutil` would now report a different uuid for
+        // that path.
+        *current_uuid.lock().unwrap_or_else(|p| p.into_inner()) = Some("B-UUID".to_string());
+        assert_eq!(
+            provider.uuid_for("/Volumes/Untitled").await,
+            Some("B-UUID".to_string()),
+            "a pruned path must be relooked up, not served the ejected card's stale cached uuid"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_cache_keeps_an_entry_still_in_the_current_mount_set() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = SysinfoVolumes::new(Box::new(CountingIdentity {
+            calls: calls.clone(),
+            uuid: Some("fixed-uuid".to_string()),
+        }));
+        provider.uuid_for("/Volumes/Kodachrome").await;
+
+        let mut still_mounted = HashSet::new();
+        still_mounted.insert("/Volumes/Kodachrome".to_string());
+        provider.prune_cache(&still_mounted);
+
+        provider.uuid_for("/Volumes/Kodachrome").await;
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a still-mounted path's cache entry must survive pruning"
+        );
+    }
+
+    /// A [`DiskIdentity`] whose reported uuid can be changed *after*
+    /// construction via a shared `Arc<Mutex<..>>` — used to simulate
+    /// `diskutil` reporting a different physical volume's uuid for the
+    /// same mount path across two calls (a card swap), which a plain
+    /// fixed-return fake can't express.
+    struct SharedIdentity(std::sync::Arc<std::sync::Mutex<Option<String>>>);
+
+    #[async_trait::async_trait]
+    impl DiskIdentity for SharedIdentity {
+        async fn volume_uuid(&self, _mount_path: &str) -> Option<String> {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        }
     }
 }

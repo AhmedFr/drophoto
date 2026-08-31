@@ -3,17 +3,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { listVolumes } from "@/lib/api/volumes";
 import type { Volume } from "@/lib/api/volumes";
-import { listDrives, registerDrive, forgetDrive, countDriveMedia } from "@/lib/api/drives";
+import {
+  listDrives,
+  registerDrive,
+  forgetDrive,
+  countDriveMedia,
+  relinkDrive,
+} from "@/lib/api/drives";
 import type { Drive } from "@/lib/api/drives";
 import { startScan, cancelJob } from "@/lib/api/scan";
 import type { JobEvent } from "@/lib/api/scan";
 import { useTauriEvent } from "@/lib/hooks/useTauriEvent";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
+import { isVolumeClaimedByAnotherDrive } from "./driveIdentity";
 import { VolumeList } from "./components/VolumeList";
 import { DriveCard } from "./components/DriveCard";
 import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
 import { SourcesDialog } from "./components/SourcesDialog";
 import { ForgetDriveDialog } from "./components/ForgetDriveDialog";
+import { RelinkDriveDialog } from "./components/RelinkDriveDialog";
 import { useJobEvents } from "./hooks/useJobEvents";
 import { useSources } from "./hooks/useSources";
 
@@ -50,9 +58,12 @@ export function DrivesPage() {
   const [pending, setPending] = useState<Volume | null>(null);
   const [sourcesDrive, setSourcesDrive] = useState<Drive | null>(null);
   const [driveToForget, setDriveToForget] = useState<Drive | null>(null);
+  const [driveToRelink, setDriveToRelink] = useState<Drive | null>(null);
   const jobEvents = useJobEvents();
   const driveIds = useJobsStore((s) => s.driveIds);
-  const { sourcesByDrive, isLoading: sourcesLoading } = useSources((drives.data ?? []).map((d) => d.id));
+  const { sourcesByDrive, isLoading: sourcesLoading } = useSources(
+    (drives.data ?? []).map((d) => d.id),
+  );
 
   useTauriEvent("drives:changed", () => {
     queryClient.invalidateQueries({ queryKey: ["drives"] });
@@ -98,8 +109,13 @@ export function DrivesPage() {
 
   const forgetMutation = useMutation({
     mutationFn: forgetDrive,
-    onSuccess: () => {
+    onSuccess: (_data, forgottenDriveId) => {
       queryClient.invalidateQueries({ queryKey: ["drives"] });
+      // The forgotten drive's cached media count must not linger — drive
+      // ids are reused (no AUTOINCREMENT), so a stale cache entry here
+      // could otherwise be served to a brand-new drive that happens to
+      // reuse the same id before it ever runs its own count query.
+      queryClient.invalidateQueries({ queryKey: ["driveMediaCount", forgottenDriveId] });
       setDriveToForget(null);
     },
   });
@@ -109,11 +125,28 @@ export function DrivesPage() {
     forgetMutation.reset();
   };
 
+  const relinkMutation = useMutation({
+    mutationFn: ({ driveId, mountPath }: { driveId: number; mountPath: string }) =>
+      relinkDrive(driveId, mountPath),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["drives"] });
+      setDriveToRelink(null);
+    },
+  });
+
+  const handleRelinkDialogClose = () => {
+    setDriveToRelink(null);
+    relinkMutation.reset();
+  };
+
   const registeredMountPaths = new Set(
     (drives.data ?? []).map((d) => d.mount_path).filter((p): p is string => p != null),
   );
   const unregisteredVolumes = (volumes.data ?? []).filter(
     (v) => !registeredMountPaths.has(v.mount_path),
+  );
+  const relinkCandidates = (volumes.data ?? []).filter(
+    (v) => !isVolumeClaimedByAnotherDrive(v, drives.data ?? []),
   );
 
   return (
@@ -124,7 +157,9 @@ export function DrivesPage() {
           REGISTERED DRIVES
         </div>
         {drives.isError && (
-          <p className="px-5 font-mono text-[11px] text-red-400">{(drives.error as Error).message}</p>
+          <p className="px-5 font-mono text-[11px] text-red-400">
+            {(drives.error as Error).message}
+          </p>
         )}
         {drives.data?.length ? (
           <ul className="flex flex-col">
@@ -142,6 +177,7 @@ export function DrivesPage() {
                   onCancelScan={jobId ? () => cancelJob(jobId) : undefined}
                   onOpenSources={() => setSourcesDrive(d)}
                   onForget={() => setDriveToForget(d)}
+                  onRelink={() => setDriveToRelink(d)}
                 />
               );
             })}
@@ -154,7 +190,9 @@ export function DrivesPage() {
           MOUNTED VOLUMES
         </div>
         {volumes.isError && (
-          <p className="px-5 font-mono text-[11px] text-red-400">{(volumes.error as Error).message}</p>
+          <p className="px-5 font-mono text-[11px] text-red-400">
+            {(volumes.error as Error).message}
+          </p>
         )}
         <VolumeList volumes={unregisteredVolumes} onRegister={setPending} />
       </div>
@@ -168,10 +206,21 @@ export function DrivesPage() {
       <ForgetDriveDialog
         drive={driveToForget}
         mediaCount={driveMediaCount.data ?? null}
+        mediaCountError={driveMediaCount.isError ? (driveMediaCount.error as Error).message : null}
         forgetting={forgetMutation.isPending}
         error={forgetMutation.isError ? (forgetMutation.error as Error).message : null}
         onOpenChange={(open) => !open && handleForgetDialogClose()}
         onConfirm={() => driveToForget && forgetMutation.mutate(driveToForget.id)}
+      />
+      <RelinkDriveDialog
+        drive={driveToRelink}
+        candidates={relinkCandidates}
+        relinking={relinkMutation.isPending}
+        error={relinkMutation.isError ? (relinkMutation.error as Error).message : null}
+        onOpenChange={(open) => !open && handleRelinkDialogClose()}
+        onConfirm={(mountPath) =>
+          driveToRelink && relinkMutation.mutate({ driveId: driveToRelink.id, mountPath })
+        }
       />
     </div>
   );

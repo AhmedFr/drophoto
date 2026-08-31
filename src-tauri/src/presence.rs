@@ -50,10 +50,17 @@ async fn tick(app: &AppHandle) {
         // Self-heal a legacy drive's identity columns the moment it's
         // matched to a mounted volume — see
         // `dp_catalog::backfill_drive_volume_identity`'s doc comment.
-        // `COALESCE` on the write side means this is a safe no-op once
-        // both columns are already set, so it's cheap to just always call
-        // it on a match rather than checking `current` first.
-        if m.mount_path.is_some() && (m.volume_uuid.is_some() || m.volume_label.is_some()) {
+        // `COALESCE` on the write side makes the call itself a no-op once
+        // both columns are already set, but SQLite still performs the
+        // write and a WAL frame every time regardless — so this is also
+        // gated on `current` actually having something left to fill,
+        // rather than firing on every 5s tick for every matched drive
+        // forever (review finding 5).
+        let current_missing_identity = current.volume_uuid.is_none() || current.volume_label.is_none();
+        if current_missing_identity
+            && m.mount_path.is_some()
+            && (m.volume_uuid.is_some() || m.volume_label.is_some())
+        {
             if let Err(e) = state
                 .catalog
                 .backfill_drive_volume_identity(

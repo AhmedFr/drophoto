@@ -27,12 +27,24 @@ impl PresenceMatch {
             volume_label: None,
         }
     }
+
+    fn matched(drive_id: i64, v: &Volume) -> Self {
+        Self {
+            drive_id,
+            mount_path: Some(v.mount_path.clone()),
+            free_bytes: Some(v.free_bytes),
+            volume_uuid: v.uuid.clone(),
+            volume_label: Some(v.name.clone()),
+        }
+    }
 }
 
 /// Matches each `drive` against the currently-mounted `volumes`, returning
 /// where each one should say it lives right now.
 ///
-/// A drive is matched to a volume by, in order (first match wins):
+/// Resolution runs in four **global** passes, strongest evidence first —
+/// every drive gets a chance to match at a tier before any drive is
+/// allowed to match at the next, weaker one:
 /// 1. `drive.volume_uuid == volume.uuid` (both `Some`) — the strongest
 ///    signal, since a volume's Apple `VolumeUUID` survives both a rename
 ///    and a remount at a different path.
@@ -41,45 +53,76 @@ impl PresenceMatch {
 ///    the UI (this is the bug this order fixes: a drive renamed at
 ///    registration used to only ever match on `drive.name`, so
 ///    reconnecting it looked like a brand-new volume).
-/// 3. Legacy `drive.name == volume.name` — kept for a drive registered
-///    before `volume_label` existed and never since matched (so it has
-///    no `volume_label` to match tier 2 against) *and* whose display name
-///    still happens to equal the volume's.
+/// 3. Legacy `drive.name == volume.name`, **only when `drive.volume_label`
+///    is `None`** — kept for a drive registered before `volume_label`
+///    existed and never since matched. A drive that already has a known
+///    `volume_label` must never fall through to this tier: if its own
+///    volume is absent, matching some unrelated mounted volume that
+///    happens to share the user's chosen display name (e.g. a drive named
+///    "Backup" binding to an unrelated "Backup"-named Time Machine volume)
+///    would silently attach the wrong physical drive.
 /// 4. `drive.mount_path == volume.mount_path` — the drive's previously
 ///    known mount point, for a drive whose name (chosen or volume) no
 ///    longer matches anything, e.g. the volume was renamed at the OS
 ///    level.
 ///
-/// A volume already claimed by an earlier drive in `drives` can never
-/// match a second one — each volume is claimed by at most one drive.
-/// A drive with no matching volume is reported unplugged.
+/// Running the passes globally (rather than resolving one drive through
+/// every tier before moving to the next) means the outcome never depends
+/// on `drives`' order: a drive holding the correct `volume_uuid` always
+/// wins its volume even if a different drive would otherwise have claimed
+/// it by a weaker tier first. A volume already claimed by any drive at an
+/// earlier tier (or earlier in the same tier) can never match a second
+/// drive — each volume is claimed by at most one drive. A drive with no
+/// matching volume at any tier is reported unplugged.
 pub fn resolve_presence(drives: &[Drive], volumes: &[Volume]) -> Vec<PresenceMatch> {
     let mut claimed = vec![false; volumes.len()];
+    let mut resolved: Vec<Option<PresenceMatch>> = vec![None; drives.len()];
+
+    resolve_tier(drives, volumes, &mut claimed, &mut resolved, find_by_uuid);
+    resolve_tier(drives, volumes, &mut claimed, &mut resolved, |d, vs, c| {
+        find_by_name(d.volume_label.as_deref(), vs, c)
+    });
+    resolve_tier(drives, volumes, &mut claimed, &mut resolved, |d, vs, c| {
+        // Gated on `volume_label` being unset — see tier 3's doc comment
+        // above. A drive with a known label must never fall back to
+        // matching an unrelated same-named volume.
+        if d.volume_label.is_some() {
+            None
+        } else {
+            find_by_name(Some(d.name.as_str()), vs, c)
+        }
+    });
+    resolve_tier(drives, volumes, &mut claimed, &mut resolved, find_by_mount_path);
 
     drives
         .iter()
-        .map(|drive| {
-            let idx = find_by_uuid(drive, volumes, &claimed)
-                .or_else(|| find_by_name(drive.volume_label.as_deref(), volumes, &claimed))
-                .or_else(|| find_by_name(Some(drive.name.as_str()), volumes, &claimed))
-                .or_else(|| find_by_mount_path(drive, volumes, &claimed));
-
-            match idx {
-                Some(i) => {
-                    claimed[i] = true;
-                    let v = &volumes[i];
-                    PresenceMatch {
-                        drive_id: drive.id,
-                        mount_path: Some(v.mount_path.clone()),
-                        free_bytes: Some(v.free_bytes),
-                        volume_uuid: v.uuid.clone(),
-                        volume_label: Some(v.name.clone()),
-                    }
-                }
-                None => PresenceMatch::unplugged(drive.id),
-            }
-        })
+        .zip(resolved)
+        .map(|(d, m)| m.unwrap_or_else(|| PresenceMatch::unplugged(d.id)))
         .collect()
+}
+
+/// Runs one matching tier across every not-yet-resolved drive, in order,
+/// claiming a volume as soon as `find` locates one for a drive — this is
+/// what makes a whole tier "global": every drive gets a chance to match
+/// with `find` before [`resolve_presence`] moves on to the next, weaker
+/// tier, so a stronger-tier match elsewhere can never be pre-empted by a
+/// weaker-tier match resolved earlier only because of list order.
+fn resolve_tier(
+    drives: &[Drive],
+    volumes: &[Volume],
+    claimed: &mut [bool],
+    resolved: &mut [Option<PresenceMatch>],
+    find: impl Fn(&Drive, &[Volume], &[bool]) -> Option<usize>,
+) {
+    for (i, drive) in drives.iter().enumerate() {
+        if resolved[i].is_some() {
+            continue;
+        }
+        if let Some(idx) = find(drive, volumes, claimed) {
+            claimed[idx] = true;
+            resolved[i] = Some(PresenceMatch::matched(drive.id, &volumes[idx]));
+        }
+    }
 }
 
 fn find_by_uuid(drive: &Drive, volumes: &[Volume], claimed: &[bool]) -> Option<usize> {
@@ -285,5 +328,70 @@ mod tests {
 
         assert_eq!(got[0].volume_uuid, Some("uuid-legacy".to_string()));
         assert_eq!(got[0].volume_label, Some("Kodachrome".to_string()));
+    }
+
+    /// Review finding 2, gated side: a drive with a KNOWN `volume_label`
+    /// must never fall through to the legacy name tier and bind an
+    /// unrelated volume that merely happens to share the user's display
+    /// name — e.g. a drive named "Backup" (whose own volume, labeled
+    /// "MyBackupDrive", is absent) must not silently attach to an
+    /// unrelated Time Machine volume that is actually named "Backup".
+    #[test]
+    fn a_drive_with_a_known_label_never_falls_back_to_matching_by_display_name() {
+        let mut d = drive(1, "Backup", None);
+        d.volume_label = Some("MyBackupDrive".to_string());
+        // No volume named "MyBackupDrive" is mounted — only an unrelated
+        // volume that happens to share the drive's *display* name.
+        let volumes = vec![volume("Backup", "/Volumes/Backup", 1)];
+
+        let got = resolve_presence(&[d], &volumes);
+
+        assert_eq!(
+            got[0].mount_path, None,
+            "must stay unplugged, not bind the wrong volume"
+        );
+    }
+
+    /// Review finding 2, ungated side: a drive with NO known `volume_label`
+    /// (never matched since the column existed) still falls back to
+    /// legacy `name == volume.name` matching, same as before this gate was
+    /// added — `matches_by_legacy_name_even_when_mount_path_changed`
+    /// above already covers this, but this test makes the "ungated" half
+    /// explicit next to the gated one.
+    #[test]
+    fn a_drive_with_no_known_label_still_matches_by_legacy_display_name() {
+        let d = drive(1, "Kodachrome", None);
+        let volumes = vec![volume("Kodachrome", "/Volumes/Kodachrome", 1)];
+
+        let got = resolve_presence(&[d], &volumes);
+
+        assert_eq!(got[0].mount_path, Some("/Volumes/Kodachrome".to_string()));
+    }
+
+    /// Review finding 3 — the "steal" scenario: drive "Aaa" only has a
+    /// (stale) label match, drive "Bbb" holds the volume's actual uuid.
+    /// Even though "Aaa" is resolved first in `drives`, "Bbb" — the
+    /// stronger claim — must win the volume; "Aaa" must be left unplugged
+    /// rather than stealing it via a weaker tier resolved earlier.
+    #[test]
+    fn a_stronger_tier_match_can_never_be_stolen_by_a_weaker_tier_resolved_earlier() {
+        let mut aaa = drive(1, "Aaa", None);
+        aaa.volume_label = Some("Untitled".to_string());
+        let mut bbb = drive(2, "Bbb", None);
+        bbb.volume_uuid = Some("U".to_string());
+
+        let volumes = vec![volume_with_uuid("Untitled", "/Volumes/Untitled", 1, "U")];
+
+        let got = resolve_presence(&[aaa, bbb], &volumes);
+
+        assert_eq!(
+            got[0].mount_path, None,
+            "Aaa (weaker tier) must not steal the volume"
+        );
+        assert_eq!(
+            got[1].mount_path,
+            Some("/Volumes/Untitled".to_string()),
+            "Bbb (uuid owner) must win it"
+        );
     }
 }

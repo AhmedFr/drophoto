@@ -36,4 +36,16 @@ export const listDrives = () => invokeApi<Drive[]>("list_drives");
 export const forgetDrive = (driveId: number) => invokeApi<void>("forget_drive", { driveId });
 
 /** How many media rows `driveId` currently has — for the FORGET confirmation dialog's "removes N photos" message. */
-export const countDriveMedia = (driveId: number) => invokeApi<number>("count_drive_media", { driveId });
+export const countDriveMedia = (driveId: number) =>
+  invokeApi<number>("count_drive_media", { driveId });
+
+/**
+ * Adopts the mounted volume at `mountPath` into `driveId`, overwriting its
+ * stored identity and bringing it online — the RELINK action on an
+ * offline `DriveCard`, for a drive whose stored identity no longer
+ * matches anything currently mounted. Preserves the drive's id (and every
+ * media/source/tag/organize-history row that references it), unlike
+ * Forget + re-register.
+ */
+export const relinkDrive = (driveId: number, mountPath: string) =>
+  invokeApi<void>("relink_drive", { driveId, mountPath });

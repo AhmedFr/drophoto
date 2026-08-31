@@ -58,7 +58,13 @@ it("disables the Scan button when the drive is offline", () => {
 });
 
 it("renders ScanProgress when a scanEvent is present", () => {
-  const scanEvent: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  const scanEvent: JobEvent = {
+    kind: "progress",
+    job_id: "scan-0",
+    done: 3,
+    total: 10,
+    current: "a.jpg",
+  };
   render(<DriveCard drive={baseDrive} scanEvent={scanEvent} onCancelScan={vi.fn()} />);
   expect(screen.getByText("3 / 10")).toBeInTheDocument();
 });
@@ -69,7 +75,13 @@ it("does not render ScanProgress when there is no scanEvent", () => {
 });
 
 it("disables the Scan button while a scan is in progress", () => {
-  const scanEvent: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  const scanEvent: JobEvent = {
+    kind: "progress",
+    job_id: "scan-0",
+    done: 3,
+    total: 10,
+    current: "a.jpg",
+  };
   render(
     <DriveCard
       drive={baseDrive}
@@ -196,7 +208,13 @@ it("does not render the Full button when onFullScan is not given", () => {
 });
 
 it("disables the Full button while a scan is in progress", () => {
-  const scanEvent: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  const scanEvent: JobEvent = {
+    kind: "progress",
+    job_id: "scan-0",
+    done: 3,
+    total: 10,
+    current: "a.jpg",
+  };
   render(
     <DriveCard
       drive={baseDrive}
@@ -223,10 +241,43 @@ it("does not render the drive-actions menu when onForget is not given", () => {
 
 it("calls onForget when Forget… is chosen from the drive-actions menu, even offline", async () => {
   const onForget = vi.fn();
-  render(<DriveCard drive={{ ...baseDrive, online: false, mount_path: null }} onForget={onForget} />);
+  render(
+    <DriveCard drive={{ ...baseDrive, online: false, mount_path: null }} onForget={onForget} />,
+  );
 
   await userEvent.click(screen.getByRole("button", { name: "Drive actions" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Forget…" }));
 
   expect(onForget).toHaveBeenCalledTimes(1);
+});
+
+it("does not render Relink… for an online drive even when onRelink is given", async () => {
+  render(<DriveCard drive={baseDrive} onForget={vi.fn()} onRelink={vi.fn()} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Drive actions" }));
+
+  expect(screen.queryByRole("menuitem", { name: "Relink…" })).not.toBeInTheDocument();
+});
+
+it("renders Relink… for an offline drive and calls onRelink when chosen", async () => {
+  const onRelink = vi.fn();
+  render(
+    <DriveCard
+      drive={{ ...baseDrive, online: false, mount_path: null }}
+      onForget={vi.fn()}
+      onRelink={onRelink}
+    />,
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Drive actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Relink…" }));
+
+  expect(onRelink).toHaveBeenCalledTimes(1);
+});
+
+it("renders the drive-actions menu for an offline drive with only onRelink given (no onForget)", () => {
+  render(
+    <DriveCard drive={{ ...baseDrive, online: false, mount_path: null }} onRelink={vi.fn()} />,
+  );
+  expect(screen.getByRole("button", { name: "Drive actions" })).toBeInTheDocument();
 });

@@ -116,6 +116,13 @@ async fn forget_drive_cascades_every_referencing_row_in_one_drive() {
     // forget.
     c.record_job_run(run("geocode-1", None)).await.unwrap();
 
+    c.record_scan_error(drive_id, "broken.jpg", "hash_mismatch", "checksum mismatch")
+        .await
+        .unwrap();
+    c.record_scan_error(other_drive_id, "fine.jpg", "hash_mismatch", "unrelated")
+        .await
+        .unwrap();
+
     let found = c.search_media("Trip", 10).await.unwrap();
     assert_eq!(
         found.len(),
@@ -151,6 +158,12 @@ async fn forget_drive_cascades_every_referencing_row_in_one_drive() {
     // FTS no longer surfaces the forgotten media.
     let found_after = c.search_media("Trip", 10).await.unwrap();
     assert!(found_after.is_empty());
+
+    // Its scan_errors are gone (drive ids are reused — no AUTOINCREMENT —
+    // so leaving these behind could one day misattribute a stale error to
+    // a brand-new drive); the other drive's own scan error survives.
+    assert_eq!(c.count_scan_errors(drive_id).await.unwrap(), 0);
+    assert_eq!(c.count_scan_errors(other_drive_id).await.unwrap(), 1);
 
     // The other drive's own row, source, and media are all untouched.
     assert_eq!(source.drive_id, drive_id); // sanity on the fixture itself

@@ -268,3 +268,17 @@ pub(crate) async fn record_scan_error(
         .map_err(db)?;
     Ok(())
 }
+
+/// How many `scan_errors` rows `drive_id` currently has. `scan_errors` has
+/// no reader anywhere else in the workspace today (it exists purely so a
+/// future error panel has something to show) — this exists so
+/// [`crate::forget_drive::forget_drive`]'s cascade test can prove its
+/// `DELETE FROM scan_errors` actually runs, not to back any UI yet.
+pub(crate) async fn count_scan_errors(pool: &SqlitePool, drive_id: i64) -> DpResult<u64> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scan_errors WHERE drive_id = ?")
+        .bind(drive_id)
+        .fetch_one(pool)
+        .await
+        .map_err(db)?;
+    Ok(count as u64)
+}

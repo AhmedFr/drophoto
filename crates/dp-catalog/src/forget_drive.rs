@@ -39,7 +39,14 @@ use sqlx::SqlitePool;
 ///    (non-`contentless`) FTS5 index with no FK to `media`, so it never
 ///    auto-cascades; deleted here, while `media` (and thus the `id`s
 ///    this subquery needs) still exists, rather than after.
-/// 5. The `drives` row itself — cascades automatically from here:
+/// 5. `scan_errors` for this drive — like `job_runs`, no FK to `drives`
+///    (`drive_id INTEGER NOT NULL` with no `REFERENCES`), so nothing
+///    forces this, but `drives.id` is `INTEGER PRIMARY KEY` *without*
+///    `AUTOINCREMENT` (`0001_init.sql`), meaning SQLite *does* reuse a
+///    deleted drive's id for the next registration — leaving these rows
+///    behind would let a scan-errors panel one day attribute a stale
+///    error to a brand-new, unrelated drive that happens to reuse the id.
+/// 6. The `drives` row itself — cascades automatically from here:
 ///    `media` (`ON DELETE CASCADE` on `drive_id`), which cascades further
 ///    into `media_tags` (`ON DELETE CASCADE` on `media_id`); `sources`
 ///    (`ON DELETE CASCADE` on `drive_id`); and `organize_rules`
@@ -68,6 +75,12 @@ pub(crate) async fn forget_drive(pool: &SqlitePool, id: i64) -> DpResult<()> {
         .map_err(db)?;
 
     sqlx::query("DELETE FROM media_fts WHERE rowid IN (SELECT id FROM media WHERE drive_id = ?)")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+
+    sqlx::query("DELETE FROM scan_errors WHERE drive_id = ?")
         .bind(id)
         .execute(&mut *tx)
         .await

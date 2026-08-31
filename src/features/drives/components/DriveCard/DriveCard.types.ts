@@ -22,7 +22,9 @@ export type DriveCardProps = {
   onFullScan?: () => void;
   onCancelScan?: () => void;
   onOpenSources?: () => void;
-  /** Opens the FORGET… confirmation dialog for this drive. Rendered as a dropdown menu action; the dropdown itself is only rendered when this is given. */
+  /** Opens the FORGET… confirmation dialog for this drive. Rendered as a dropdown menu action; the dropdown itself is only rendered when this (or `onRelink`, while offline) is given. */
   onForget?: () => void;
+  /** Opens the RELINK… dialog for this drive — only rendered while the drive is offline, since an online drive is already correctly matched. */
+  onRelink?: () => void;
   scanEvent?: JobEvent;
 };

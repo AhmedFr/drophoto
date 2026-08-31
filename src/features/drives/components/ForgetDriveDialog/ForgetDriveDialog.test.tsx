@@ -88,6 +88,29 @@ it("shows a loading message and keeps confirm disabled while the count is still 
   expect(screen.getByRole("button", { name: "Forget drive" })).toBeDisabled();
 });
 
+// Review finding 8: a failed count query must never leave the dialog
+// stuck showing "Checking…" forever with a permanently-disabled Confirm.
+it("shows the count error and keeps Confirm usable once FORGET is typed, when the count query failed", async () => {
+  render(
+    <ForgetDriveDialog
+      drive={drive}
+      mediaCount={null}
+      mediaCountError="network error"
+      forgetting={false}
+      onOpenChange={vi.fn()}
+      onConfirm={vi.fn()}
+    />,
+  );
+  expect(screen.queryByText(/Checking how many photos/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Couldn't determine how many photos/)).toBeInTheDocument();
+  expect(screen.getByText("network error")).toBeInTheDocument();
+
+  const confirmButton = screen.getByRole("button", { name: "Forget drive" });
+  expect(confirmButton).toBeDisabled();
+  await userEvent.type(screen.getByLabelText("Type FORGET to confirm"), "FORGET");
+  expect(confirmButton).toBeEnabled();
+});
+
 it("keeps the confirm button disabled until FORGET is typed exactly", async () => {
   render(
     <ForgetDriveDialog

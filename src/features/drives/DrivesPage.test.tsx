@@ -112,7 +112,8 @@ it("renders registered drives and hides their volume from the mounted list", asy
   expect(await screen.findByText("ONLINE")).toBeInTheDocument();
   expect(screen.queryByText("No drives registered")).not.toBeInTheDocument();
 
-  const mountedList = (await screen.findByText("MOUNTED VOLUMES")).nextElementSibling as HTMLElement;
+  const mountedList = (await screen.findByText("MOUNTED VOLUMES"))
+    .nextElementSibling as HTMLElement;
   expect(await within(mountedList).findByText("Extra")).toBeInTheDocument();
   expect(within(mountedList).queryByText("/Volumes/Kodachrome")).not.toBeInTheDocument();
 });
@@ -284,7 +285,9 @@ it("starts a scan, shows live progress from job events, and cancels", async () =
   // test here) is what applies "job" Tauri events to the store; seed it
   // directly to simulate that.
   act(() =>
-    useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" }),
+    useJobsStore
+      .getState()
+      .applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" }),
   );
   expect(await screen.findByText("3 / 10")).toBeInTheDocument();
 
@@ -509,7 +512,125 @@ it("shows the backend's refusal message when a job is running on the drive", asy
   });
   fireEvent.click(within(dialog).getByRole("button", { name: "Forget drive" }));
 
-  expect(await within(dialog).findByText("a scan job is running on this drive")).toBeInTheDocument();
+  expect(
+    await within(dialog).findByText("a scan job is running on this drive"),
+  ).toBeInTheDocument();
   // The dialog stays open and the drive is not removed from the list.
   expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+const offlineDrive = {
+  id: 2,
+  name: "SSD Samsung T7",
+  volume_uuid: null,
+  volume_label: null,
+  mount_path: null,
+  role: "archive",
+  capacity: 2_000_000_000,
+  free: 1_500_000_000,
+  last_seen_at: null,
+  online: false,
+};
+
+it("opens the Relink dialog listing unclaimed mounted volumes for an offline drive", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [offlineDrive];
+    if (cmd === "list_volumes") {
+      return [
+        {
+          name: "T7",
+          mount_path: "/Volumes/T7",
+          total_bytes: 2_000_000_000,
+          free_bytes: 1_500_000_000,
+          is_removable: true,
+          uuid: "uuid-real",
+        },
+      ];
+    }
+    if (cmd === "list_sources") return [];
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Relink…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent('Relink "SSD Samsung T7"');
+  expect(within(dialog).getByText("T7")).toBeInTheDocument();
+});
+
+it("relinks a drive to the chosen volume and refreshes the drives list", async () => {
+  let relinkArgs: unknown;
+  let listCalls = 0;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") {
+      listCalls += 1;
+      return listCalls === 1
+        ? [offlineDrive]
+        : [{ ...offlineDrive, online: true, mount_path: "/Volumes/T7" }];
+    }
+    if (cmd === "list_volumes") {
+      return [
+        {
+          name: "T7",
+          mount_path: "/Volumes/T7",
+          total_bytes: 2_000_000_000,
+          free_bytes: 1_500_000_000,
+          is_removable: true,
+          uuid: "uuid-real",
+        },
+      ];
+    }
+    if (cmd === "list_sources") return [];
+    if (cmd === "relink_drive") {
+      relinkArgs = args;
+      return null;
+    }
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Relink…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Relink" }));
+
+  await waitFor(() => expect(relinkArgs).toEqual({ driveId: 2, mountPath: "/Volumes/T7" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(await screen.findByText("ONLINE")).toBeInTheDocument();
+});
+
+it("excludes a volume already claimed by another registered drive from the Relink candidates", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") {
+      return [
+        offlineDrive,
+        { ...onlineDrive, id: 3, volume_label: "T7", mount_path: "/Volumes/Other" },
+      ];
+    }
+    if (cmd === "list_volumes") {
+      return [
+        {
+          name: "T7",
+          mount_path: "/Volumes/T7",
+          total_bytes: 2_000_000_000,
+          free_bytes: 1_500_000_000,
+          is_removable: true,
+          uuid: null,
+        },
+      ];
+    }
+    if (cmd === "list_sources") return [];
+    return undefined;
+  });
+  renderPage();
+
+  const driveActionButtons = await screen.findAllByRole("button", { name: "Drive actions" });
+  await userEvent.click(driveActionButtons[0]);
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Relink…" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/No unclaimed mounted volumes found/)).toBeInTheDocument();
 });

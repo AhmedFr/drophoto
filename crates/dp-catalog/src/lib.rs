@@ -39,6 +39,20 @@ pub trait Catalog: Send + Sync {
         volume_uuid: Option<&str>,
         volume_label: Option<&str>,
     ) -> DpResult<()>;
+    /// Adopts a currently-mounted volume into drive `id`, **overwriting**
+    /// its stored identity/mount_path unconditionally — the deliberate,
+    /// user-initiated RELINK action for a drive `resolve_presence` can
+    /// never re-attach on its own (no matching uuid/label/name/prior
+    /// mount path). See [`crate::drives::relink_drive`] for why this
+    /// bypasses the `backfill_drive_volume_identity` COALESCE rule.
+    async fn relink_drive(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+        mount_path: &str,
+        free: Option<u64>,
+    ) -> DpResult<()>;
     /// Permanently deletes drive `id` and everything that references it —
     /// sources, media (and by extension tags/places/FTS), and its
     /// organize/revert job history — in one transaction. Never touches
@@ -72,6 +86,9 @@ pub trait Catalog: Send + Sync {
     /// implementation for why the guard exists.
     async fn delete_media(&self, id: i64) -> DpResult<bool>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
+    /// How many `scan_errors` rows `drive_id` currently has — see
+    /// [`crate::media::count_scan_errors`]'s doc comment.
+    async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64>;
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule>;
     async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()>;
     async fn list_unorganized(&self, drive_id: i64, root: &str) -> DpResult<Vec<MediaRow>>;
@@ -189,6 +206,17 @@ impl Catalog for SqliteCatalog {
         drives::backfill_drive_volume_identity(&self.pool, id, volume_uuid, volume_label).await
     }
 
+    async fn relink_drive(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+        mount_path: &str,
+        free: Option<u64>,
+    ) -> DpResult<()> {
+        drives::relink_drive(&self.pool, id, volume_uuid, volume_label, mount_path, free).await
+    }
+
     async fn forget_drive(&self, id: i64) -> DpResult<()> {
         forget_drive::forget_drive(&self.pool, id).await
     }
@@ -239,6 +267,10 @@ impl Catalog for SqliteCatalog {
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         media::record_scan_error(&self.pool, drive_id, path, code, message).await
+    }
+
+    async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64> {
+        media::count_scan_errors(&self.pool, drive_id).await
     }
 
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {

@@ -704,6 +704,19 @@ impl Catalog for FailingCatalog {
             .await
     }
 
+    async fn relink_drive(
+        &self,
+        id: i64,
+        volume_uuid: Option<&str>,
+        volume_label: Option<&str>,
+        mount_path: &str,
+        free: Option<u64>,
+    ) -> DpResult<()> {
+        self.0
+            .relink_drive(id, volume_uuid, volume_label, mount_path, free)
+            .await
+    }
+
     async fn forget_drive(&self, id: i64) -> DpResult<()> {
         self.0.forget_drive(id).await
     }
@@ -754,6 +767,10 @@ impl Catalog for FailingCatalog {
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         self.0.record_scan_error(drive_id, path, code, message).await
+    }
+
+    async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64> {
+        self.0.count_scan_errors(drive_id).await
     }
 
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {

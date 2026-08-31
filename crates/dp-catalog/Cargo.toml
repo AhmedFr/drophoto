@@ -14,3 +14,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = "3"
+# Dev-only: lets `tests/drives.rs` prove `relink_drive`'s overwritten
+# identity is actually usable by `resolve_presence` afterward, rather than
+# just asserting the raw columns changed. No production dependency runs
+# in the other direction.
+dp-volumes = { path = "../dp-volumes" }

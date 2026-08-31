@@ -20,15 +20,20 @@ export function DriveCard({
   onCancelScan,
   onOpenSources,
   onForget,
+  onRelink,
   scanEvent,
 }: DriveCardProps) {
-  const scanInProgress = scanEvent != null && scanEvent.kind !== "finished" && scanEvent.kind !== "cancelled";
+  const scanInProgress =
+    scanEvent != null && scanEvent.kind !== "finished" && scanEvent.kind !== "cancelled";
   const enabledSources = sources.filter((s) => s.enabled).length;
   // `sources` defaults to `[]` while the caller's query is still in
   // flight, which is indistinguishable from "none configured" — so a
   // card used to flash a red "No sources" on every mount. Treat the
   // loading window as its own state instead of guessing.
   const noEnabledSources = !sourcesLoading && enabledSources === 0;
+  // RELINK only ever makes sense for a drive that's currently unmatched —
+  // an online drive is already correctly attached to a volume.
+  const showRelink = onRelink != null && !drive.online;
 
   return (
     <li className="flex flex-col border-b border-border">
@@ -39,7 +44,9 @@ export function DriveCard({
         <span className="font-mono text-[10px] text-muted-foreground">
           {formatBytes(drive.free)} free / {formatBytes(drive.capacity)}
         </span>
-        <span className={`font-mono text-[10px] ${noEnabledSources ? "text-red-400" : "text-faint"}`}>
+        <span
+          className={`font-mono text-[10px] ${noEnabledSources ? "text-red-400" : "text-faint"}`}
+        >
           {sourcesLoading
             ? "…"
             : noEnabledSources
@@ -67,13 +74,15 @@ export function DriveCard({
             variant="outline"
             size="xs"
             disabled={!drive.online || scanInProgress || sourcesLoading || noEnabledSources}
-            title={noEnabledSources ? "Choose sources first" : "Re-hash and re-thumbnail every file"}
+            title={
+              noEnabledSources ? "Choose sources first" : "Re-hash and re-thumbnail every file"
+            }
             onClick={onFullScan}
           >
             Full
           </Button>
         )}
-        {onForget && (
+        {(onForget || showRelink) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="xs" aria-label="Drive actions">
@@ -81,9 +90,12 @@ export function DriveCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem variant="destructive" onClick={onForget}>
-                Forget…
-              </DropdownMenuItem>
+              {showRelink && <DropdownMenuItem onClick={onRelink}>Relink…</DropdownMenuItem>}
+              {onForget && (
+                <DropdownMenuItem variant="destructive" onClick={onForget}>
+                  Forget…
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
