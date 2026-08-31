@@ -11,6 +11,7 @@ mod sqlite;
 mod tags;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use dp_core::{
     DpResult, Drive, JobRunRow, MediaQuery, MediaRow, NewDrive, NewJobRun, NewMedia, NewPlace, NewSource,
     OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, ScanIndexEntry, Source, Tag,
@@ -40,6 +41,11 @@ pub trait Catalog: Send + Sync {
     /// `HashMap<rel_path, ScanIndexEntry>`) before walking, so a scan can
     /// decide per file whether to skip it without a per-file query.
     async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>>;
+    /// Records the XMP sidecar's on-disk mtime as of the last time it was
+    /// actually read — see [`dp_core::ScanIndexEntry::sidecar_mtime`].
+    /// Called by `dp_jobs::ScanJob` after any sidecar import, and by
+    /// `dp_jobs::SidecarSyncJob` after any write it performs.
+    async fn set_sidecar_mtime(&self, media_id: i64, mtime: DateTime<Utc>) -> DpResult<()>;
     /// Deletes media row `id` unless an `organize_items` row references
     /// it; `Ok(false)` means it was left in place. See the `SqliteCatalog`
     /// implementation for why the guard exists.
@@ -180,6 +186,10 @@ impl Catalog for SqliteCatalog {
 
     async fn list_scan_index(&self, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>> {
         media::list_scan_index(&self.pool, drive_id).await
+    }
+
+    async fn set_sidecar_mtime(&self, media_id: i64, mtime: DateTime<Utc>) -> DpResult<()> {
+        media::set_sidecar_mtime(&self.pool, media_id, mtime).await
     }
 
     async fn delete_media(&self, id: i64) -> DpResult<bool> {

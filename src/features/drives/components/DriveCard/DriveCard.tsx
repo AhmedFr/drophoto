@@ -59,7 +59,7 @@ export function DriveCard({
             variant="outline"
             size="xs"
             disabled={!drive.online || scanInProgress || sourcesLoading || noEnabledSources}
-            title="Re-hash and re-thumbnail every file"
+            title={noEnabledSources ? "Choose sources first" : "Re-hash and re-thumbnail every file"}
             onClick={onFullScan}
           >
             Full

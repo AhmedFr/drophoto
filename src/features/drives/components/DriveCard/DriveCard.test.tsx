@@ -207,7 +207,9 @@ it("disables the Full button while a scan is in progress", () => {
   expect(screen.getByRole("button", { name: "Full" })).toBeDisabled();
 });
 
-it("disables the Full button when there are sources but none enabled", () => {
+it("disables the Full button when there are sources but none enabled, and switches its tooltip", () => {
   render(<DriveCard drive={baseDrive} sources={[disabledSource]} onFullScan={vi.fn()} />);
-  expect(screen.getByRole("button", { name: "Full" })).toBeDisabled();
+  const button = screen.getByRole("button", { name: "Full" });
+  expect(button).toBeDisabled();
+  expect(button).toHaveAttribute("title", "Choose sources first");
 });

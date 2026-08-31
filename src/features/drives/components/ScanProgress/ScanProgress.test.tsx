@@ -28,6 +28,19 @@ it("shows ok/failed counts when finished, and hides the cancel button", () => {
   expect(screen.queryByRole("button", { name: /cancel/i })).not.toBeInTheDocument();
 });
 
+it("appends the skipped count when some files were skipped", () => {
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 9, failed: 1, skipped: 3 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+  expect(screen.getByText("9 ok · 1 failed · 3 skipped")).toBeInTheDocument();
+});
+
+it("reads as up to date when a rescan skipped everything and touched nothing", () => {
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 0, failed: 0, skipped: 15988 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+  expect(screen.getByText("Up to date · 15988 skipped")).toBeInTheDocument();
+  expect(screen.queryByText(/^0 ok/)).not.toBeInTheDocument();
+});
+
 it("hides the cancel button when cancelled", () => {
   const event: JobEvent = { kind: "cancelled", job_id: "scan-0", ok: 3, failed: 0, skipped: 0 };
   render(<ScanProgress event={event} onCancel={vi.fn()} />);

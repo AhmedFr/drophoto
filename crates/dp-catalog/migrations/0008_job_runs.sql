@@ -23,3 +23,14 @@ CREATE TABLE job_runs (
 -- column existed, which never matches and so always gets fully
 -- reprocessed once.
 ALTER TABLE media ADD COLUMN mtime TEXT;
+
+-- The XMP sidecar's on-disk mtime as of the last time it was actually read
+-- (imported by a scan, or written by SidecarSyncJob) — see
+-- `Catalog::set_sidecar_mtime`. Lets the incremental-rescan skip path tell
+-- "sidecar hasn't changed since we last looked at it" from "sidecar looks
+-- newer than the row" without re-reading it via exiftool every time;
+-- without this, a sidecar written by SidecarSyncJob (which never used to
+-- record its own mtime here) would look perpetually newer than the row
+-- and get re-imported on every single incremental scan forever. NULL
+-- falls back to comparing against `mtime` instead (first-scan behavior).
+ALTER TABLE media ADD COLUMN sidecar_mtime TEXT;

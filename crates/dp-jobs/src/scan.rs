@@ -527,21 +527,35 @@ async fn process_file(
         .map(DateTime::<Utc>::from);
 
     // Incremental-rescan skip: a file whose index entry's size/mtime
-    // (compared at second precision) match what's on disk right now, and
-    // whose thumbnails already exist, is unchanged since the last scan —
-    // skip hashing, exiftool, thumbnailing, and the catalog upsert
-    // entirely. Any doubt (no entry, unreadable mtime, a mismatch, a
-    // missing thumbnail) falls through to full processing instead, which
-    // writes a fresh index entry. Deleted-file pruning is out of scope
-    // here: a row whose file the walk never revisits (missing entirely)
-    // is left as-is, same as before this change — see
+    // (compared at second precision) match what's on disk right now, whose
+    // thumbnails already exist, and whose owning source is unchanged, is
+    // unchanged since the last scan — skip hashing, exiftool,
+    // thumbnailing, and the catalog upsert entirely. Any doubt (no entry,
+    // unreadable mtime, a mismatch, a missing thumbnail, a null/differing
+    // source) falls through to full processing instead, which writes a
+    // fresh index entry. Deleted-file pruning is out of scope here: a row
+    // whose file the walk never revisits (missing entirely) is left
+    // as-is, same as before this change — see
     // `list_media_without_source`/organize's own dangling-row handling
     // for that separate concern.
-    if let Some(m) = find_skip_match(skip_index, &rel, size, mtime, &deps.store) {
+    if let Some(m) = find_skip_match(skip_index, &rel, size, mtime, file.source_id, &deps.store) {
         // The file itself is unchanged, but its XMP sidecar may have been
         // edited since (e.g. in Lightroom) — cheap to check and worth
-        // catching without a full re-hash.
-        maybe_import_newer_sidecar(ctx, deps, job_id, drive_id, &file.path, &rel, m.id, m.row_mtime).await;
+        // catching without a full re-hash. The baseline falls back to the
+        // row's file mtime when no sidecar mtime was ever recorded
+        // (first-scan behavior, or a row that predates the column).
+        let sidecar_baseline = m.sidecar_mtime.unwrap_or(m.row_mtime);
+        maybe_import_newer_sidecar(
+            ctx,
+            deps,
+            job_id,
+            drive_id,
+            &file.path,
+            &rel,
+            m.id,
+            sidecar_baseline,
+        )
+        .await;
         skipped.fetch_add(1, Ordering::SeqCst);
         advance_progress(ctx, job_id, done, total, &rel).await;
         return;
@@ -697,26 +711,43 @@ struct SkipMatch {
     /// this match (checked by [`find_skip_match`]), carried here already
     /// unwrapped so callers never have to re-check it.
     row_mtime: DateTime<Utc>,
+    /// The row's stored sidecar mtime, if one was ever recorded — see
+    /// [`ScanIndexEntry::sidecar_mtime`].
+    sidecar_mtime: Option<DateTime<Utc>>,
 }
 
-/// Whether a walked file (`rel`, with live stat `size`/`mtime`) can be
-/// skipped: `skip_index` has an entry for `rel` whose stored `size` and
-/// `mtime` (compared at second precision — both truncated via
-/// [`DateTime::timestamp`]) match the live stat, *and* both thumbnail
-/// sizes already exist in `store`. Returns `None` on any doubt — no entry,
-/// an unreadable live `mtime`, a size/mtime mismatch, or a missing
-/// thumbnail — which sends the caller down the full processing path
-/// instead of risking a stale skip.
+/// Whether a walked file (`rel`, with live stat `size`/`mtime`, owned by
+/// `source_id`) can be skipped: `skip_index` has an entry for `rel` whose
+/// stored `size` and `mtime` (compared at second precision — both
+/// truncated via [`DateTime::timestamp`]) match the live stat, whose
+/// `source_id` is `Some` and equal to the walked file's `source_id`, and
+/// whose both thumbnail sizes already exist in `store`. Returns `None` on
+/// any doubt — no entry, an unreadable live `mtime`, a size/mtime
+/// mismatch, a null or differing `source_id`, or a missing thumbnail —
+/// which sends the caller down the full processing path instead of
+/// risking a stale skip. The `source_id` check is what lets a re-scan
+/// attribute (or re-attribute) a legacy/source-less row instead of
+/// freezing it out of "re-scan to include these" forever.
+///
+/// Accepted risk: a same-second rewrite of identical length is skipped —
+/// the mtime comparison is at second precision, so a file rewritten
+/// within the same wall-clock second as its last scan, ending up the same
+/// size, is indistinguishable from unchanged.
 fn find_skip_match(
     skip_index: &HashMap<String, ScanIndexEntry>,
     rel: &str,
     size: u64,
     mtime: Option<DateTime<Utc>>,
+    source_id: i64,
     store: &ThumbStore,
 ) -> Option<SkipMatch> {
     let mtime = mtime?;
     let entry = skip_index.get(rel)?;
     let row_mtime = entry.mtime?;
+    let entry_source_id = entry.source_id?;
+    if entry_source_id != source_id {
+        return None;
+    }
     if entry.size != size || row_mtime.timestamp() != mtime.timestamp() {
         return None;
     }
@@ -729,16 +760,25 @@ fn find_skip_match(
     Some(SkipMatch {
         id: entry.id,
         row_mtime,
+        sidecar_mtime: entry.sidecar_mtime,
     })
 }
 
 /// For a file the skip rule above chose not to re-hash: if its XMP
-/// sidecar exists and was modified more recently than the row's stored
-/// `mtime`, imports its subjects as catalog tags anyway via
-/// [`import_sidecar_tags`] — cheap (no hashing/thumbnailing involved),
-/// and catches a Lightroom-style tag edit that an otherwise-skipped
-/// rescan would silently miss forever. Otherwise a no-op: no sidecar, or
-/// one no newer than the row already reflects.
+/// sidecar exists and was modified more recently than `baseline` (the
+/// row's stored `sidecar_mtime`, or its file `mtime` when no
+/// `sidecar_mtime` was ever recorded — see [`ScanIndexEntry::sidecar_mtime`]),
+/// imports its subjects as catalog tags anyway via [`import_sidecar_tags`]
+/// — cheap (no hashing/thumbnailing involved), and catches a
+/// Lightroom-style tag edit that an otherwise-skipped rescan would
+/// silently miss forever. Otherwise a no-op: no sidecar, or one no newer
+/// than `baseline` already reflects.
+///
+/// `import_sidecar_tags` itself records the sidecar's mtime (via
+/// `Catalog::set_sidecar_mtime`) whenever it successfully reads it, which
+/// is what moves `baseline` forward for the *next* scan — without that,
+/// a sidecar that's genuinely unchanged would look newer than a
+/// never-updated `baseline` on every single rescan, forever.
 #[allow(clippy::too_many_arguments)]
 async fn maybe_import_newer_sidecar(
     ctx: &JobCtx,
@@ -748,22 +788,26 @@ async fn maybe_import_newer_sidecar(
     media_path: &Path,
     rel: &str,
     media_id: i64,
-    row_mtime: DateTime<Utc>,
+    baseline: DateTime<Utc>,
 ) {
     let sidecar_mtime = tokio::fs::metadata(sidecar_path(media_path))
         .await
         .ok()
         .and_then(|m| m.modified().ok())
         .map(DateTime::<Utc>::from);
-    if matches!(sidecar_mtime, Some(t) if t > row_mtime) {
+    if matches!(sidecar_mtime, Some(t) if t > baseline) {
         import_sidecar_tags(ctx, deps, job_id, drive_id, media_path, rel, media_id).await;
     }
 }
 
 /// Imports `media_path`'s XMP sidecar subjects (if any) as catalog tags on
-/// `media_id`, right after it's been upserted. `Sidecars::read_subjects`
-/// already returns `Ok(vec![])` when no sidecar exists, so a file with no
-/// sidecar is a no-op here — no explicit existence check needed.
+/// `media_id`. Called both right after a full-processing upsert and from
+/// [`maybe_import_newer_sidecar`] on the incremental-skip path.
+/// `Sidecars::read_subjects` already returns `Ok(vec![])` when no sidecar
+/// exists, so a file with no sidecar is a no-op here — no explicit
+/// existence check needed. Every successful read also records the
+/// sidecar's on-disk mtime via `Catalog::set_sidecar_mtime`, whether or
+/// not it actually held any subjects — see the comment at that call site.
 ///
 /// Empty/whitespace-only subject strings are filtered out before reaching
 /// `tag_media`, so a stray blank entry in the sidecar can never become an
@@ -807,6 +851,27 @@ async fn import_sidecar_tags(
             return;
         }
     };
+
+    // A successful read means the sidecar's current state has just been
+    // "looked at" — recording its on-disk mtime here is what lets a
+    // later incremental scan's `maybe_import_newer_sidecar` tell
+    // "unchanged since we last read it" apart from "genuinely newer", so
+    // an unchanged sidecar doesn't get re-read via exiftool on every
+    // single rescan forever (see `ScanIndexEntry::sidecar_mtime`). No
+    // sidecar to stat (the common no-sidecar case) simply records
+    // nothing, same as before this column existed. A failure to record
+    // it is a bookkeeping miss, not a reason to fail the import itself.
+    if let Ok(meta) = tokio::fs::metadata(sidecar_path(media_path)).await {
+        if let Ok(sidecar_mtime) = meta.modified() {
+            if let Err(e) = deps
+                .catalog
+                .set_sidecar_mtime(media_id, DateTime::<Utc>::from(sidecar_mtime))
+                .await
+            {
+                tracing::warn!(media_id, error = %e, "failed to record sidecar mtime after import");
+            }
+        }
+    }
 
     let subjects: Vec<String> = subjects.into_iter().filter(|s| !s.trim().is_empty()).collect();
     if subjects.is_empty() {

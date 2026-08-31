@@ -233,6 +233,19 @@ pub struct ScanIndexEntry {
     /// Needed for the skip rule's thumb-existence checks
     /// (`store.exists(hash, 400)` / `store.exists(hash, 2000)`).
     pub hash: String,
+    /// The [`Source`] this row was last attributed to, if any — `None` for
+    /// legacy rows scanned before sources existed. The skip rule refuses
+    /// to skip a row whose `source_id` is `None` or differs from the
+    /// walked file's owning source, so a re-scan can attribute (or
+    /// re-attribute) it instead of freezing it out forever.
+    pub source_id: Option<i64>,
+    /// The XMP sidecar's on-disk mtime as of the last time this row's
+    /// sidecar was actually read (imported or looked at) — set via
+    /// `Catalog::set_sidecar_mtime`. `None` means "never recorded" (a
+    /// fresh row, or one that predates this column); the skip rule then
+    /// falls back to comparing against [`Self::mtime`] instead, matching
+    /// pre-existing first-scan behavior.
+    pub sidecar_mtime: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

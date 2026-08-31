@@ -15,8 +15,10 @@ export type DriveCardProps = {
   onScan?: () => void;
   /** Starts a full rescan (`startScan(driveId, true)`) — re-hashes and
    * re-thumbnails every file instead of skipping unchanged ones. Rendered
-   * as a small secondary "FULL" button next to Scan, only once this
-   * drive has at least one configured source. */
+   * as a small secondary "Full" button next to Scan, only once this
+   * drive has at least one configured source; disabled under the same
+   * conditions as Scan, and its tooltip switches to "Choose sources
+   * first" while disabled for lack of an *enabled* source. */
   onFullScan?: () => void;
   onCancelScan?: () => void;
   onOpenSources?: () => void;

@@ -727,6 +727,10 @@ impl Catalog for FailingCatalog {
         self.0.list_scan_index(drive_id).await
     }
 
+    async fn set_sidecar_mtime(&self, media_id: i64, mtime: DateTime<Utc>) -> DpResult<()> {
+        self.0.set_sidecar_mtime(media_id, mtime).await
+    }
+
     async fn delete_media(&self, id: i64) -> DpResult<bool> {
         self.0.delete_media(id).await
     }

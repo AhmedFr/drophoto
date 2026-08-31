@@ -198,24 +198,48 @@ pub(crate) async fn delete_media(pool: &SqlitePool, id: i64) -> DpResult<bool> {
 /// be loaded into a `HashMap<rel_path, ScanIndexEntry>` before a scan's
 /// walk starts. See [`ScanIndexEntry`].
 pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>> {
-    let rows = sqlx::query("SELECT id, rel_path, size, mtime, hash FROM media WHERE drive_id = ?")
-        .bind(drive_id)
-        .fetch_all(pool)
-        .await
-        .map_err(db)?;
+    let rows = sqlx::query(
+        "SELECT id, rel_path, size, mtime, hash, source_id, sidecar_mtime FROM media WHERE drive_id = ?",
+    )
+    .bind(drive_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
     rows.iter()
         .map(|r| {
             let size: i64 = r.try_get("size").map_err(db)?;
             let mtime: Option<String> = r.try_get("mtime").map_err(db)?;
+            let sidecar_mtime: Option<String> = r.try_get("sidecar_mtime").map_err(db)?;
             Ok(ScanIndexEntry {
                 id: r.try_get("id").map_err(db)?,
                 rel_path: r.try_get("rel_path").map_err(db)?,
                 size: size as u64,
                 mtime: from_rfc3339(mtime)?,
                 hash: r.try_get("hash").map_err(db)?,
+                source_id: r.try_get("source_id").map_err(db)?,
+                sidecar_mtime: from_rfc3339(sidecar_mtime)?,
             })
         })
         .collect()
+}
+
+/// Records the XMP sidecar's on-disk mtime as of the last time it was
+/// actually read (a scan importing subjects from it, or `SidecarSyncJob`
+/// writing it) — the incremental-rescan skip path's baseline for "has this
+/// sidecar changed since we last looked at it". See
+/// [`dp_core::ScanIndexEntry::sidecar_mtime`].
+pub(crate) async fn set_sidecar_mtime(
+    pool: &SqlitePool,
+    media_id: i64,
+    mtime: DateTime<Utc>,
+) -> DpResult<()> {
+    sqlx::query("UPDATE media SET sidecar_mtime = ? WHERE id = ?")
+        .bind(to_rfc3339(Some(mtime)))
+        .bind(media_id)
+        .execute(pool)
+        .await
+        .map_err(db)?;
+    Ok(())
 }
 
 pub(crate) async fn media_hash_exists(pool: &SqlitePool, hash: &str) -> DpResult<bool> {

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DpResult, Drive, DriveRole, MediaKind, NewDrive, NewMedia, NewSource, ScanIndexEntry, Source};
+use dp_core::{
+    DpResult, Drive, DriveRole, MediaKind, MediaRow, NewDrive, NewMedia, NewSource, ScanIndexEntry, Source,
+};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
 use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, Sidecars};
@@ -97,6 +99,80 @@ impl Hasher for CountingHasher {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Blake3Hasher.hash_file(path).await
     }
+}
+
+/// A [`Sidecars`] wrapper that counts every `read_subjects` call while
+/// delegating the real work to a fresh [`ExiftoolSidecars`] — the
+/// sidecar-convergence tests use this to prove a rescan that shouldn't
+/// treat a sidecar as newer never actually re-reads it via exiftool.
+/// `write_subjects` is passed through uncounted (only reads are the
+/// concern here).
+struct CountingSidecars {
+    reads: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl Sidecars for CountingSidecars {
+    async fn write_subjects(&self, media_path: &Path, subjects: &[String]) -> DpResult<()> {
+        ExiftoolSidecars::from_path()
+            .write_subjects(media_path, subjects)
+            .await
+    }
+
+    async fn read_subjects(&self, media_path: &Path) -> DpResult<Vec<String>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        ExiftoolSidecars::from_path().read_subjects(media_path).await
+    }
+}
+
+/// Forces `path`'s mtime to match `reference`'s, at second precision, via
+/// the `touch` binary — used to isolate the skip rule's `size` check from
+/// its `mtime` check in a real-filesystem test: rewriting a file's
+/// content with `std::fs::write` always bumps its mtime too, so proving
+/// "size changed" alone requires putting the old mtime back afterwards.
+/// macOS/BSD `touch -t [[CC]YY]MMDDhhmm[.SS]` interprets its argument in
+/// local time, hence formatting `reference`'s mtime as a `Local`
+/// timestamp here.
+/// `row` as a [`NewMedia`] with its `mtime` nulled back out — re-upserting
+/// this simulates a row that predates the `mtime` column (or the
+/// incremental-rescan feature entirely), which must always be reprocessed
+/// once rather than trusted.
+fn null_out_mtime(row: &MediaRow) -> NewMedia {
+    NewMedia {
+        drive_id: row.drive_id,
+        rel_path: row.rel_path.clone(),
+        hash: row.hash.clone(),
+        size: row.size,
+        kind: row.kind,
+        ext: row.ext.clone(),
+        width: row.width,
+        height: row.height,
+        duration_ms: row.duration_ms,
+        taken_at: row.taken_at,
+        camera: row.camera.clone(),
+        lens: row.lens.clone(),
+        aperture: row.aperture,
+        shutter: row.shutter,
+        iso: row.iso,
+        focal_mm: row.focal_mm,
+        lat: row.lat,
+        lon: row.lon,
+        organized_at: row.organized_at,
+        source_id: row.source_id,
+        mtime: None,
+    }
+}
+
+fn force_mtime_to_match(path: &Path, reference_mtime: std::time::SystemTime) {
+    let local: chrono::DateTime<chrono::Local> = reference_mtime.into();
+    let touch_arg = local.format("%Y%m%d%H%M.%S").to_string();
+    let status = std::process::Command::new("touch")
+        .arg("-t")
+        .arg(touch_arg)
+        .arg(path)
+        .status()
+        .expect("failed to run touch");
+    assert!(status.success(), "touch -t failed for {}", path.display());
 }
 
 /// Spawns and drains a [`ScanJob`] built from `drive`/`sources`/`deps`/
@@ -1616,5 +1692,389 @@ async fn full_rescan_bypasses_the_skip_index_and_reprocesses_everything() {
         hash_calls.load(Ordering::SeqCst),
         2,
         "every file must be re-hashed under a full rescan"
+    );
+}
+
+// --- Fix round 1: skipped visible, sidecar convergence, source unfreeze --
+
+/// A stored `mtime` of `NULL` (a pre-migration row, or one written before
+/// the incremental-rescan feature existed) must never be trusted as
+/// "unknown but fine" — the skip rule requires an actual stored mtime to
+/// compare against (see `find_skip_match`), so such a row is always
+/// reprocessed once, which backfills a real mtime for every scan after.
+#[tokio::test]
+async fn null_stored_mtime_forces_reprocessing_and_backfills_it() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Null Mtime Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 1),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1, "rows: {rows:?}");
+    assert!(
+        rows[0].mtime.is_some(),
+        "the first scan must have written a real mtime"
+    );
+
+    // Simulate a row that predates the mtime column: null it back out
+    // directly, bypassing the scan pipeline entirely.
+    catalog.upsert_media(null_out_mtime(&rows[0])).await.unwrap();
+
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive, vec![src], default_deps(catalog.clone(), store), index).await;
+    let (ok, skipped) = match terminal {
+        JobEvent::Finished { ok, skipped, .. } => (ok, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 1,
+        "a null stored mtime must force reprocessing, events: {events:?}"
+    );
+    assert_eq!(skipped, 0, "events: {events:?}");
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(
+        rows[0].mtime.is_some(),
+        "reprocessing must backfill a real mtime, got {rows:?}"
+    );
+}
+
+/// The skip rule's `size` check must catch a change even when `mtime`
+/// happens to still match — proven by rewriting the file with different
+/// (larger) content, then forcing its mtime back to the original value
+/// with `touch`, isolating this from the mtime-touch test above (which
+/// changes mtime while size stays the same).
+#[tokio::test]
+async fn size_changed_with_mtime_forced_equal_still_reprocesses() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let jpg_path = drive_dir.path().join("sample.jpg");
+    std::fs::copy(fx("sample.jpg"), &jpg_path).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Size Change Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 1),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    let original_mtime = std::fs::metadata(&jpg_path).unwrap().modified().unwrap();
+
+    // Trailing bytes past a JPEG's EOI marker are ignored by decoders, so
+    // this changes the file's size without breaking thumbnail rendering
+    // or metadata reading.
+    let mut bytes = std::fs::read(fx("sample.jpg")).unwrap();
+    bytes.extend_from_slice(b"-size-change-padding-bytes-");
+    std::fs::write(&jpg_path, &bytes).unwrap();
+    force_mtime_to_match(&jpg_path, original_mtime);
+
+    let touched: chrono::DateTime<chrono::Utc> =
+        std::fs::metadata(&jpg_path).unwrap().modified().unwrap().into();
+    let original: chrono::DateTime<chrono::Utc> = original_mtime.into();
+    assert_eq!(
+        touched.timestamp(),
+        original.timestamp(),
+        "the touch trick must leave mtime (at second precision) unchanged, so this test isolates the size check"
+    );
+
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive, vec![src], default_deps(catalog.clone(), store), index).await;
+    let (ok, skipped) = match terminal {
+        JobEvent::Finished { ok, skipped, .. } => (ok, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 1,
+        "a size change must force reprocessing even with mtime unchanged, events: {events:?}"
+    );
+    assert_eq!(skipped, 0, "events: {events:?}");
+}
+
+/// A row whose `source_id` is `NULL` (scanned before sources existed) —
+/// even with matching size/mtime/thumbnails — must never be skipped: the
+/// skip rule refuses a null or differing source (see `find_skip_match`),
+/// so re-scanning a legacy drive is what finally attributes those rows to
+/// a real source.
+#[tokio::test]
+async fn source_id_null_forces_reprocessing_and_backfills_the_source() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let jpg_path = drive_dir.path().join("sample.jpg");
+    std::fs::copy(fx("sample.jpg"), &jpg_path).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Legacy Source Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    // Manually seed a "legacy" row — real size/mtime/hash for the file on
+    // disk, thumbnails already present at that hash, but `source_id:
+    // None` — without ever running a real scan, so nothing else could
+    // have attributed it to a source.
+    let meta = std::fs::symlink_metadata(&jpg_path).unwrap();
+    let size = meta.len();
+    let mtime: chrono::DateTime<chrono::Utc> = meta.modified().unwrap().into();
+    let hash = Blake3Hasher.hash_file(&jpg_path).await.unwrap();
+    for size_px in [400u32, 2000u32] {
+        let thumb_path = store.path(&hash, size_px);
+        std::fs::create_dir_all(thumb_path.parent().unwrap()).unwrap();
+        std::fs::write(&thumb_path, b"fake-thumb-bytes").unwrap();
+    }
+    catalog
+        .upsert_media(NewMedia {
+            drive_id: drive.id,
+            rel_path: "sample.jpg".into(),
+            hash,
+            size,
+            kind: MediaKind::Photo,
+            ext: "jpg".into(),
+            width: None,
+            height: None,
+            duration_ms: None,
+            taken_at: None,
+            camera: None,
+            lens: None,
+            aperture: None,
+            shutter: None,
+            iso: None,
+            focal_mm: None,
+            lat: None,
+            lon: None,
+            organized_at: None,
+            source_id: None,
+            mtime: Some(mtime),
+        })
+        .await
+        .unwrap();
+
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store),
+        index,
+    )
+    .await;
+    let (ok, skipped) = match terminal {
+        JobEvent::Finished { ok, skipped, .. } => (ok, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        ok, 1,
+        "a source-less row must be reprocessed even though everything else matches, events: {events:?}"
+    );
+    assert_eq!(skipped, 0, "events: {events:?}");
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1, "rows: {rows:?}");
+    assert_eq!(
+        rows[0].source_id,
+        Some(src.id),
+        "reprocessing must attribute the row to the real source, got {rows:?}"
+    );
+}
+
+/// After a normal first scan imports a sidecar's subjects (the
+/// full-processing path, which now also records the sidecar's mtime), a
+/// second incremental scan of the same unchanged drive must skip the
+/// file *and* never call `Sidecars::read_subjects` again — proven with
+/// [`CountingSidecars`]. Before recording that baseline, the sidecar
+/// would have looked newer than the row's stored (file) mtime forever,
+/// re-reading it via exiftool on every single rescan.
+#[tokio::test]
+async fn second_incremental_scan_after_an_import_reads_the_sidecar_zero_times() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let media_path = drive_dir.path().join("a.jpg");
+    std::fs::copy(fx("sample.jpg"), &media_path).unwrap();
+
+    let sidecars = ExiftoolSidecars::from_path();
+    sidecars
+        .write_subjects(&media_path, &["beach".to_string()])
+        .await
+        .unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Converge After Import Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 1, "events: {events:?}"),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1, "rows: {rows:?}");
+    let media_id = rows[0].id;
+    let tags = catalog.tags_for_media(&[media_id]).await.unwrap();
+    let tag_names: Vec<&str> = tags.iter().map(|(_, t)| t.name.as_str()).collect();
+    assert_eq!(tag_names, vec!["beach"], "tags: {tags:?}");
+
+    let reads = Arc::new(AtomicU64::new(0));
+    let mut deps = default_deps(catalog.clone(), store);
+    deps.sidecars = Arc::new(CountingSidecars { reads: reads.clone() });
+    let index = scan_index(&catalog, drive.id).await;
+
+    let (events, terminal) = run_scan(drive, vec![src], deps, index).await;
+    let (ok, skipped) = match terminal {
+        JobEvent::Finished { ok, skipped, .. } => (ok, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(skipped, 1, "events: {events:?}");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "a sidecar unchanged since the recorded baseline must never be re-read"
+    );
+}
+
+/// A sidecar written *after* the last scan (no baseline recorded yet, so
+/// the fallback is the row's file mtime) must be imported exactly once —
+/// and because that import records a fresh baseline, a third scan of the
+/// same still-unchanged sidecar must read it zero further times.
+#[tokio::test]
+async fn sidecar_newer_than_recorded_baseline_reimports_once_then_converges() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let media_path = drive_dir.path().join("a.jpg");
+    std::fs::copy(fx("sample.jpg"), &media_path).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Converge After Newer Sidecar Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    // First scan: no sidecar yet, so no baseline gets recorded — the
+    // next scan's comparison falls back to the row's file mtime.
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 1),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let sidecars = ExiftoolSidecars::from_path();
+    sidecars
+        .write_subjects(&media_path, &["beach".to_string()])
+        .await
+        .unwrap();
+
+    // Second scan: the sidecar is genuinely newer than the fallback
+    // baseline (the file's mtime, from before the sleep) — must import
+    // exactly once.
+    let reads = Arc::new(AtomicU64::new(0));
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.sidecars = Arc::new(CountingSidecars { reads: reads.clone() });
+    let index = scan_index(&catalog, drive.id).await;
+
+    let (events, terminal) = run_scan(drive.clone(), vec![src.clone()], deps, index).await;
+    let (ok, skipped) = match terminal {
+        JobEvent::Finished { ok, skipped, .. } => (ok, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(ok, 0, "events: {events:?}");
+    assert_eq!(skipped, 1, "events: {events:?}");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "the newer sidecar must be read exactly once"
+    );
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    let media_id = rows[0].id;
+    let tags = catalog.tags_for_media(&[media_id]).await.unwrap();
+    let tag_names: Vec<&str> = tags.iter().map(|(_, t)| t.name.as_str()).collect();
+    assert_eq!(tag_names, vec!["beach"], "tags: {tags:?}");
+
+    // Third scan: the sidecar hasn't changed since the second scan
+    // recorded its mtime as the new baseline — must read it zero more
+    // times (same shared counter — the total must still be 1).
+    let mut deps = default_deps(catalog.clone(), store);
+    deps.sidecars = Arc::new(CountingSidecars { reads: reads.clone() });
+    let index = scan_index(&catalog, drive.id).await;
+
+    let (events, terminal) = run_scan(drive, vec![src], deps, index).await;
+    match terminal {
+        JobEvent::Finished { ok, skipped, .. } => {
+            assert_eq!(ok, 0, "events: {events:?}");
+            assert_eq!(skipped, 1, "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "the sidecar must converge: no further reads once its mtime has been recorded"
     );
 }

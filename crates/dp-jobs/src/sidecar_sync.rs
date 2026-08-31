@@ -241,8 +241,22 @@ impl SidecarSyncJob {
         // right after the write instead. A failure to stat it (rare: the
         // write above just succeeded) simply skips the tally rather than
         // failing an otherwise-successful sync.
+        //
+        // This write is also exactly the case that makes
+        // `ScanIndexEntry::sidecar_mtime` matter: it's this job that
+        // creates/touches the `.xmp`, which would otherwise look
+        // perpetually "newer" than a media row that never recorded a
+        // baseline — see `dp_jobs::scan::maybe_import_newer_sidecar` —
+        // and get a wasted exiftool re-read on every single incremental
+        // scan forever. Recording the mtime here is what lets that skip
+        // path converge instead.
         if let Ok(meta) = tokio::fs::metadata(&sidecar).await {
             self.bytes_written.fetch_add(meta.len(), Ordering::Relaxed);
+            if let Ok(mtime) = meta.modified() {
+                if let Err(e) = self.deps.catalog.set_sidecar_mtime(row.id, mtime.into()).await {
+                    tracing::warn!(media_id = row.id, error = %e, "failed to record sidecar mtime after sync write");
+                }
+            }
         }
 
         self.finish_row(ctx, row, &names).await;

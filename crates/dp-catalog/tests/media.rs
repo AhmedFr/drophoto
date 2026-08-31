@@ -156,11 +156,19 @@ async fn delete_media_removes_an_unreferenced_row() {
 async fn list_scan_index_returns_every_rows_fingerprint() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;
+    let src = c
+        .upsert_source(NewSource {
+            drive_id,
+            rel_path: "".into(),
+        })
+        .await
+        .unwrap();
     let mtime: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
 
     let a_id = c
         .upsert_media(NewMedia {
             mtime: Some(mtime),
+            source_id: Some(src.id),
             ..nm(drive_id, "a.jpg", "hash-a")
         })
         .await
@@ -176,6 +184,15 @@ async fn list_scan_index_returns_every_rows_fingerprint() {
     assert_eq!(index[0].size, 1234);
     assert_eq!(index[0].mtime, Some(mtime));
     assert_eq!(index[0].hash, "hash-a");
+    assert_eq!(
+        index[0].source_id,
+        Some(src.id),
+        "a row's owning source must round-trip"
+    );
+    assert_eq!(
+        index[0].sidecar_mtime, None,
+        "a row whose sidecar mtime was never recorded must round-trip as None"
+    );
 
     assert_eq!(index[1].id, b_id);
     assert_eq!(index[1].rel_path, "b.jpg");
@@ -183,6 +200,32 @@ async fn list_scan_index_returns_every_rows_fingerprint() {
         index[1].mtime, None,
         "a row written with no mtime must round-trip as None"
     );
+    assert_eq!(
+        index[1].source_id, None,
+        "a row never attributed to a source must round-trip as None"
+    );
+}
+
+/// `Catalog::set_sidecar_mtime` is the narrow setter the incremental-rescan
+/// skip path (and `SidecarSyncJob`) uses to record "we last looked at this
+/// sidecar as of `mtime`" — `list_scan_index` must reflect it afterwards.
+#[tokio::test]
+async fn set_sidecar_mtime_is_reflected_in_the_scan_index() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let media_id = c.upsert_media(nm(drive_id, "a.jpg", "hash-a")).await.unwrap();
+
+    let index = c.list_scan_index(drive_id).await.unwrap();
+    assert_eq!(
+        index[0].sidecar_mtime, None,
+        "a fresh row must start with no recorded sidecar mtime"
+    );
+
+    let sidecar_mtime: DateTime<Utc> = "2026-02-14T09:30:00Z".parse().unwrap();
+    c.set_sidecar_mtime(media_id, sidecar_mtime).await.unwrap();
+
+    let index = c.list_scan_index(drive_id).await.unwrap();
+    assert_eq!(index[0].sidecar_mtime, Some(sidecar_mtime));
 }
 
 #[tokio::test]
