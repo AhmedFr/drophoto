@@ -55,6 +55,16 @@ impl Job for RegenJob {
     // (see the module doc comment).
 
     async fn run(&self, ctx: JobCtx) -> DpResult<JobOutcome> {
+        // Best-effort: a process killed mid-rewrite of a previous regen
+        // run can leave an orphaned `*.tmp` file behind (see
+        // `ThumbStore::regen_preview`'s doc comment) — sweep those before
+        // doing anything else so they don't accumulate indefinitely. A
+        // sweep failure must never fail the whole job over dead weight
+        // it didn't even create.
+        if let Err(e) = self.deps.store.sweep_orphaned_tmp().await {
+            tracing::warn!(error = %e, job_id = %self.id, "failed to sweep orphaned regen tmp files");
+        }
+
         let hashes = self.deps.store.list_hashes().await?;
         let total = hashes.len() as u64;
 

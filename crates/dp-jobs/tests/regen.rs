@@ -82,6 +82,29 @@ async fn regen_job_downscales_larger_previews_leaves_small_ones_and_thumbs_alone
     assert_eq!(decoded.width().max(decoded.height()), 800);
 }
 
+/// A `RegenJob` run sweeps orphaned `*.tmp` files (left by a process
+/// killed mid-rewrite of a previous regen) before doing anything else —
+/// see `ThumbStore::sweep_orphaned_tmp`.
+#[tokio::test]
+async fn regen_job_sweeps_orphaned_tmp_files_before_processing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(dir.path()));
+    store.write("hash1", 2000, &img(400)).await.unwrap();
+    let orphan = dir.path().join("hash1").join("2000.webp.tmp");
+    std::fs::write(&orphan, b"torn").unwrap();
+
+    let deps = RegenDeps { store: store.clone() };
+    let (tx, mut rx) = mpsc::channel(64);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("regen");
+    let job = Arc::new(RegenJob::new(job_id.clone(), 800, deps));
+    runner.spawn(job_id, job);
+
+    drain_until_terminal(&mut rx).await;
+
+    assert!(!orphan.exists(), "the orphaned tmp file should have been swept");
+}
+
 #[tokio::test]
 async fn regen_job_reports_zero_totals_when_the_store_is_empty() {
     let dir = tempfile::tempdir().unwrap();

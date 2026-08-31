@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use dp_core::{DpError, DpResult};
 use image::RgbImage;
+use tokio::io::AsyncWriteExt;
 
 use crate::{blocking, resize_fit, PREVIEW_SLOT};
 
@@ -155,12 +156,31 @@ impl ThumbStore {
         let new_bytes = encoded.len() as u64;
 
         let tmp_path = self.root.join(hash).join(format!("{PREVIEW_SLOT}.webp.tmp"));
-        tokio::fs::write(&tmp_path, &encoded)
+        // `sync_all` before the rename — without it, a power loss between
+        // the write and the rename can let the rename land on disk ahead
+        // of the data it points at, leaving a torn/empty preview behind.
+        // That would be unusually sticky here: a scan's existence check
+        // would treat the torn file as present (never re-rendering it),
+        // and a later regen would fail to decode it — the only recovery
+        // would be RESET APP DATA. See also `sweep_orphaned_tmp`, which
+        // cleans up the *temp* file if the process dies before the
+        // rename below ever runs.
+        let mut tmp_file = tokio::fs::File::create(&tmp_path)
             .await
             .map_err(|e| DpError::Io {
-                message: format!("failed to write regenerated preview: {e}"),
+                message: format!("failed to create regenerated preview temp file: {e}"),
                 path: Some(tmp_path.display().to_string()),
             })?;
+        tmp_file.write_all(&encoded).await.map_err(|e| DpError::Io {
+            message: format!("failed to write regenerated preview: {e}"),
+            path: Some(tmp_path.display().to_string()),
+        })?;
+        tmp_file.sync_all().await.map_err(|e| DpError::Io {
+            message: format!("failed to fsync regenerated preview: {e}"),
+            path: Some(tmp_path.display().to_string()),
+        })?;
+        drop(tmp_file);
+
         tokio::fs::rename(&tmp_path, &path)
             .await
             .map_err(|e| DpError::Io {
@@ -169,5 +189,48 @@ impl ThumbStore {
             })?;
 
         Ok(Some((old_bytes, new_bytes)))
+    }
+
+    /// Removes every orphaned `regen_preview` temp file (`*.tmp`) left
+    /// under any hash directory — the leftover of a process killed
+    /// between writing the temp file and renaming it into place (see the
+    /// comment in [`Self::regen_preview`]). Meant to be called once at
+    /// the start of every `RegenJob` run, so a crash mid-rewrite doesn't
+    /// leave dead weight behind indefinitely; a store with nothing to
+    /// sweep returns `Ok(0)` cheaply.
+    ///
+    /// A failure reading one hash directory, or removing one file, is
+    /// skipped rather than propagated — this is best-effort cleanup, not
+    /// something worth failing an entire regen run over. Only a failure
+    /// to read the store root itself is a real error.
+    pub async fn sweep_orphaned_tmp(&self) -> DpResult<u64> {
+        let root = self.root.clone();
+        blocking(move || {
+            if !root.exists() {
+                return Ok(0);
+            }
+            let hash_dirs = std::fs::read_dir(&root).map_err(|e| DpError::Io {
+                message: format!("failed to read thumbs root: {e}"),
+                path: Some(root.display().to_string()),
+            })?;
+
+            let mut removed = 0u64;
+            for hash_dir in hash_dirs.flatten() {
+                if !hash_dir.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let Ok(entries) = std::fs::read_dir(hash_dir.path()) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let is_tmp = entry.file_name().to_str().is_some_and(|s| s.ends_with(".tmp"));
+                    if is_tmp && std::fs::remove_file(entry.path()).is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+            Ok(removed)
+        })
+        .await
     }
 }

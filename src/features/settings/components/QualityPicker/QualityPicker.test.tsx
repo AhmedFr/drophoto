@@ -19,15 +19,28 @@ function props(overrides: Partial<QualityPickerProps> = {}): QualityPickerProps 
 }
 
 describe("estimatedPreviewBytes", () => {
-  it("returns the current bytes unchanged at max quality", () => {
-    expect(estimatedPreviewBytes(PREVIEW_EDGES.max, 2_600_000_000)).toBe(2_600_000_000);
+  it("returns the current bytes unchanged when the edge matches currentEdge", () => {
+    expect(estimatedPreviewBytes(PREVIEW_EDGES.balanced, PREVIEW_EDGES.balanced, 1_000_000)).toBe(1_000_000);
+    expect(estimatedPreviewBytes(PREVIEW_EDGES.max, PREVIEW_EDGES.max, 2_600_000_000)).toBe(2_600_000_000);
   });
 
-  it("scales down by the square of the edge ratio for a lower quality", () => {
-    // (1200/2000)^2 = 0.36
-    expect(estimatedPreviewBytes(PREVIEW_EDGES.balanced, 1_000_000)).toBe(360_000);
-    // (800/2000)^2 = 0.16
-    expect(estimatedPreviewBytes(PREVIEW_EDGES.compact, 1_000_000)).toBe(160_000);
+  it("scales down by the square of the edge ratio, anchored on currentEdge", () => {
+    // anchored at max (2000): (1200/2000)^2 = 0.36, (800/2000)^2 = 0.16
+    expect(estimatedPreviewBytes(PREVIEW_EDGES.balanced, PREVIEW_EDGES.max, 1_000_000)).toBe(360_000);
+    expect(estimatedPreviewBytes(PREVIEW_EDGES.compact, PREVIEW_EDGES.max, 1_000_000)).toBe(160_000);
+  });
+
+  it("anchors on the CURRENT edge, not max — the same target edge scales differently depending on where the cache actually sits today", () => {
+    // anchored at balanced (1200) instead of max: (800/1200)^2 = 0.4444...
+    expect(estimatedPreviewBytes(PREVIEW_EDGES.compact, PREVIEW_EDGES.balanced, 900_000)).toBe(400_000);
+  });
+
+  it("clamps an upscale to the current bytes rather than predicting growth", () => {
+    // At Compact (800) today, "predicting" what Balanced/Max would cost by
+    // scaling up would be dishonest — a rescan is required to know that,
+    // and it can't shrink either way. Both clamp to the current total.
+    expect(estimatedPreviewBytes(PREVIEW_EDGES.balanced, PREVIEW_EDGES.compact, 500_000)).toBe(500_000);
+    expect(estimatedPreviewBytes(PREVIEW_EDGES.max, PREVIEW_EDGES.compact, 500_000)).toBe(500_000);
   });
 });
 
@@ -41,6 +54,16 @@ describe("QualityPicker", () => {
   it("shows an estimated size per step scaled from previewsBytes", () => {
     render(<QualityPicker {...props({ previewsBytes: 2_600_000_000 })} />);
     expect(screen.getByText("~2.4 GB")).toBeInTheDocument(); // max, unchanged
+  });
+
+  it("anchors the per-step estimates on currentEdge, not on the current cache's own quality — an upscale never predicts growth", () => {
+    render(<QualityPicker {...props({ currentEdge: PREVIEW_EDGES.balanced, previewsBytes: 900_000 })} />);
+    // Balanced (currentEdge, ratio 1) and Max (an upscale, clamped to
+    // ratio 1) both show today's real total — Max must NOT be shown as
+    // costing more than what's actually on disk right now.
+    expect(screen.getAllByText("~879 KB")).toHaveLength(2);
+    // Compact (a real downscale from the current edge) still scales down.
+    expect(screen.getByText("~391 KB")).toBeInTheDocument();
   });
 
   it("shows a placeholder instead of an estimate when previewsBytes is unknown", () => {

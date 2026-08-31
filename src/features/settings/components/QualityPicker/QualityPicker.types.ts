@@ -9,7 +9,7 @@ export type QualityPickerProps = {
   applying: boolean;
   /** Called with the newly staged edge (px) when Apply is clicked. */
   onApply: (edge: number) => void;
-  /** Whether the last `set_preview_quality` call reported a regen is applicable (a downscale with cached previews to shrink) — shows the regenerate-previews prompt. */
+  /** Durable — derived by the caller as `settings.preview_edge < PREVIEW_EDGES.max`, not a one-shot flag from a command response. Shows the regenerate-previews prompt whenever the persisted setting is below max. */
   regenApplicable: boolean;
   /** Whether a `regen-*` job is currently running — disables the regenerate-previews button and relabels it. */
   regenRunning: boolean;

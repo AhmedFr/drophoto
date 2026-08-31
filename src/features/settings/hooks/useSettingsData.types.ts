@@ -16,7 +16,7 @@ export type UseSettingsDataResult = {
   /** Calls `set_preview_quality` with the given edge (px). */
   applyQuality: (edge: number) => void;
   applyingQuality: boolean;
-  /** Whether the most recently applied change was a downscale with something for a regen to reclaim — see `set_preview_quality`'s return value. Resets once a started regen sweep finishes. */
+  /** Durable — derived as `settings.preview_edge < PREVIEW_EDGES.max`, not a one-shot flag from a mutation response. True for as long as the persisted setting is below max, regardless of navigation, restarts, or a cancelled/failed regen run. */
   regenApplicable: boolean;
 
   startRegen: () => void;

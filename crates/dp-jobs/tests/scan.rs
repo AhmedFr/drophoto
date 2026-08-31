@@ -195,6 +195,18 @@ async fn run_scan(
     drain_until_terminal(&mut rx).await
 }
 
+/// Same as [`run_scan`], but marks the job `full: true` with an empty
+/// skip index — mirroring exactly what `start_scan(full: true)` builds at
+/// the command layer.
+async fn run_full_scan(drive: Drive, sources: Vec<Source>, deps: ScanDeps) -> (Vec<JobEvent>, JobEvent) {
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(job_id.clone(), drive, sources, deps, no_index()).with_full(true));
+    runner.spawn(job_id, job);
+    drain_until_terminal(&mut rx).await
+}
+
 async fn register_drive(catalog: &Arc<dyn Catalog>, name: &str, mount_path: &Path) -> Drive {
     catalog
         .register_drive(NewDrive {
@@ -359,6 +371,120 @@ async fn scan_renders_the_preview_slot_at_the_configured_edge_leaving_the_thumb_
 
     let preview = image::open(store.path(&jpg_hash, 2000)).unwrap().to_rgb8();
     assert_eq!(preview.width().max(preview.height()), 300);
+}
+
+/// The blocker fix's core guarantee: after a user downscales a cached
+/// preview via `ThumbStore::regen_preview` (mirroring exactly what
+/// "Regenerate previews" does), a subsequent FULL rescan unconditionally
+/// re-renders the preview slot at the currently configured edge — even
+/// though `2000.webp` already exists on disk (just at a smaller pixel
+/// edge) — recovering the higher-resolution preview. See the companion
+/// test below for the incremental-scan counterpart, which must NOT do
+/// this.
+#[tokio::test]
+async fn full_rescan_re_renders_a_downscaled_preview_at_the_larger_configured_edge() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let big_path = drive_dir.path().join("big.jpg");
+    image::RgbImage::from_pixel(2400, 1800, image::Rgb([120, 60, 30]))
+        .save(&big_path)
+        .unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Test Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    // First (incremental) scan at max quality — populates both slots,
+    // preview at 2000px (the source is larger).
+    let deps = ScanDeps {
+        preview_edge: 2000,
+        ..default_deps(catalog.clone(), store.clone())
+    };
+    let (_events, terminal) = run_scan(drive.clone(), vec![src.clone()], deps, no_index()).await;
+    assert!(matches!(terminal, JobEvent::Finished { failed: 0, .. }));
+
+    let hash = Blake3Hasher.hash_file(&big_path).await.unwrap();
+    let before = image::open(store.path(&hash, 2000)).unwrap().to_rgb8();
+    assert_eq!(before.width().max(before.height()), 2000);
+
+    // Simulate "lower quality, then Regenerate previews" — downscales the
+    // cached preview in place, same as `RegenJob`/the settings flow.
+    store.regen_preview(&hash, 800).await.unwrap();
+    let downscaled = image::open(store.path(&hash, 2000)).unwrap().to_rgb8();
+    assert_eq!(downscaled.width().max(downscaled.height()), 800);
+
+    // The user raises quality back to max and runs a FULL rescan.
+    let full_deps = ScanDeps {
+        preview_edge: 2000,
+        ..default_deps(catalog.clone(), store.clone())
+    };
+    let (_events, terminal) = run_full_scan(drive, vec![src], full_deps).await;
+    assert!(matches!(terminal, JobEvent::Finished { failed: 0, .. }));
+
+    let restored = image::open(store.path(&hash, 2000)).unwrap().to_rgb8();
+    assert_eq!(
+        restored.width().max(restored.height()),
+        2000,
+        "a full rescan must re-render the preview back up to the configured edge"
+    );
+}
+
+/// The counterpart: an INCREMENTAL rescan of the very same downscaled
+/// file must leave the preview alone — the existence check inside the
+/// thumbnail render loop is only bypassed on a full rescan (`job.full`).
+#[tokio::test]
+async fn incremental_rescan_leaves_a_downscaled_preview_untouched() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let big_path = drive_dir.path().join("big.jpg");
+    image::RgbImage::from_pixel(2400, 1800, image::Rgb([10, 200, 40]))
+        .save(&big_path)
+        .unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Test Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let deps = ScanDeps {
+        preview_edge: 2000,
+        ..default_deps(catalog.clone(), store.clone())
+    };
+    run_scan(drive.clone(), vec![src.clone()], deps, no_index()).await;
+
+    let hash = Blake3Hasher.hash_file(&big_path).await.unwrap();
+    store.regen_preview(&hash, 800).await.unwrap();
+
+    // An incremental rescan (full: false, the default) with an empty skip
+    // index still falls through to per-file thumbnail processing — but
+    // the existence check means an already-present (if smaller) preview
+    // slot is left alone.
+    let incremental_deps = ScanDeps {
+        preview_edge: 2000,
+        ..default_deps(catalog.clone(), store.clone())
+    };
+    let (_events, terminal) = run_scan(drive, vec![src], incremental_deps, no_index()).await;
+    assert!(matches!(terminal, JobEvent::Finished { failed: 0, .. }));
+
+    let still_downscaled = image::open(store.path(&hash, 2000)).unwrap().to_rgb8();
+    assert_eq!(
+        still_downscaled.width().max(still_downscaled.height()),
+        800,
+        "an incremental rescan must not re-render an existing (even downscaled) preview"
+    );
 }
 
 /// `JobRunner::with_recorder`'s scan-specific counters: `bytes_read` must

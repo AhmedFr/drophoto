@@ -31,16 +31,16 @@ it("wraps structured errors from get_settings", async () => {
   await expect(getSettings()).rejects.toBeInstanceOf(ApiError);
 });
 
-it("sets the preview quality edge and returns whether a regen is applicable", async () => {
+it("sets the preview quality edge, round-tripping the value", async () => {
   let received: unknown;
   mockIPC((cmd, args) => {
     if (cmd === "set_preview_quality") {
       received = args;
-      return true;
+      return null;
     }
     return undefined;
   });
-  await expect(setPreviewQuality(PREVIEW_EDGES.compact)).resolves.toBe(true);
+  await setPreviewQuality(PREVIEW_EDGES.compact);
   expect(received).toEqual({ edge: PREVIEW_EDGES.compact });
 });
 
@@ -49,6 +49,13 @@ it("wraps structured errors from set_preview_quality", async () => {
     throw { code: "db", message: "boom" };
   });
   await expect(setPreviewQuality(PREVIEW_EDGES.compact)).rejects.toBeInstanceOf(ApiError);
+});
+
+it("wraps the command's rejection of an off-step edge", async () => {
+  mockIPC(() => {
+    throw { code: "unsupported", message: "invalid preview quality edge 999; must be one of [800, 1200, 2000]" };
+  });
+  await expect(setPreviewQuality(999)).rejects.toBeInstanceOf(ApiError);
 });
 
 it("gets storage usage with no arguments", async () => {

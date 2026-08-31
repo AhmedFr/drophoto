@@ -73,12 +73,27 @@ pub struct ScanDeps {
 /// [`process_file`]). Pass an empty map for a full rescan (`start_scan`'s
 /// `full: true`), which makes every file look unindexed and so always
 /// falls through to full processing.
+///
+/// `full` (set via [`Self::with_full`], default `false`) is a *separate*
+/// knob from an empty `skip_index`: it controls whether the per-thumbnail
+/// existence check inside [`process_file`] is honored. An incremental scan
+/// (`full: false`) still renders/writes a thumbnail slot that's missing —
+/// e.g. because `skip_index` was empty, or a file's row-level skip check
+/// failed — but leaves an *existing* slot alone regardless of what pixel
+/// edge it actually holds. A full scan (`full: true`) skips that
+/// existence check entirely, so every already-cataloged file that reaches
+/// full processing has both thumbnail slots unconditionally re-rendered
+/// and rewritten at the currently configured edge — this is what makes
+/// "raise the preview quality, then run a full rescan" actually recover
+/// the higher-resolution previews after a downscale, rather than leaving
+/// the smaller cached file in place forever because it merely *exists*.
 pub struct ScanJob {
     id: String,
     drive: Drive,
     sources: Vec<Source>,
     deps: ScanDeps,
     skip_index: HashMap<String, ScanIndexEntry>,
+    full: bool,
 }
 
 impl ScanJob {
@@ -95,7 +110,18 @@ impl ScanJob {
             sources,
             deps,
             skip_index,
+            full: false,
         }
+    }
+
+    /// Marks this run as a FULL rescan — see the struct doc comment for
+    /// what that actually changes (unconditional thumbnail re-render,
+    /// on top of whatever `skip_index` already does). Builder-style,
+    /// mirroring [`crate::GeocodeJob::with_batch_size`]; defaults to
+    /// `false`, so every existing `ScanJob::new` call site is unaffected.
+    pub fn with_full(mut self, full: bool) -> Self {
+        self.full = full;
+        self
     }
 }
 
@@ -594,7 +620,12 @@ async fn process_file(
     let mut had_thumb_failure = false;
     let mut small_file_failures: Vec<DpError> = Vec::new();
     for size_px in THUMB_SIZES {
-        if deps.store.exists(&hash, size_px) {
+        // On a FULL rescan (`job.full`), the existence check is skipped
+        // entirely — every slot is unconditionally re-rendered and
+        // rewritten at the currently configured edge, regardless of
+        // whether a (possibly smaller, previously-downscaled) file
+        // already sits there. See the `ScanJob` doc comment.
+        if !job.full && deps.store.exists(&hash, size_px) {
             any_thumb_ok = true;
             continue;
         }

@@ -1,9 +1,19 @@
 use crate::state::AppState;
-use dp_core::{AppSettings, DpError, DpResult, StorageUsage};
+use dp_core::{
+    AppSettings, DpError, DpResult, StorageUsage, PREVIEW_EDGE_BALANCED, PREVIEW_EDGE_COMPACT,
+    PREVIEW_EDGE_MAX,
+};
 use dp_jobs::{Job, RegenDeps, RegenJob};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::State;
+
+/// The only edges `set_preview_quality` accepts — the three steps the UI
+/// offers (Compact/Balanced/Max). Rejecting anything else keeps the
+/// stored setting always meaningful: an off-step value would match no
+/// `QualityPicker` radio (rendering with nothing selected) and would make
+/// `render_edge_for_slot`'s output an arbitrary, never-offered pixel size.
+const ALLOWED_PREVIEW_EDGES: [u32; 3] = [PREVIEW_EDGE_COMPACT, PREVIEW_EDGE_BALANCED, PREVIEW_EDGE_MAX];
 
 /// The two filenames written into each thumb-store hash directory — see
 /// `dp_thumbs::THUMB_SLOT`/`PREVIEW_SLOT`. Named directly rather than
@@ -19,18 +29,34 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, DpE
     state.catalog.get_settings().await
 }
 
-/// Sets the preview-quality edge (px) and reports whether that's a
-/// *downscale* from what was previously set — i.e. whether
-/// `start_regen_previews` would actually have anything to shrink. Setting
-/// a higher edge never triggers a regen on its own: raising quality back
-/// up needs a full rescan with the originals available (a preview that
-/// was already downscaled can't be upscaled back to real detail), which
-/// this command deliberately leaves to the user via a separate rescan.
+/// Persists the preview-quality edge (px) — must be one of
+/// [`ALLOWED_PREVIEW_EDGES`], or this refuses with [`DpError::Unsupported`]
+/// rather than silently storing an arbitrary value. Setting a lower edge
+/// doesn't regenerate anything on its own — the frontend derives whether
+/// a regen is worth offering from `settings.preview_edge` itself (see
+/// `useSettingsData`) and calls `start_regen_previews` separately. Setting
+/// a higher edge never recovers already-downscaled previews by itself
+/// either: that needs a full rescan with the originals available (see
+/// `ScanJob::with_full`).
 #[tauri::command]
-pub async fn set_preview_quality(state: State<'_, AppState>, edge: u32) -> Result<bool, DpError> {
-    let previous = state.catalog.get_settings().await?.preview_edge;
-    state.catalog.set_preview_edge(edge).await?;
-    Ok(edge < previous)
+pub async fn set_preview_quality(state: State<'_, AppState>, edge: u32) -> Result<(), DpError> {
+    validate_preview_edge(edge)?;
+    state.catalog.set_preview_edge(edge).await
+}
+
+/// `Ok(())` when `edge` is one of [`ALLOWED_PREVIEW_EDGES`],
+/// `Err(DpError::Unsupported)` otherwise — factored out of
+/// [`set_preview_quality`] so the validation itself is unit-testable
+/// without a real `AppState`.
+fn validate_preview_edge(edge: u32) -> DpResult<()> {
+    if ALLOWED_PREVIEW_EDGES.contains(&edge) {
+        Ok(())
+    } else {
+        Err(DpError::Unsupported {
+            message: format!("invalid preview quality edge {edge}; must be one of {ALLOWED_PREVIEW_EDGES:?}"),
+            path: None,
+        })
+    }
 }
 
 /// A breakdown of the app's own on-disk footprint (thumbnails + catalog)
@@ -69,14 +95,15 @@ pub async fn start_regen_previews(state: State<'_, AppState>) -> Result<String, 
 /// NEVER touches the user's photos, drives, or `.xmp` sidecar files —
 /// [`reset_app_data_at`] only ever deletes `catalog.db*` and `thumbs/`
 /// inside the app's own data directory, nothing else, and nothing outside
-/// it.
+/// it. Uses `state.app_data_dir` (resolved once at startup, in
+/// `AppState::init`) rather than re-resolving it here — one less place
+/// that could, even in principle, disagree with what `storage_usage`
+/// computed against. Nothing cancels an in-flight scan/regen job first;
+/// harmless in practice since `exit(0)` follows immediately and a
+/// half-finished write left behind is cleaned up by the delete anyway.
 #[tauri::command]
-pub async fn reset_app_data(app: tauri::AppHandle) -> Result<(), DpError> {
-    let dir = app.path().app_data_dir().map_err(|e| DpError::Io {
-        message: e.to_string(),
-        path: None,
-    })?;
-    reset_app_data_at(&dir)?;
+pub async fn reset_app_data(state: State<'_, AppState>) -> Result<(), DpError> {
+    reset_app_data_at(&state.app_data_dir)?;
     std::process::exit(0);
 }
 
@@ -245,5 +272,24 @@ mod tests {
     fn reset_app_data_at_is_a_no_op_on_an_already_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         assert!(reset_app_data_at(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_preview_edge_accepts_every_documented_step() {
+        for edge in ALLOWED_PREVIEW_EDGES {
+            assert!(validate_preview_edge(edge).is_ok());
+        }
+    }
+
+    #[test]
+    fn validate_preview_edge_rejects_zero() {
+        let err = validate_preview_edge(0).unwrap_err();
+        assert!(matches!(err, DpError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn validate_preview_edge_rejects_an_off_step_value() {
+        let err = validate_preview_edge(999).unwrap_err();
+        assert!(matches!(err, DpError::Unsupported { .. }));
     }
 }

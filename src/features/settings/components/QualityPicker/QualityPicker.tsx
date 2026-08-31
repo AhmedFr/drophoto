@@ -13,13 +13,26 @@ const STEPS: QualityStep[] = [
 
 /**
  * Estimated total preview-cache size at `edge`, scaled from the CURRENT
- * `previewsBytes` by `(edge / PREVIEW_EDGES.max) ** 2` — pixel count (and
- * so, roughly, encoded size) scales with the square of the edge. A rough
- * estimate, not an exact prediction: the actual bytes after a regen also
- * depend on image content and WebP's own encoding behavior.
+ * `previewsBytes` by `(edge / currentEdge) ** 2` — pixel count (and so,
+ * roughly, encoded size) scales with the square of the edge. Anchored on
+ * `currentEdge` (the edge `previewsBytes` was actually measured at), not
+ * on max: anchoring on max would make every row wrong except while the
+ * user happens to already be at max (e.g. it would claim Max costs the
+ * same as the current cache while sitting at Compact, and show 0.16× of
+ * an already-compact cache for Compact itself).
+ *
+ * The ratio is clamped to `<= 1`: raising quality can't be "predicted" to
+ * grow the cache — a lower-edge preview has already thrown away detail
+ * that only a full rescan against the originals can restore (see
+ * `ScanJob::with_full`), so an upscale step shows the same total as
+ * today's cache rather than a fabricated larger number.
+ *
+ * A rough estimate either way, not an exact prediction: the actual bytes
+ * after a regen also depend on image content and WebP's own encoding
+ * behavior.
  */
-export function estimatedPreviewBytes(edge: number, previewsBytes: number): number {
-  const ratio = edge / PREVIEW_EDGES.max;
+export function estimatedPreviewBytes(edge: number, currentEdge: number, previewsBytes: number): number {
+  const ratio = Math.min(edge / currentEdge, 1);
   return Math.round(previewsBytes * ratio * ratio);
 }
 
@@ -74,7 +87,9 @@ export function QualityPicker({
             <span className="font-mono text-[10px] text-faint">{step.edge}px</span>
             <span className="flex-1" />
             <span className="font-mono text-[10.5px] text-muted-foreground">
-              {previewsBytes !== null ? `~${formatBytes(estimatedPreviewBytes(step.edge, previewsBytes))}` : "—"}
+              {previewsBytes !== null
+                ? `~${formatBytes(estimatedPreviewBytes(step.edge, currentEdge, previewsBytes))}`
+                : "—"}
             </span>
           </label>
         ))}

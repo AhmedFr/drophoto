@@ -37,14 +37,14 @@ export type StorageUsage = {
 export const getSettings = () => invokeApi<AppSettings>("get_settings");
 
 /**
- * Sets the preview-quality edge (px) — one of `PREVIEW_EDGES`' values,
- * though nothing here enforces that. Resolves to whether the change is a
- * *downscale* from what was previously set, i.e. whether
- * `startRegenPreviews` would actually have anything to shrink; raising
- * quality never triggers a regen on its own (see the Rust command's doc
- * comment) — that needs a full rescan with the originals available.
+ * Sets the preview-quality edge (px) — must be one of `PREVIEW_EDGES`'
+ * values; the command rejects (`ApiError`, code `"unsupported"`) any
+ * other `u32`. Persists the setting only; it doesn't itself trigger a
+ * regen or a rescan. Whether a regen is worth offering is derived on the
+ * frontend from the persisted `preview_edge` (see `useSettingsData`),
+ * not from this call's response.
  */
-export const setPreviewQuality = (edge: number) => invokeApi<boolean>("set_preview_quality", { edge });
+export const setPreviewQuality = (edge: number) => invokeApi<void>("set_preview_quality", { edge });
 
 /** The app's current storage breakdown — computed on call, not polled. */
 export const storageUsage = () => invokeApi<StorageUsage>("storage_usage");

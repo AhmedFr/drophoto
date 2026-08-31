@@ -239,7 +239,7 @@ impl AppState {
         let mut jobs = lock_active_jobs(&self.active_jobs);
         let decision = job_admission(&jobs, admission_kind, drive_id, |id| self.runner.is_running(id));
 
-        match resolve_admission(decision, id_prefix, exclusive) {
+        match resolve_admission(decision, id_prefix, exclusive, drive_id) {
             Resolution::Reuse(job_id) => Ok(job_id),
             Resolution::Refuse(message) => Err(DpError::Unsupported { message, path: None }),
             Resolution::Spawn => {
@@ -328,10 +328,19 @@ enum Resolution {
 /// `exclusive` additionally changes the *message* on `Blocked` — a
 /// specific "a {kind} job is already running" everywhere else, or the
 /// generic message revert wants for either sub-case.
-fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> Resolution {
+///
+/// `drive_id` is only consulted for its wording, not the decision itself
+/// (that's entirely `job_admission`'s call): the sentinel `0` identifies
+/// a GLOBAL job (geocode/regen — see `AppState::start_geocode`/
+/// `start_regen`), for which "on this drive" is nonsense — there's no
+/// drive to name. No real drive ever has id `0` (SQLite's `INTEGER
+/// PRIMARY KEY` autoincrement starts at `1`), so this can't misfire on
+/// an actual per-drive job.
+fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool, drive_id: i64) -> Resolution {
     const GENERIC_CONFLICT: &str = "another job is running on this drive";
     const SIDECAR_CONFLICT: &str =
         "a background sidecar sync is finishing on this drive — try again in a moment";
+    let is_global = drive_id == 0;
 
     match decision {
         Admission::Start => Resolution::Spawn,
@@ -353,6 +362,11 @@ fn resolve_admission(decision: Admission, id_prefix: &str, exclusive: bool) -> R
                 // they did something wrong, and says nothing about what
                 // to do. It's also always short, so say that instead.
                 Resolution::Refuse(SIDECAR_CONFLICT.into())
+            } else if is_global {
+                // Two global sweeps (geocode, regen) serialize under the
+                // same drive-0 bucket — see `start_regen`'s doc comment.
+                // Neither is "on this drive".
+                Resolution::Refuse(format!("a {other_kind} sweep is already running"))
             } else {
                 Resolution::Refuse(format!("a {other_kind} job is already running on this drive"))
             }
@@ -430,11 +444,11 @@ mod tests {
     #[test]
     fn resolve_admission_always_spawns_on_start_regardless_of_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Start, "organize", false),
+            resolve_admission(Admission::Start, "organize", false, 1),
             Resolution::Spawn
         );
         assert_eq!(
-            resolve_admission(Admission::Start, "revert", true),
+            resolve_admission(Admission::Start, "revert", true, 1),
             Resolution::Spawn
         );
     }
@@ -442,7 +456,7 @@ mod tests {
     #[test]
     fn resolve_admission_reuses_an_existing_id_when_it_matches_the_prefix_and_not_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Existing("organize-0".into()), "organize", false),
+            resolve_admission(Admission::Existing("organize-0".into()), "organize", false, 1),
             Resolution::Reuse("organize-0".into())
         );
     }
@@ -456,7 +470,7 @@ mod tests {
     #[test]
     fn resolve_admission_refuses_an_existing_id_from_a_different_prefix_even_when_not_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Existing("revert-3".into()), "organize", false),
+            resolve_admission(Admission::Existing("revert-3".into()), "organize", false, 1),
             Resolution::Refuse("another job is running on this drive".into())
         );
     }
@@ -469,7 +483,7 @@ mod tests {
     #[test]
     fn resolve_admission_refuses_an_existing_id_from_a_different_revert_even_when_not_exclusive() {
         assert_eq!(
-            resolve_admission(Admission::Existing("organize-7".into()), "revert", false),
+            resolve_admission(Admission::Existing("organize-7".into()), "revert", false, 1),
             Resolution::Refuse("another job is running on this drive".into())
         );
     }
@@ -481,7 +495,7 @@ mod tests {
     #[test]
     fn resolve_admission_leaves_scan_dedupe_unaffected_by_the_prefix_check() {
         assert_eq!(
-            resolve_admission(Admission::Existing("scan-0".into()), "scan", false),
+            resolve_admission(Admission::Existing("scan-0".into()), "scan", false, 1),
             Resolution::Reuse("scan-0".into())
         );
     }
@@ -493,7 +507,7 @@ mod tests {
     #[test]
     fn resolve_admission_refuses_an_existing_id_when_exclusive_never_returning_it() {
         assert_eq!(
-            resolve_admission(Admission::Existing("revert-0".into()), "revert", true),
+            resolve_admission(Admission::Existing("revert-0".into()), "revert", true, 1),
             Resolution::Refuse("another job is running on this drive".into())
         );
     }
@@ -506,7 +520,8 @@ mod tests {
                     other_kind: "scan".into()
                 },
                 "organize",
-                false
+                false,
+                1
             ),
             Resolution::Refuse("a scan job is already running on this drive".into())
         );
@@ -520,7 +535,8 @@ mod tests {
                     other_kind: "scan".into()
                 },
                 "revert",
-                true
+                true,
+                1
             ),
             Resolution::Refuse("another job is running on this drive".into())
         );
@@ -538,11 +554,48 @@ mod tests {
                     other_kind: "sidecar".into()
                 },
                 "organize",
-                false
+                false,
+                1
             ),
             Resolution::Refuse(
                 "a background sidecar sync is finishing on this drive — try again in a moment".into()
             )
+        );
+    }
+
+    /// The core of the drive-0 wording fix: two global sweeps (geocode,
+    /// regen) block each other under the same sentinel drive id — see
+    /// `AppState::start_regen`'s doc comment — but the refusal must never
+    /// say "on this drive", since neither sweep is scoped to one.
+    #[test]
+    fn resolve_admission_uses_sweep_wording_for_a_blocked_global_job() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "geocode".into()
+                },
+                "regen",
+                false,
+                0
+            ),
+            Resolution::Refuse("a geocode sweep is already running".into())
+        );
+    }
+
+    /// The mirror image: a regen already running blocks a new geocode
+    /// sweep with the same drive-agnostic wording.
+    #[test]
+    fn resolve_admission_uses_sweep_wording_regardless_of_which_global_kind_is_blocking() {
+        assert_eq!(
+            resolve_admission(
+                Admission::Blocked {
+                    other_kind: "regen".into()
+                },
+                "geocode",
+                false,
+                0
+            ),
+            Resolution::Refuse("a regen sweep is already running".into())
         );
     }
 }

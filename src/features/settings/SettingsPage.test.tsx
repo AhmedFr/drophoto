@@ -60,13 +60,29 @@ it("renders the danger zone with the reset button", async () => {
   expect(await screen.findByRole("button", { name: "Reset app data…" })).toBeInTheDocument();
 });
 
-it("applies a lower quality and offers to regenerate previews", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "get_settings") return settings;
-    if (cmd === "storage_usage") return usage;
-    if (cmd === "set_preview_quality") return true;
+/**
+ * A stateful `get_settings`/`set_preview_quality` pair, mirroring what the
+ * real Rust command pair does: `set_preview_quality` persists the edge,
+ * and `get_settings` reflects it afterward — since `regenApplicable` is
+ * now derived from the persisted setting (not `set_preview_quality`'s
+ * response, which is `void`), the mock has to actually persist across
+ * calls for the "offers to regenerate" flow to be exercised honestly.
+ */
+function statefulSettingsMock(usageValue: typeof usage) {
+  let previewEdge = 2000;
+  mockIPC((cmd, args) => {
+    if (cmd === "get_settings") return { preview_edge: previewEdge };
+    if (cmd === "storage_usage") return usageValue;
+    if (cmd === "set_preview_quality") {
+      previewEdge = (args as { edge: number }).edge;
+      return null;
+    }
     return undefined;
   });
+}
+
+it("applies a lower quality and offers to regenerate previews", async () => {
+  statefulSettingsMock(usage);
   renderPage();
 
   await userEvent.click(await screen.findByRole("radio", { name: /Compact/ }));
@@ -77,10 +93,14 @@ it("applies a lower quality and offers to regenerate previews", async () => {
 
 it("starts a regen sweep when the regenerate-previews button is clicked", async () => {
   const startRegen = vi.fn().mockReturnValue("regen-0");
-  mockIPC((cmd) => {
-    if (cmd === "get_settings") return settings;
+  let previewEdge = 2000;
+  mockIPC((cmd, args) => {
+    if (cmd === "get_settings") return { preview_edge: previewEdge };
     if (cmd === "storage_usage") return usage;
-    if (cmd === "set_preview_quality") return true;
+    if (cmd === "set_preview_quality") {
+      previewEdge = (args as { edge: number }).edge;
+      return null;
+    }
     if (cmd === "start_regen_previews") return startRegen();
     return undefined;
   });

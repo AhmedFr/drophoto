@@ -9,7 +9,10 @@ use tauri::State;
 /// (matching stat size/mtime, thumbnails already on disk) are skipped
 /// without re-hashing — see `dp_jobs::ScanJob`. `full: Some(true)` bypasses
 /// that skip index entirely, re-hashing and re-thumbnailing every file (the
-/// UI's "FULL" button).
+/// UI's "FULL" button), AND unconditionally re-renders both thumbnail
+/// slots (see `ScanJob::with_full`) — this is what actually recovers
+/// full-resolution previews after the user has downscaled and regenerated
+/// them at a lower quality.
 #[tauri::command]
 pub async fn start_scan(
     state: State<'_, AppState>,
@@ -40,7 +43,8 @@ pub async fn start_scan(
         });
     }
 
-    let skip_index = if full.unwrap_or(false) {
+    let full = full.unwrap_or(false);
+    let skip_index = if full {
         HashMap::new()
     } else {
         state
@@ -65,7 +69,7 @@ pub async fn start_scan(
     };
 
     state.start_scan(drive_id, |job_id| {
-        Arc::new(ScanJob::new(job_id, drive, sources, deps, skip_index))
+        Arc::new(ScanJob::new(job_id, drive, sources, deps, skip_index).with_full(full))
     })
 }
 
