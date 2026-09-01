@@ -9,6 +9,11 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
   ["jobs"],
   ["unorganized"],
   ["drives"],
+  // A scan's failures land in `scan_errors`, and `DriveCard` gates its
+  // "Errors…" dropdown item on this count — without refreshing it here, a
+  // just-finished scan's new failures stay invisible in the dropdown until
+  // a refocus or remount.
+  ["scan-error-count"],
 ];
 
 /**
