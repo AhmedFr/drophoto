@@ -785,6 +785,10 @@ impl Catalog for FailingCatalog {
         self.0.list_scan_errors(drive_id, limit, offset).await
     }
 
+    async fn scan_error_code_counts(&self, drive_id: i64) -> DpResult<Vec<dp_core::ScanErrorCodeCount>> {
+        self.0.scan_error_code_counts(drive_id).await
+    }
+
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {
         self.0.get_rule(drive_id).await
     }

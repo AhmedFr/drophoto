@@ -9,4 +9,13 @@ export type ScanProgressProps = {
    * as a button calling this instead of plain text.
    */
   onOpenErrors?: () => void;
+  /**
+   * This scan's drive id — when given alongside `onOpenErrors` and a
+   * `failed > 0` terminal event, the "N failed" button is wrapped in
+   * `ScanErrorSeverityHoverCard`, showing the severity repartition on
+   * hover before the user commits to opening the full dialog. Omitted
+   * entirely (no hover card, plain button) when not given, so callers
+   * that don't have a drive id handy keep working unchanged.
+   */
+  driveId?: number;
 };

@@ -196,6 +196,68 @@ async fn list_scan_errors_empty_for_a_drive_with_none() {
 }
 
 #[tokio::test]
+async fn scan_error_code_counts_groups_by_code_ordered_by_count_desc() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    c.record_scan_error(drive_id, "a.jpg", "io", "boom")
+        .await
+        .unwrap();
+    c.record_scan_error(drive_id, "b.jpg", "io", "boom")
+        .await
+        .unwrap();
+    c.record_scan_error(drive_id, "c.jpg", "io", "boom")
+        .await
+        .unwrap();
+    c.record_scan_error(drive_id, "d.jpg", "db", "locked")
+        .await
+        .unwrap();
+
+    let counts = c.scan_error_code_counts(drive_id).await.unwrap();
+    assert_eq!(counts.len(), 2);
+    assert_eq!(counts[0].code, "io");
+    assert_eq!(counts[0].count, 3);
+    assert_eq!(counts[1].code, "db");
+    assert_eq!(counts[1].count, 1);
+}
+
+#[tokio::test]
+async fn scan_error_code_counts_empty_for_a_drive_with_none() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let counts = c.scan_error_code_counts(drive_id).await.unwrap();
+    assert!(counts.is_empty());
+}
+
+#[tokio::test]
+async fn scan_error_code_counts_is_scoped_to_its_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_a = drive(&c).await;
+    let drive_b = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            volume_uuid: None,
+            volume_label: None,
+            capacity: 0,
+            free: 0,
+        })
+        .await
+        .unwrap()
+        .id;
+    c.record_scan_error(drive_a, "a.jpg", "io", "boom").await.unwrap();
+    c.record_scan_error(drive_b, "b.jpg", "io", "boom").await.unwrap();
+    c.record_scan_error(drive_b, "c.jpg", "db", "locked")
+        .await
+        .unwrap();
+
+    let counts = c.scan_error_code_counts(drive_a).await.unwrap();
+    assert_eq!(counts.len(), 1);
+    assert_eq!(counts[0].code, "io");
+    assert_eq!(counts[0].count, 1);
+}
+
+#[tokio::test]
 async fn list_media_without_source_returns_only_unattributed_rows() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;

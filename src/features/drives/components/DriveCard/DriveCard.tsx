@@ -121,6 +121,7 @@ export function DriveCard({
           event={scanEvent}
           onCancel={onCancelScan ?? (() => {})}
           onOpenErrors={onOpenErrors}
+          driveId={drive.id}
         />
       )}
     </li>

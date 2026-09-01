@@ -1,7 +1,8 @@
 use crate::sqlite::db;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use dp_core::{
-    DpError, DpResult, MediaKind, MediaMetadata, MediaRow, NewMedia, ScanErrorRow, ScanIndexEntry,
+    DpError, DpResult, MediaKind, MediaMetadata, MediaRow, NewMedia, ScanErrorCodeCount, ScanErrorRow,
+    ScanIndexEntry,
 };
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
@@ -383,4 +384,32 @@ pub(crate) async fn list_scan_errors(
     .await
     .map_err(db)?;
     rows.iter().map(row_to_scan_error).collect()
+}
+
+/// `drive_id`'s `scan_errors` rows grouped by `code`, ordered `count DESC`
+/// — the severity repartition `ScanProgress`'s failed-count hover card and
+/// `ScanErrorsDialog`'s header derive their per-severity counts from (see
+/// `dp_core::ScanErrorCodeCount`).
+pub(crate) async fn scan_error_code_counts(
+    pool: &SqlitePool,
+    drive_id: i64,
+) -> DpResult<Vec<ScanErrorCodeCount>> {
+    let rows = sqlx::query(
+        "SELECT code, COUNT(*) as count FROM scan_errors WHERE drive_id = ? \
+         GROUP BY code ORDER BY count DESC",
+    )
+    .bind(drive_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter()
+        .map(|row| {
+            let code: String = row.try_get("code").map_err(db)?;
+            let count: i64 = row.try_get("count").map_err(db)?;
+            Ok(ScanErrorCodeCount {
+                code,
+                count: count as u64,
+            })
+        })
+        .collect()
 }

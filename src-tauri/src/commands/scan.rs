@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use dp_core::{DpError, ScanErrorRow};
+use dp_core::{DpError, ScanErrorCodeCount, ScanErrorRow};
 use dp_jobs::{ScanDeps, ScanJob};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -122,6 +122,17 @@ pub async fn list_scan_errors(
         .catalog
         .list_scan_errors(drive_id, clamped_limit(limit), offset)
         .await
+}
+
+/// `drive_id`'s `scan_errors` rows grouped by `code`, count DESC — backs
+/// the severity repartition `ScanProgress`'s failed-count hover card and
+/// `ScanErrorsDialog`'s header show (see `dp_core::ScanErrorCodeCount`).
+#[tauri::command]
+pub async fn scan_error_code_counts(
+    state: State<'_, AppState>,
+    drive_id: i64,
+) -> Result<Vec<ScanErrorCodeCount>, DpError> {
+    state.catalog.scan_error_code_counts(drive_id).await
 }
 
 #[cfg(test)]
