@@ -740,7 +740,7 @@ async fn run_direct_with_pre_cancelled_token_flags_cancelled_and_processes_nothi
     let cancel = CancellationToken::new();
     cancel.cancel();
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx { events: tx, cancel };
+    let ctx = JobCtx::new(tx, cancel);
 
     let outcome = job.run(ctx).await.unwrap();
 
@@ -776,10 +776,7 @@ async fn run_direct_with_live_token_processes_everything_and_flags_not_cancelled
     // A token that is never cancelled — proves `cancelled` is derived from
     // an actual early exit, not merely the token's live/dead state.
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx {
-        events: tx,
-        cancel: CancellationToken::new(),
-    };
+    let ctx = JobCtx::new(tx, CancellationToken::new());
 
     let outcome = job.run(ctx).await.unwrap();
 

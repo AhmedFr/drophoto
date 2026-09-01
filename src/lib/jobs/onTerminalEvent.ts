@@ -41,6 +41,7 @@ export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label
   const isSidecarSync = event.job_id.startsWith("sidecar-");
   const isGeocode = event.job_id.startsWith("geocode-");
   const isRegen = event.job_id.startsWith("regen-");
+  const isScan = event.job_id.startsWith("scan-");
 
   if (isSidecarSync) {
     // The sweep can import externally-added subjects into the catalog
@@ -77,6 +78,18 @@ export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label
   if (event.failed === 0) {
     toast.success(`${label} finished — ${total} file${total === 1 ? "" : "s"}`);
   } else {
-    toast.error(`${label} finished with ${event.failed} error${event.failed === 1 ? "" : "s"}`);
+    const errorWord = `error${event.failed === 1 ? "" : "s"}`;
+    // A scan's failures land in that drive's `scan_errors` table, browsable
+    // via `ScanErrorsDialog` — point the toast at it instead of leaving
+    // "a huge amount of errors but no reason, no place to check the
+    // errors" (Task 5b.4's field report). Organize/revert (and the
+    // sidecar/geocode/regen sweeps, handled above) have no such browser.
+    if (isScan) {
+      toast.error(
+        `${label} finished with ${event.failed} ${errorWord} — see the drive's Errors list`,
+      );
+    } else {
+      toast.error(`${label} finished with ${event.failed} ${errorWord}`);
+    }
   }
 }

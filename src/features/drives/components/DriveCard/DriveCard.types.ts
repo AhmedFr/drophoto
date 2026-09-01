@@ -26,5 +26,12 @@ export type DriveCardProps = {
   onForget?: () => void;
   /** Opens the RELINK… dialog for this drive — only rendered while the drive is offline, since an online drive is already correctly matched. */
   onRelink?: () => void;
+  /**
+   * Opens `ScanErrorsDialog` for this drive. Wired to `ScanProgress`'s
+   * "N failed" readout (turns it into a button once a scan has failures),
+   * and to an "Errors…" item in the actions dropdown — shown only once
+   * this drive has any recorded `scan_errors` rows.
+   */
+  onOpenErrors?: () => void;
   scanEvent?: JobEvent;
 };

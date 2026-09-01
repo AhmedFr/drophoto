@@ -360,6 +360,38 @@ it("keeps showing the finished scan readout (with skipped count) after the scan 
   expect(screen.getByRole("button", { name: "Scan" })).not.toBeDisabled();
 });
 
+it("opens ScanErrorsDialog for the drive when the terminal readout's failed count is clicked", async () => {
+  let listArgs: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [{ id: 1, drive_id: 1, rel_path: "DCIM", enabled: true }];
+    if (cmd === "count_scan_errors") return 2;
+    if (cmd === "list_scan_errors") {
+      listArgs = args;
+      return [{ id: 1, drive_id: 1, path: "a.jpg", code: "io", message: "boom", at: "2026-08-30T00:00:00Z" }];
+    }
+    return undefined;
+  });
+
+  act(() => {
+    useJobsStore.getState().setJobDrive("scan-9", 1);
+    useJobsStore
+      .getState()
+      .applyEvent({ kind: "finished", job_id: "scan-9", ok: 8, failed: 2, skipped: 0 });
+  });
+
+  renderPage();
+
+  const failedButton = await screen.findByRole("button", { name: "2 failed" });
+  await userEvent.click(failedButton);
+
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  expect(screen.getByText("Errors — Kodachrome (2)")).toBeInTheDocument();
+  expect(await screen.findByText("a.jpg")).toBeInTheDocument();
+  expect(listArgs).toEqual({ driveId: 1, limit: 100, offset: 0 });
+});
+
 it("starts a full rescan when the Full button is clicked", async () => {
   let startScanArgs: unknown;
   mockIPC((cmd, args) => {

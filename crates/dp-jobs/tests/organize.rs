@@ -239,7 +239,7 @@ async fn cancelling_before_start_moves_nothing() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx { events: tx, cancel };
+    let ctx = JobCtx::new(tx, cancel);
 
     let outcome = job.run(ctx).await.unwrap();
 
@@ -395,10 +395,7 @@ async fn offline_drive_fails_the_job_and_finishes_the_job_row_as_failed() {
     );
 
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx {
-        events: tx,
-        cancel: CancellationToken::new(),
-    };
+    let ctx = JobCtx::new(tx, CancellationToken::new());
 
     let err = job.run(ctx).await.unwrap_err();
     assert!(
@@ -647,10 +644,7 @@ async fn a_panic_partway_through_still_reports_the_items_already_applied() {
     let job = OrganizeJob::new("organize-panic".into(), drive, job_row_id, items, job_deps);
 
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx {
-        events: tx,
-        cancel: CancellationToken::new(),
-    };
+    let ctx = JobCtx::new(tx, CancellationToken::new());
 
     let err = job.run(ctx).await.unwrap_err();
     assert!(matches!(err, DpError::Io { .. }), "expected Io, got {err:?}");
@@ -780,6 +774,15 @@ impl Catalog for FailingCatalog {
 
     async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64> {
         self.0.count_scan_errors(drive_id).await
+    }
+
+    async fn list_scan_errors(
+        &self,
+        drive_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> DpResult<Vec<dp_core::ScanErrorRow>> {
+        self.0.list_scan_errors(drive_id, limit, offset).await
     }
 
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {

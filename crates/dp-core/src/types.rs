@@ -278,6 +278,21 @@ pub struct ScanIndexEntry {
     pub meta_read_at: Option<DateTime<Utc>>,
 }
 
+/// One `scan_errors` row — a single file (or walk entry) a scan couldn't
+/// process, recorded via `Catalog::record_scan_error` and browsable via
+/// `Catalog::list_scan_errors`. `code` is the same stable snake_case string
+/// as `JobEvent::ItemError::code` (see `dp_jobs::error_code`), e.g. `"io"`,
+/// `"sidecar"`, `"stub"`; `message` is the human-readable detail.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ScanErrorRow {
+    pub id: i64,
+    pub drive_id: i64,
+    pub path: String,
+    pub code: String,
+    pub message: String,
+    pub at: DateTime<Utc>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OrganizeRule {
     pub drive_id: i64,

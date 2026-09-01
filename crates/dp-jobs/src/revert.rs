@@ -152,14 +152,7 @@ impl RevertJob {
             }
 
             let done = (i + 1) as u64;
-            let _ = ctx
-                .events
-                .send(JobEvent::Progress {
-                    job_id: self.id.clone(),
-                    done,
-                    total,
-                    current: Some(item.new_rel_path.clone()),
-                })
+            ctx.progress(&self.id, done, total, Some(item.new_rel_path.clone()))
                 .await;
         }
 

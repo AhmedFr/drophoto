@@ -22,6 +22,9 @@ pub use runner::JobRunner;
 pub use scan::{ScanDeps, ScanJob};
 pub use sidecar_sync::{SidecarSyncDeps, SidecarSyncJob};
 
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
 use dp_core::{DpError, DpResult};
 use serde::Serialize;
@@ -86,12 +89,111 @@ pub struct JobOutcome {
     pub bytes_written: u64,
 }
 
+/// Minimum spacing between consecutive `Progress` events sent through
+/// [`JobCtx::progress`]/[`JobCtx::progress_blocking`]. A scan can call
+/// these hundreds of times a second (once per file); every subscriber of
+/// the event channel — the Zustand store, and everything it re-renders —
+/// pays for each one, so item-level progress is coalesced down to this
+/// cadence at the source, the one place every job routes it through.
+const PROGRESS_COALESCE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Per-job gate deciding whether a `Progress` event should actually go out
+/// right now. Always lets through: the very first progress tick of a job
+/// (`last_emit` still `None`), and the terminal tick where `done` has
+/// reached a known nonzero `total` — so the final, most up-to-date count
+/// is never dropped or delayed behind the job's own `Finished`/`Cancelled`
+/// event. Everything else is allowed at most once per
+/// [`PROGRESS_COALESCE_INTERVAL`].
+///
+/// Shared (via `Arc`) across every clone of the [`JobCtx`] a single job
+/// run hands out — including the ones cloned per concurrently-processed
+/// item — so the gate reflects that job's cadence as a whole, not each
+/// clone's own view of time.
+#[derive(Default)]
+struct ProgressGate {
+    last_emit: Mutex<Option<Instant>>,
+}
+
+impl ProgressGate {
+    fn should_emit(&self, done: u64, total: u64) -> bool {
+        let is_final = total > 0 && done >= total;
+        let mut last = self
+            .last_emit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+        let emit = is_final
+            || match *last {
+                None => true,
+                Some(t) => now.duration_since(t) >= PROGRESS_COALESCE_INTERVAL,
+            };
+        if emit {
+            *last = Some(now);
+        }
+        emit
+    }
+}
+
 /// Shared context handed to a [`Job`] when it runs: where to send events,
 /// and a token to check for cancellation.
 #[derive(Clone)]
 pub struct JobCtx {
     pub events: mpsc::Sender<JobEvent>,
     pub cancel: CancellationToken,
+    /// Coalescing state for [`Self::progress`]/[`Self::progress_blocking`]
+    /// — private, constructed fresh by [`Self::new`] so every job run
+    /// starts its own gate.
+    progress_gate: Arc<ProgressGate>,
+}
+
+impl JobCtx {
+    /// Builds a fresh `JobCtx` — the only way to construct one outside
+    /// this crate, since [`Self::progress_gate`] is private. Every job run
+    /// gets its own gate: cloning an existing `JobCtx` (as happens once
+    /// per concurrently-processed item) shares that gate, but two
+    /// unrelated `JobCtx::new` calls never do.
+    pub fn new(events: mpsc::Sender<JobEvent>, cancel: CancellationToken) -> Self {
+        Self {
+            events,
+            cancel,
+            progress_gate: Arc::new(ProgressGate::default()),
+        }
+    }
+
+    /// Sends a `JobEvent::Progress { job_id, done, total, current }`,
+    /// coalesced through this job's [`ProgressGate`] (see its doc comment
+    /// for exactly what always gets through). This is the single place
+    /// every job in this crate should route its per-item progress through,
+    /// so the coalescing behavior lives in exactly one place rather than
+    /// being reimplemented per job.
+    pub async fn progress(&self, job_id: &str, done: u64, total: u64, current: Option<String>) {
+        if self.progress_gate.should_emit(done, total) {
+            let _ = self
+                .events
+                .send(JobEvent::Progress {
+                    job_id: job_id.to_string(),
+                    done,
+                    total,
+                    current,
+                })
+                .await;
+        }
+    }
+
+    /// Synchronous counterpart to [`Self::progress`], for callers running
+    /// outside the async runtime — e.g. the scan's directory walk, which
+    /// runs inside `spawn_blocking`. Shares the same gate as `progress`,
+    /// via `Sender::blocking_send` instead of `send`.
+    pub fn progress_blocking(&self, job_id: &str, done: u64, total: u64, current: Option<String>) {
+        if self.progress_gate.should_emit(done, total) {
+            let _ = self.events.blocking_send(JobEvent::Progress {
+                job_id: job_id.to_string(),
+                done,
+                total,
+                current,
+            });
+        }
+    }
 }
 
 /// A unit of background work run by a [`JobRunner`].

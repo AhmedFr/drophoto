@@ -116,6 +116,86 @@ async fn record_scan_error_does_not_error() {
 }
 
 #[tokio::test]
+async fn list_scan_errors_returns_newest_first_with_fields_intact() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    c.record_scan_error(drive_id, "a.jpg", "io", "permission denied")
+        .await
+        .unwrap();
+    c.record_scan_error(drive_id, "b.jpg", "stub", "too small to be real media")
+        .await
+        .unwrap();
+
+    let rows = c.list_scan_errors(drive_id, 10, 0).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    // Newest (last recorded) first.
+    assert_eq!(rows[0].path, "b.jpg");
+    assert_eq!(rows[0].code, "stub");
+    assert_eq!(rows[0].message, "too small to be real media");
+    assert_eq!(rows[0].drive_id, drive_id);
+    assert_eq!(rows[1].path, "a.jpg");
+    assert_eq!(rows[1].code, "io");
+}
+
+#[tokio::test]
+async fn list_scan_errors_pages_with_limit_and_offset() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    for i in 0..5 {
+        c.record_scan_error(drive_id, &format!("f{i}.jpg"), "io", "boom")
+            .await
+            .unwrap();
+    }
+
+    let page1 = c.list_scan_errors(drive_id, 2, 0).await.unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1[0].path, "f4.jpg");
+    assert_eq!(page1[1].path, "f3.jpg");
+
+    let page2 = c.list_scan_errors(drive_id, 2, 2).await.unwrap();
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2[0].path, "f2.jpg");
+    assert_eq!(page2[1].path, "f1.jpg");
+
+    let page3 = c.list_scan_errors(drive_id, 2, 4).await.unwrap();
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3[0].path, "f0.jpg");
+}
+
+#[tokio::test]
+async fn list_scan_errors_is_scoped_to_its_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_a = drive(&c).await;
+    let drive_b = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            volume_uuid: None,
+            volume_label: None,
+            capacity: 0,
+            free: 0,
+        })
+        .await
+        .unwrap()
+        .id;
+    c.record_scan_error(drive_a, "a.jpg", "io", "boom").await.unwrap();
+    c.record_scan_error(drive_b, "b.jpg", "io", "boom").await.unwrap();
+
+    let rows = c.list_scan_errors(drive_a, 10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, "a.jpg");
+}
+
+#[tokio::test]
+async fn list_scan_errors_empty_for_a_drive_with_none() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let rows = c.list_scan_errors(drive_id, 10, 0).await.unwrap();
+    assert!(rows.is_empty());
+}
+
+#[tokio::test]
 async fn list_media_without_source_returns_only_unattributed_rows() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;

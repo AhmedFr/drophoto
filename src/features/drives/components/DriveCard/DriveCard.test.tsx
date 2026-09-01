@@ -1,10 +1,33 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { render as rtlRender, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
 import type { Drive } from "@/lib/api/drives";
 import type { JobEvent } from "@/lib/api/scan";
 import type { Source } from "@/lib/api/sources";
 import { DriveCard } from "./DriveCard";
+
+// `DriveCard` now runs its own `scan-error-count` query (for the
+// dropdown's "Errors…" item), so every render needs a `QueryClient` in
+// context — wrapping it here means every existing `render(<DriveCard
+// .../>)` call site below keeps working unchanged.
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
+// Default: no recorded scan errors, so the pre-existing tests below (none
+// of which care about the "Errors…" item) see a stable, quiet count query
+// instead of a real Tauri IPC call rejecting with no mock configured.
+// Tests about the "Errors…" item itself call `mockIPC` again to override.
+beforeEach(() => {
+  mockIPC((cmd) => {
+    if (cmd === "count_scan_errors") return 0;
+    return undefined;
+  });
+});
 
 const baseDrive: Drive = {
   id: 1,
@@ -280,4 +303,41 @@ it("renders the drive-actions menu for an offline drive with only onRelink given
     <DriveCard drive={{ ...baseDrive, online: false, mount_path: null }} onRelink={vi.fn()} />,
   );
   expect(screen.getByRole("button", { name: "Drive actions" })).toBeInTheDocument();
+});
+
+it("does not show Errors… when the drive has no recorded scan errors, even with onOpenErrors given", async () => {
+  render(<DriveCard drive={baseDrive} onForget={vi.fn()} onOpenErrors={vi.fn()} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Drive actions" }));
+
+  expect(screen.queryByRole("menuitem", { name: "Errors…" })).not.toBeInTheDocument();
+});
+
+it("shows Errors… once the drive has recorded scan errors, and calls onOpenErrors when chosen", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "count_scan_errors") return 3;
+    return undefined;
+  });
+  const onOpenErrors = vi.fn();
+  render(<DriveCard drive={baseDrive} onOpenErrors={onOpenErrors} />);
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Errors…" }));
+
+  expect(onOpenErrors).toHaveBeenCalledTimes(1);
+});
+
+it("does not show the drive-actions menu at all when only onOpenErrors is given but there are no scan errors", () => {
+  render(<DriveCard drive={baseDrive} onOpenErrors={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "Drive actions" })).not.toBeInTheDocument();
+});
+
+it("shows the drive-actions menu for onOpenErrors alone once the drive has recorded scan errors", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "count_scan_errors") return 1;
+    return undefined;
+  });
+  render(<DriveCard drive={baseDrive} onOpenErrors={vi.fn()} />);
+
+  expect(await screen.findByRole("button", { name: "Drive actions" })).toBeInTheDocument();
 });

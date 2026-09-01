@@ -1,6 +1,8 @@
 use crate::sqlite::db;
-use chrono::{DateTime, Utc};
-use dp_core::{DpError, DpResult, MediaKind, MediaMetadata, MediaRow, NewMedia, ScanIndexEntry};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use dp_core::{
+    DpError, DpResult, MediaKind, MediaMetadata, MediaRow, NewMedia, ScanErrorRow, ScanIndexEntry,
+};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn kind_to_str(kind: MediaKind) -> &'static str {
@@ -320,11 +322,10 @@ pub(crate) async fn record_scan_error(
     Ok(())
 }
 
-/// How many `scan_errors` rows `drive_id` currently has. `scan_errors` has
-/// no reader anywhere else in the workspace today (it exists purely so a
-/// future error panel has something to show) — this exists so
-/// [`crate::forget_drive::forget_drive`]'s cascade test can prove its
-/// `DELETE FROM scan_errors` actually runs, not to back any UI yet.
+/// How many `scan_errors` rows `drive_id` currently has — backs both the
+/// "Errors…" drive-actions dropdown item (only shown once this is nonzero)
+/// and [`crate::forget_drive::forget_drive`]'s cascade test, which proves
+/// its `DELETE FROM scan_errors` actually runs.
 pub(crate) async fn count_scan_errors(pool: &SqlitePool, drive_id: i64) -> DpResult<u64> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scan_errors WHERE drive_id = ?")
         .bind(drive_id)
@@ -332,4 +333,54 @@ pub(crate) async fn count_scan_errors(pool: &SqlitePool, drive_id: i64) -> DpRes
         .await
         .map_err(db)?;
     Ok(count as u64)
+}
+
+/// Parses SQLite's `datetime('now')` default format (`"YYYY-MM-DD
+/// HH:MM:SS"`, UTC, no offset) — what `scan_errors.at` actually stores,
+/// unlike the app-written RFC3339 timestamps ([`to_rfc3339`]/
+/// [`from_rfc3339`]) most other datetime columns in this crate use.
+fn parse_sqlite_datetime(s: &str) -> DpResult<DateTime<Utc>> {
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .map(|naive| naive.and_utc())
+        .map_err(db)
+}
+
+fn row_to_scan_error(row: &SqliteRow) -> DpResult<ScanErrorRow> {
+    let id: i64 = row.try_get("id").map_err(db)?;
+    let drive_id: i64 = row.try_get("drive_id").map_err(db)?;
+    let path: String = row.try_get("path").map_err(db)?;
+    let code: String = row.try_get("code").map_err(db)?;
+    let message: String = row.try_get("message").map_err(db)?;
+    let at: String = row.try_get("at").map_err(db)?;
+    Ok(ScanErrorRow {
+        id,
+        drive_id,
+        path,
+        code,
+        message,
+        at: parse_sqlite_datetime(&at)?,
+    })
+}
+
+/// Pages `drive_id`'s `scan_errors` rows, newest first (`id DESC` — more
+/// reliable than ordering by `at`, since a fast scan can record many rows
+/// within the same wall-clock second) — backs `ScanErrorsDialog`'s "Load
+/// more" paging.
+pub(crate) async fn list_scan_errors(
+    pool: &SqlitePool,
+    drive_id: i64,
+    limit: u32,
+    offset: u32,
+) -> DpResult<Vec<ScanErrorRow>> {
+    let rows = sqlx::query(
+        "SELECT id, drive_id, path, code, message, at FROM scan_errors \
+         WHERE drive_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+    )
+    .bind(drive_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter().map(row_to_scan_error).collect()
 }

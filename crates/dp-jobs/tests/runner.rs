@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dp_catalog::{Catalog, SqliteCatalog};
@@ -19,6 +19,38 @@ impl Job for PanicJob {
 
     async fn run(&self, _ctx: JobCtx) -> DpResult<JobOutcome> {
         panic!("boom");
+    }
+}
+
+/// A [`Job`] that reports `N` items' worth of progress in a tight loop
+/// (no real work, no `await`ed I/O beyond `ctx.progress` itself) — used to
+/// prove `JobCtx::progress`'s coalescing actually caps how many `Progress`
+/// events reach the channel, instead of one per item (Task 5b.4's field
+/// report: ~787 events/s flooding every subscriber during a real scan).
+struct FastProgressJob {
+    id: String,
+    total: u64,
+}
+
+#[async_trait]
+impl Job for FastProgressJob {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn run(&self, ctx: JobCtx) -> DpResult<JobOutcome> {
+        for i in 1..=self.total {
+            ctx.progress(&self.id, i, self.total, Some(format!("item-{i}")))
+                .await;
+        }
+        Ok(JobOutcome {
+            ok: self.total,
+            failed: 0,
+            skipped: 0,
+            cancelled: false,
+            bytes_read: 0,
+            bytes_written: 0,
+        })
     }
 }
 
@@ -240,4 +272,72 @@ async fn cancelled_job_emits_cancelled_with_the_outcomes_real_tallies() {
         }
         other => panic!("expected Cancelled, got {other:?}"),
     }
+}
+
+/// Task 5b.4: `JobCtx::progress` coalesces per-item `Progress` events to at
+/// most one every 100ms — a job that reports 1000 items in a tight loop
+/// (finishing in well under one coalescing window) must produce nowhere
+/// near 1000 `Progress` events, but must still produce exactly one
+/// terminal event carrying the real, complete tallies (the last progress
+/// tick is never silently dropped in favor of coalescing).
+#[tokio::test]
+async fn fast_job_progress_is_coalesced_but_terminal_tallies_stay_correct() {
+    let (tx, mut rx) = mpsc::channel(4096);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("fast");
+    let start = Instant::now();
+    runner.spawn(
+        job_id,
+        Arc::new(FastProgressJob {
+            id: "fast-progress".into(),
+            total: 1000,
+        }),
+    );
+
+    let mut progress_count: u64 = 0;
+    let mut terminal_count: u64 = 0;
+    let mut terminal_tallies: Option<(u64, u64, u64)> = None;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let ev = rx
+                .recv()
+                .await
+                .expect("channel closed before a terminal event arrived");
+            match ev {
+                JobEvent::Progress { .. } => progress_count += 1,
+                JobEvent::Finished {
+                    ok, failed, skipped, ..
+                } => {
+                    terminal_count += 1;
+                    terminal_tallies = Some((ok, failed, skipped));
+                    break;
+                }
+                JobEvent::Cancelled { .. } => {
+                    terminal_count += 1;
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the fast job to reach a terminal state");
+
+    let elapsed = start.elapsed();
+    // Generous bound: at most one Progress event per coalescing window
+    // (100ms), plus 2 (the always-emitted first tick and the
+    // always-emitted final done==total tick can both land inside the same
+    // window as everything else on a fast machine).
+    let bound = (elapsed.as_millis() as u64 / 100) + 2;
+    assert!(
+        progress_count <= bound,
+        "expected coalescing to cap Progress events at ~{bound} (elapsed {elapsed:?}), got {progress_count}"
+    );
+    assert_eq!(terminal_count, 1, "expected exactly one terminal event");
+    assert_eq!(
+        terminal_tallies,
+        Some((1000, 0, 0)),
+        "expected the terminal event to carry the complete, correct tallies regardless of coalescing"
+    );
 }

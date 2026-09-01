@@ -74,7 +74,7 @@ it("uses singular 'file' for a single-file finish", () => {
   expect(toast.success).toHaveBeenCalledWith("Scan finished — 1 file");
 });
 
-it("shows an error toast with the failure count when finished with failures", () => {
+it("shows an error toast pointing at the drive's Errors list when a scan finishes with failures", () => {
   const { queryClient } = client();
   onTerminalEvent(
     { kind: "finished", job_id: "scan-0", ok: 8, failed: 2, skipped: 0 },
@@ -82,14 +82,27 @@ it("shows an error toast with the failure count when finished with failures", ()
     "Scan Kodachrome",
   );
 
-  expect(toast.error).toHaveBeenCalledWith("Scan Kodachrome finished with 2 errors");
+  expect(toast.error).toHaveBeenCalledWith(
+    "Scan Kodachrome finished with 2 errors — see the drive's Errors list",
+  );
 });
 
-it("uses singular 'error' for a single failure", () => {
+it("uses singular 'error' for a single scan failure", () => {
   const { queryClient } = client();
   onTerminalEvent({ kind: "finished", job_id: "scan-0", ok: 8, failed: 1, skipped: 0 }, queryClient, "Scan");
 
-  expect(toast.error).toHaveBeenCalledWith("Scan finished with 1 error");
+  expect(toast.error).toHaveBeenCalledWith("Scan finished with 1 error — see the drive's Errors list");
+});
+
+it("shows a plain error toast (no Errors-list pointer) when a non-scan job finishes with failures", () => {
+  const { queryClient } = client();
+  onTerminalEvent(
+    { kind: "finished", job_id: "organize-0", ok: 8, failed: 2, skipped: 0 },
+    queryClient,
+    "Organize",
+  );
+
+  expect(toast.error).toHaveBeenCalledWith("Organize finished with 2 errors");
 });
 
 it("shows a neutral toast with the ok tally on cancelled", () => {

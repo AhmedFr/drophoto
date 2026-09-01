@@ -96,3 +96,15 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Indeterminate progress bar (ui/progress.tsx's `indeterminate` prop) — a
+   sliding bar with no numeric meaning, used while a scan's directory walk
+   is under way and there's no done/total to show yet. */
+@keyframes scan-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}

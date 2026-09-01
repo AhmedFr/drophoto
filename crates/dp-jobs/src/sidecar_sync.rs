@@ -150,14 +150,7 @@ impl SidecarSyncJob {
                 self.sync_row(ctx, &mount, row).await;
 
                 done += 1;
-                let _ = ctx
-                    .events
-                    .send(JobEvent::Progress {
-                        job_id: self.id.clone(),
-                        done,
-                        total,
-                        current: Some(row.rel_path.clone()),
-                    })
+                ctx.progress(&self.id, done, total, Some(row.rel_path.clone()))
                     .await;
             }
         }
