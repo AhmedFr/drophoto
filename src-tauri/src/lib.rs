@@ -13,6 +13,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let st = tauri::async_runtime::block_on(state::AppState::init(app.handle()))?;
             app.manage(st);
@@ -31,6 +33,8 @@ pub fn run() {
             commands::media::get_media,
             commands::scan::start_scan,
             commands::scan::cancel_job,
+            commands::scan::count_scan_errors,
+            commands::scan::list_scan_errors,
             commands::search::search_media,
             commands::search::rebuild_fts,
             commands::sidecars::start_sidecar_sync_all,
@@ -57,8 +61,10 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::set_preview_quality,
             commands::settings::storage_usage,
+            commands::settings::tool_health,
             commands::settings::start_regen_previews,
             commands::settings::reset_app_data,
+            commands::settings::uninstall_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

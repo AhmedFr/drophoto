@@ -7,6 +7,8 @@ import {
   setPreviewQuality,
   startRegenPreviews,
   storageUsage,
+  toolHealth,
+  uninstallApp,
 } from "@/lib/api/settings";
 import type { JobEvent } from "@/lib/api/scan";
 import { useJobsStore } from "@/lib/jobs/jobsStore";
@@ -40,6 +42,9 @@ export function useSettingsData(): UseSettingsDataResult {
 
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const storageQuery = useQuery({ queryKey: ["storage-usage"], queryFn: storageUsage });
+  // A startup snapshot on the Rust side — never changes while the app
+  // runs, so staleTime: Infinity (no background refetches).
+  const toolsQuery = useQuery({ queryKey: ["tool-health"], queryFn: toolHealth, staleTime: Infinity });
 
   const applyQualityMutation = useMutation({
     mutationFn: setPreviewQuality,
@@ -63,6 +68,7 @@ export function useSettingsData(): UseSettingsDataResult {
     },
   });
   const resetMutation = useMutation({ mutationFn: resetAppData });
+  const uninstallMutation = useMutation({ mutationFn: uninstallApp });
 
   const events = useJobsStore((s) => s.events);
   const regenRunning = isRegenRunning(events);
@@ -74,6 +80,10 @@ export function useSettingsData(): UseSettingsDataResult {
     settings,
     settingsLoading: settingsQuery.isLoading,
     settingsError: settingsQuery.error ? (settingsQuery.error as Error).message : null,
+
+    tools: toolsQuery.data ?? null,
+    toolsLoading: toolsQuery.isLoading,
+    toolsError: toolsQuery.error ? (toolsQuery.error as Error).message : null,
 
     storage: storageQuery.data ?? null,
     storageLoading: storageQuery.isLoading,
@@ -96,5 +106,11 @@ export function useSettingsData(): UseSettingsDataResult {
     // matching how `ForgetDriveDialog`/`RelinkDriveDialog` surface their
     // own mutation errors.
     resetError: resetMutation.error ? (resetMutation.error as Error).message : null,
+
+    confirmUninstall: () => uninstallMutation.mutate(),
+    uninstalling: uninstallMutation.isPending,
+    // Rendered inside `UninstallDialog` (which stays open on failure) —
+    // same pattern as `resetError` above.
+    uninstallError: uninstallMutation.error ? (uninstallMutation.error as Error).message : null,
   };
 }

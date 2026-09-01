@@ -1,9 +1,14 @@
-import type { AppSettings, StorageUsage } from "@/lib/api/settings";
+import type { AppSettings, StorageUsage, ToolHealth } from "@/lib/api/settings";
 
 export type UseSettingsDataResult = {
   settings: AppSettings | null;
   settingsLoading: boolean;
   settingsError: string | null;
+
+  /** Startup snapshot of where exiftool/ffmpeg were found — `null` until the `tool_health` query resolves. */
+  tools: ToolHealth | null;
+  toolsLoading: boolean;
+  toolsError: string | null;
 
   storage: StorageUsage | null;
   /** True only while the *first* `storage_usage` call is in flight. */
@@ -27,4 +32,9 @@ export type UseSettingsDataResult = {
   resetting: boolean;
   /** `reset_app_data`'s rejection message, if the last attempt failed — rendered inside `ResetAppDataDialog`, which stays open. */
   resetError: string | null;
+
+  confirmUninstall: () => void;
+  uninstalling: boolean;
+  /** `uninstall_app`'s rejection message, if the last attempt failed (e.g. not running from an installed `.app` bundle) — rendered inside `UninstallDialog`, which stays open. */
+  uninstallError: string | null;
 };

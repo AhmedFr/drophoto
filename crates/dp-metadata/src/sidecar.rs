@@ -34,6 +34,14 @@ impl ExiftoolSidecars {
     pub fn from_path() -> Self {
         Self::new("exiftool")
     }
+
+    /// Same resolution as [`crate::exiftool::ExiftoolProvider::from_resolved`]
+    /// — see its doc comment. Sidecar reads/writes shell out to the exact
+    /// same `exiftool` binary as metadata reads, so both must resolve it
+    /// identically.
+    pub fn from_resolved() -> Self {
+        Self::new(crate::resolve_tool("exiftool").unwrap_or_else(|| PathBuf::from("exiftool")))
+    }
 }
 
 fn exiftool_err(e: &std::io::Error) -> DpError {

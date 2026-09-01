@@ -160,14 +160,7 @@ impl OrganizeJob {
             }
 
             let done = (i + 1) as u64;
-            let _ = ctx
-                .events
-                .send(JobEvent::Progress {
-                    job_id: self.id.clone(),
-                    done,
-                    total,
-                    current: Some(item.old_rel_path.clone()),
-                })
+            ctx.progress(&self.id, done, total, Some(item.old_rel_path.clone()))
                 .await;
         }
 

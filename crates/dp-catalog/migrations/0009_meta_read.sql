@@ -1,0 +1,19 @@
+-- Timestamp of the last successful metadata (EXIF/QuickTime) read for this
+-- row, distinct from `mtime`/`sidecar_mtime` — set by
+-- `Catalog::update_media_metadata`, called both right after a fresh
+-- catalog upsert whose `dp_metadata::MetadataProvider::read` succeeded and
+-- by the incremental-rescan metadata-backfill path in `dp_jobs::ScanJob`
+-- (see its `find_skip_match` caller).
+--
+-- NULL means "never successfully read" — every pre-0009 row (including
+-- the ~17k rows a bundled build wrote with empty metadata because
+-- exiftool/ffmpeg weren't found on `$PATH` before Task 5b.3's tool-path
+-- resolution fix), plus any row whose read has failed on every scan since.
+-- A skip-eligible row (unchanged file, existing thumbnails) with a NULL
+-- meta_read_at still gets its metadata re-read on the next incremental
+-- scan — without re-hashing or re-thumbnailing — and is retried again on
+-- every subsequent scan until a read finally succeeds. A read that
+-- succeeds but finds no fields at all (a file exiftool genuinely has
+-- nothing to report for) still sets meta_read_at, so it's never retried
+-- forever.
+ALTER TABLE media ADD COLUMN meta_read_at TEXT;

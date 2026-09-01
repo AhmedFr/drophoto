@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, NewSource, OrganizeItemRow, PlanStatus};
+use dp_core::{
+    DriveRole, MediaKind, MediaMetadata, NewDrive, NewMedia, NewSource, OrganizeItemRow, PlanStatus,
+};
 
 fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
     nm_taken(drive_id, rel_path, hash, None)
@@ -111,6 +113,86 @@ async fn record_scan_error_does_not_error() {
     c.record_scan_error(drive_id, "a.jpg", "io", "boom")
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn list_scan_errors_returns_newest_first_with_fields_intact() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    c.record_scan_error(drive_id, "a.jpg", "io", "permission denied")
+        .await
+        .unwrap();
+    c.record_scan_error(drive_id, "b.jpg", "stub", "too small to be real media")
+        .await
+        .unwrap();
+
+    let rows = c.list_scan_errors(drive_id, 10, 0).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    // Newest (last recorded) first.
+    assert_eq!(rows[0].path, "b.jpg");
+    assert_eq!(rows[0].code, "stub");
+    assert_eq!(rows[0].message, "too small to be real media");
+    assert_eq!(rows[0].drive_id, drive_id);
+    assert_eq!(rows[1].path, "a.jpg");
+    assert_eq!(rows[1].code, "io");
+}
+
+#[tokio::test]
+async fn list_scan_errors_pages_with_limit_and_offset() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    for i in 0..5 {
+        c.record_scan_error(drive_id, &format!("f{i}.jpg"), "io", "boom")
+            .await
+            .unwrap();
+    }
+
+    let page1 = c.list_scan_errors(drive_id, 2, 0).await.unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1[0].path, "f4.jpg");
+    assert_eq!(page1[1].path, "f3.jpg");
+
+    let page2 = c.list_scan_errors(drive_id, 2, 2).await.unwrap();
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2[0].path, "f2.jpg");
+    assert_eq!(page2[1].path, "f1.jpg");
+
+    let page3 = c.list_scan_errors(drive_id, 2, 4).await.unwrap();
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3[0].path, "f0.jpg");
+}
+
+#[tokio::test]
+async fn list_scan_errors_is_scoped_to_its_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_a = drive(&c).await;
+    let drive_b = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            volume_uuid: None,
+            volume_label: None,
+            capacity: 0,
+            free: 0,
+        })
+        .await
+        .unwrap()
+        .id;
+    c.record_scan_error(drive_a, "a.jpg", "io", "boom").await.unwrap();
+    c.record_scan_error(drive_b, "b.jpg", "io", "boom").await.unwrap();
+
+    let rows = c.list_scan_errors(drive_a, 10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, "a.jpg");
+}
+
+#[tokio::test]
+async fn list_scan_errors_empty_for_a_drive_with_none() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let rows = c.list_scan_errors(drive_id, 10, 0).await.unwrap();
+    assert!(rows.is_empty());
 }
 
 #[tokio::test]
@@ -286,4 +368,91 @@ async fn delete_media_keeps_a_row_an_organize_item_references() {
 
     assert!(!c.delete_media(id).await.unwrap());
     assert_eq!(c.count_media(Some(drive_id)).await.unwrap(), 1);
+}
+
+/// A freshly-upserted row (predating `meta_read_at`, or simply never
+/// backfilled) must round-trip through `list_scan_index` as `None` — the
+/// incremental-rescan metadata-backfill path's trigger for "this row still
+/// needs its metadata read".
+#[tokio::test]
+async fn list_scan_index_reports_no_meta_read_at_for_a_fresh_row() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    c.upsert_media(nm(drive_id, "a.jpg", "hash-a")).await.unwrap();
+
+    let index = c.list_scan_index(drive_id).await.unwrap();
+    assert_eq!(index.len(), 1);
+    assert_eq!(index[0].meta_read_at, None);
+}
+
+/// `Catalog::update_media_metadata` is the narrow setter the
+/// incremental-rescan metadata-backfill path (and the full-processing
+/// path, right after a successful metadata read) uses: it must land every
+/// `MediaMetadata` field plus `meta_read_at`, and leave every other column
+/// (`hash`/`size`/`rel_path`/...) untouched.
+#[tokio::test]
+async fn update_media_metadata_lands_every_field_and_sets_meta_read_at() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let id = c.upsert_media(nm(drive_id, "a.jpg", "hash-a")).await.unwrap();
+
+    let taken_at: DateTime<Utc> = "2026-03-01T10:00:00Z".parse().unwrap();
+    let read_at: DateTime<Utc> = "2026-03-02T11:00:00Z".parse().unwrap();
+    let metadata = MediaMetadata {
+        width: Some(4000),
+        height: Some(3000),
+        duration_ms: None,
+        taken_at: Some(taken_at),
+        camera: Some("Canon EOS R5".into()),
+        lens: Some("RF 24-70mm".into()),
+        aperture: Some(2.8),
+        shutter: Some(0.01),
+        iso: Some(400),
+        focal_mm: Some(50.0),
+        lat: Some(37.7749),
+        lon: Some(-122.4194),
+    };
+
+    c.update_media_metadata(id, &metadata, read_at).await.unwrap();
+
+    let rows = c.list_media(10, 0).await.unwrap();
+    let row = rows.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(row.width, Some(4000));
+    assert_eq!(row.height, Some(3000));
+    assert_eq!(row.taken_at, Some(taken_at));
+    assert_eq!(row.camera.as_deref(), Some("Canon EOS R5"));
+    assert_eq!(row.lens.as_deref(), Some("RF 24-70mm"));
+    assert_eq!(row.aperture, Some(2.8));
+    assert_eq!(row.shutter, Some(0.01));
+    assert_eq!(row.iso, Some(400));
+    assert_eq!(row.focal_mm, Some(50.0));
+    assert_eq!(row.lat, Some(37.7749));
+    assert_eq!(row.lon, Some(-122.4194));
+    // Untouched columns must survive exactly as upserted.
+    assert_eq!(row.rel_path, "a.jpg");
+    assert_eq!(row.hash, "hash-a");
+
+    let index = c.list_scan_index(drive_id).await.unwrap();
+    assert_eq!(index[0].meta_read_at, Some(read_at));
+}
+
+/// `update_media_metadata` syncs FTS the same way `upsert_media` does —
+/// searching by the newly-set camera must find the row.
+#[tokio::test]
+async fn update_media_metadata_makes_the_new_camera_searchable() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let id = c.upsert_media(nm(drive_id, "a.jpg", "hash-a")).await.unwrap();
+    assert!(c.search_media("Nikon", 10).await.unwrap().is_empty());
+
+    let metadata = MediaMetadata {
+        camera: Some("Nikon Z9".into()),
+        ..MediaMetadata::default()
+    };
+    let read_at: DateTime<Utc> = "2026-03-02T11:00:00Z".parse().unwrap();
+    c.update_media_metadata(id, &metadata, read_at).await.unwrap();
+
+    let found = c.search_media("Nikon", 10).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0.id, id);
 }

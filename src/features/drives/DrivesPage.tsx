@@ -22,6 +22,7 @@ import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
 import { SourcesDialog } from "./components/SourcesDialog";
 import { ForgetDriveDialog } from "./components/ForgetDriveDialog";
 import { RelinkDriveDialog } from "./components/RelinkDriveDialog";
+import { ScanErrorsDialog } from "./components/ScanErrorsDialog";
 import { useJobEvents } from "./hooks/useJobEvents";
 import { useSources } from "./hooks/useSources";
 
@@ -61,6 +62,7 @@ export function DrivesPage() {
   const [sourcesDrive, setSourcesDrive] = useState<Drive | null>(null);
   const [driveToForget, setDriveToForget] = useState<Drive | null>(null);
   const [driveToRelink, setDriveToRelink] = useState<Drive | null>(null);
+  const [driveForErrors, setDriveForErrors] = useState<Drive | null>(null);
   const jobEvents = useJobEvents();
   const driveIds = useJobsStore((s) => s.driveIds);
   const { sourcesByDrive, isLoading: sourcesLoading } = useSources(
@@ -180,6 +182,7 @@ export function DrivesPage() {
                   onOpenSources={() => setSourcesDrive(d)}
                   onForget={() => setDriveToForget(d)}
                   onRelink={() => setDriveToRelink(d)}
+                  onOpenErrors={() => setDriveForErrors(d)}
                 />
               );
             })}
@@ -224,6 +227,7 @@ export function DrivesPage() {
           driveToRelink && relinkMutation.mutate({ driveId: driveToRelink.id, mountPath })
         }
       />
+      <ScanErrorsDialog drive={driveForErrors} onClose={() => setDriveForErrors(null)} />
     </div>
   );
 }

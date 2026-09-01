@@ -61,15 +61,15 @@ const ActiveJobRow = memo(function ActiveJobRow({ jobId, label, done, total, rat
         to={targetPath(jobId)}
         className="flex items-center gap-2 px-3 py-2 font-mono text-[9.5px] tracking-[1px] text-muted-foreground uppercase hover:bg-surface hover:text-foreground"
       >
-        <span className="truncate">{label}</span>
+        <span className="min-w-0 truncate">{label}</span>
         <span className="flex-1" />
         {total > 0 ? (
-          <span className="flex items-center font-mono text-[9px] text-faint normal-case">
+          <span className="flex shrink-0 items-center whitespace-nowrap font-mono text-[9px] text-faint normal-case">
             <span className="inline-block min-w-[5ch] tabular-nums text-right">
               {done}/{total}
             </span>
             {rateLabel && (
-              <span className="inline-block min-w-[14ch] tabular-nums text-right">
+              <span className="inline-block min-w-[16ch] tabular-nums text-right">
                 · {rateLabel}
                 {etaLabel ? ` · ${etaLabel}` : ""}
               </span>

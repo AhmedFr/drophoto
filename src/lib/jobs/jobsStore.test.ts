@@ -41,6 +41,39 @@ describe("applyJobEvent", () => {
     expect(events["scan-0"]).toEqual({ kind: "finished", job_id: "scan-0", ok: 5, failed: 0, skipped: 0 });
   });
 
+  it("keeps a progress event's counts visible through an item_error, but a later progress or terminal event still supersedes", () => {
+    let events = applyJobEvent(
+      {},
+      { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" },
+    );
+    events = applyJobEvent(events, {
+      kind: "item_error",
+      job_id: "scan-0",
+      path: "b.jpg",
+      code: "io",
+      message: "boom",
+    });
+    expect(events["scan-0"]).toEqual({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" });
+
+    events = applyJobEvent(events, { kind: "progress", job_id: "scan-0", done: 4, total: 10, current: "c.jpg" });
+    expect(events["scan-0"]).toEqual({ kind: "progress", job_id: "scan-0", done: 4, total: 10, current: "c.jpg" });
+
+    events = applyJobEvent(events, { kind: "finished", job_id: "scan-0", ok: 4, failed: 1, skipped: 0 });
+    expect(events["scan-0"]).toEqual({ kind: "finished", job_id: "scan-0", ok: 4, failed: 1, skipped: 0 });
+  });
+
+  it("keeps a started event through an item_error too", () => {
+    let events = applyJobEvent({}, { kind: "started", job_id: "scan-0" });
+    events = applyJobEvent(events, {
+      kind: "item_error",
+      job_id: "scan-0",
+      path: "a.jpg",
+      code: "io",
+      message: "boom",
+    });
+    expect(events["scan-0"]).toEqual({ kind: "started", job_id: "scan-0" });
+  });
+
   it("does not mutate the input events object", () => {
     const input: Record<string, JobEvent> = { "scan-0": { kind: "started", job_id: "scan-0" } };
     const result = applyJobEvent(input, { kind: "progress", job_id: "scan-0", done: 1, total: 5, current: null });

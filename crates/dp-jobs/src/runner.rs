@@ -93,10 +93,7 @@ impl JobRunner {
             let cpu_before = process_cpu_ms();
             let drive_id = job.drive_id();
 
-            let ctx = JobCtx {
-                events: events.clone(),
-                cancel: token.clone(),
-            };
+            let ctx = JobCtx::new(events.clone(), token.clone());
             let outcome = std::panic::AssertUnwindSafe(job.run(ctx)).catch_unwind().await;
 
             lock_tokens(&tokens).remove(&id);

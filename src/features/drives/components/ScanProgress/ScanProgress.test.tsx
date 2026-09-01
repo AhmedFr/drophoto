@@ -3,6 +3,10 @@ import { vi } from "vitest";
 import type { JobEvent } from "@/lib/api/scan";
 import { ScanProgress } from "./ScanProgress";
 
+function progressIndicatorClass(container: HTMLElement): string {
+  return container.querySelector('[data-slot="progress-indicator"]')?.className ?? "";
+}
+
 it("renders nothing when there is no event", () => {
   const { container } = render(<ScanProgress event={undefined} onCancel={vi.fn()} />);
   expect(container).toBeEmptyDOMElement();
@@ -55,23 +59,49 @@ it("calls onCancel when the cancel button is clicked while running", () => {
   expect(onCancel).toHaveBeenCalled();
 });
 
-it("shows a dot loader instead of the bar when the event is started", () => {
+it("turns the failed count into a button when onOpenErrors is given and failed > 0", () => {
+  const onOpenErrors = vi.fn();
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 2, skipped: 0 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} onOpenErrors={onOpenErrors} />);
+
+  const button = screen.getByRole("button", { name: "2 failed" });
+  fireEvent.click(button);
+  expect(onOpenErrors).toHaveBeenCalled();
+});
+
+it("does not render a failed button when failed is 0, even with onOpenErrors given", () => {
+  const onOpenErrors = vi.fn();
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 0, skipped: 0 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} onOpenErrors={onOpenErrors} />);
+
+  expect(screen.queryByRole("button", { name: /failed/i })).not.toBeInTheDocument();
+});
+
+it("renders the failed count as plain text when onOpenErrors is not given", () => {
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 2, skipped: 0 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+
+  expect(screen.getByText("8 ok · 2 failed")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /failed/i })).not.toBeInTheDocument();
+});
+
+it("renders the progress bar indeterminate for a started event, with no per-file counts yet", () => {
   const event: JobEvent = { kind: "started", job_id: "scan-0" };
-  render(<ScanProgress event={event} onCancel={vi.fn()} />);
-  expect(screen.getByRole("status")).toBeInTheDocument();
-  expect(screen.getByText("Scanning…")).toBeInTheDocument();
-  expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
+  const { container } = render(<ScanProgress event={event} onCancel={vi.fn()} />);
+
+  expect(progressIndicatorClass(container)).toContain("animate-[scan-indeterminate");
+  expect(screen.getByText("0 / 0")).toBeInTheDocument();
 });
 
-it("shows a dot loader instead of the bar during a total:0 progress event, using its current label", () => {
+it("renders the progress bar indeterminate during a total:0 progress event, showing its current label", () => {
   const event: JobEvent = { kind: "progress", job_id: "scan-0", done: 0, total: 0, current: "Scanning /DCIM" };
-  render(<ScanProgress event={event} onCancel={vi.fn()} />);
-  expect(screen.getByRole("status")).toBeInTheDocument();
+  const { container } = render(<ScanProgress event={event} onCancel={vi.fn()} />);
+
+  expect(progressIndicatorClass(container)).toContain("animate-[scan-indeterminate");
   expect(screen.getByText("Scanning /DCIM")).toBeInTheDocument();
-  expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
 });
 
-it("still allows cancelling while showing the dot loader", () => {
+it("still allows cancelling while the bar is indeterminate", () => {
   const onCancel = vi.fn();
   const event: JobEvent = { kind: "started", job_id: "scan-0" };
   render(<ScanProgress event={event} onCancel={onCancel} />);
@@ -79,9 +109,29 @@ it("still allows cancelling while showing the dot loader", () => {
   expect(onCancel).toHaveBeenCalled();
 });
 
-it("shows the bar once a progress event reports a nonzero total", () => {
+it("switches the bar to determinate once a progress event reports a nonzero total", () => {
   const event: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
-  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+  const { container } = render(<ScanProgress event={event} onCancel={vi.fn()} />);
+
   expect(screen.getByText("3 / 10")).toBeInTheDocument();
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(progressIndicatorClass(container)).not.toContain("animate-[scan-indeterminate");
+});
+
+it("renders the same fixed block (progress bar, counts row, current-file row) for both the walk phase and real progress — no subtree swap", () => {
+  const started: JobEvent = { kind: "started", job_id: "scan-0" };
+  const { container: walkContainer } = render(<ScanProgress event={started} onCancel={vi.fn()} />);
+  const progress: JobEvent = { kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" };
+  const { container: progressContainer } = render(<ScanProgress event={progress} onCancel={vi.fn()} />);
+
+  const walkBlock = walkContainer.firstElementChild as HTMLElement;
+  const progressBlock = progressContainer.firstElementChild as HTMLElement;
+
+  // Same shape: a progress bar, a counts+cancel row, and a current-file
+  // row — three children in both phases, never a completely different
+  // subtree (e.g. a dot loader standing in for the whole block).
+  expect(walkBlock.children).toHaveLength(3);
+  expect(progressBlock.children).toHaveLength(3);
+  expect(walkBlock.children[0].getAttribute("data-slot")).toBe(
+    progressBlock.children[0].getAttribute("data-slot"),
+  );
 });

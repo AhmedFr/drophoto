@@ -350,7 +350,7 @@ async fn cancel_stops_the_sweep_early() {
     let (tx, _rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
     cancel.cancel();
-    let ctx = JobCtx { events: tx, cancel };
+    let ctx = JobCtx::new(tx, cancel);
 
     let outcome = job.run(ctx).await.unwrap();
     assert!(outcome.cancelled);

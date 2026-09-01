@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Volume {
@@ -266,6 +267,30 @@ pub struct ScanIndexEntry {
     /// falls back to comparing against [`Self::mtime`] instead, matching
     /// pre-existing first-scan behavior.
     pub sidecar_mtime: Option<DateTime<Utc>>,
+    /// The last time this row's metadata (EXIF/QuickTime tags) was
+    /// successfully read — see [`crate::error::DpError`]'s `Sidecar`
+    /// variant for the "tool not found on PATH" failure this exists to
+    /// recover from, and `Catalog::update_media_metadata`'s doc comment
+    /// for what sets it. `None` means "never successfully read" — the
+    /// incremental-rescan skip path re-reads metadata for such a row
+    /// (without re-hashing or re-thumbnailing) the next time it's
+    /// reached, retrying every scan until a read finally succeeds.
+    pub meta_read_at: Option<DateTime<Utc>>,
+}
+
+/// One `scan_errors` row — a single file (or walk entry) a scan couldn't
+/// process, recorded via `Catalog::record_scan_error` and browsable via
+/// `Catalog::list_scan_errors`. `code` is the same stable snake_case string
+/// as `JobEvent::ItemError::code` (see `dp_jobs::error_code`), e.g. `"io"`,
+/// `"sidecar"`, `"stub"`; `message` is the human-readable detail.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ScanErrorRow {
+    pub id: i64,
+    pub drive_id: i64,
+    pub path: String,
+    pub code: String,
+    pub message: String,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -557,6 +582,22 @@ pub struct StorageUsage {
     /// Count of thumbnail files (both slots) counted toward the totals
     /// above.
     pub file_count: u64,
+}
+
+/// Where `exiftool`/`ffmpeg` were found on this machine, resolved once by
+/// `AppState::init` (via `dp_metadata::resolve_tool`) and returned as-is by
+/// the `tool_health` Tauri command for Settings' tools panel — see Task
+/// 5b.3. `None` for a tool means it couldn't be found anywhere
+/// `resolve_tool` looked (every `$PATH` directory plus the Homebrew/
+/// MacPorts fallback dirs); every metadata/thumbnail operation needing
+/// that tool will keep failing (visible in `scan_errors`) until it's
+/// installed. This is a point-in-time snapshot taken at app startup, not
+/// re-checked live — a tool installed while the app is running won't be
+/// reflected here until the next launch.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct ToolHealth {
+    pub exiftool: Option<PathBuf>,
+    pub ffmpeg: Option<PathBuf>,
 }
 
 #[cfg(test)]

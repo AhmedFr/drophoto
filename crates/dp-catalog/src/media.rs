@@ -1,6 +1,8 @@
 use crate::sqlite::db;
-use chrono::{DateTime, Utc};
-use dp_core::{DpError, DpResult, MediaKind, MediaRow, NewMedia, ScanIndexEntry};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use dp_core::{
+    DpError, DpResult, MediaKind, MediaMetadata, MediaRow, NewMedia, ScanErrorRow, ScanIndexEntry,
+};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn kind_to_str(kind: MediaKind) -> &'static str {
@@ -199,7 +201,8 @@ pub(crate) async fn delete_media(pool: &SqlitePool, id: i64) -> DpResult<bool> {
 /// walk starts. See [`ScanIndexEntry`].
 pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>> {
     let rows = sqlx::query(
-        "SELECT id, rel_path, size, mtime, hash, source_id, sidecar_mtime FROM media WHERE drive_id = ?",
+        "SELECT id, rel_path, size, mtime, hash, source_id, sidecar_mtime, meta_read_at \
+         FROM media WHERE drive_id = ?",
     )
     .bind(drive_id)
     .fetch_all(pool)
@@ -210,6 +213,7 @@ pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResul
             let size: i64 = r.try_get("size").map_err(db)?;
             let mtime: Option<String> = r.try_get("mtime").map_err(db)?;
             let sidecar_mtime: Option<String> = r.try_get("sidecar_mtime").map_err(db)?;
+            let meta_read_at: Option<String> = r.try_get("meta_read_at").map_err(db)?;
             Ok(ScanIndexEntry {
                 id: r.try_get("id").map_err(db)?,
                 rel_path: r.try_get("rel_path").map_err(db)?,
@@ -218,9 +222,58 @@ pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResul
                 hash: r.try_get("hash").map_err(db)?,
                 source_id: r.try_get("source_id").map_err(db)?,
                 sidecar_mtime: from_rfc3339(sidecar_mtime)?,
+                meta_read_at: from_rfc3339(meta_read_at)?,
             })
         })
         .collect()
+}
+
+/// Updates media row `id`'s metadata columns (everything
+/// [`MediaMetadata`] carries) plus `meta_read_at`, then syncs its FTS row
+/// (log-only, like every other write in this module — FTS is derived
+/// data, never a reason to fail the write). Called by `dp_jobs::ScanJob`
+/// both right after a fresh upsert whose metadata read succeeded, and by
+/// the incremental-rescan metadata-backfill path for a skip-eligible row
+/// whose `meta_read_at` is still `NULL` — see [`ScanIndexEntry::meta_read_at`].
+///
+/// Deliberately narrower than [`upsert_media`]: it never touches
+/// `hash`/`size`/`kind`/`ext`/`mtime`/`source_id`/`organized_at` — only
+/// the metadata columns exiftool/ffmpeg actually produce, so it's safe to
+/// call on a row the backfill path never re-hashed or re-thumbnailed.
+pub(crate) async fn update_media_metadata(
+    pool: &SqlitePool,
+    id: i64,
+    m: &MediaMetadata,
+    read_at: DateTime<Utc>,
+) -> DpResult<()> {
+    sqlx::query(
+        "UPDATE media SET width=?, height=?, duration_ms=?, taken_at=?, camera=?, lens=?, \
+         aperture=?, shutter=?, iso=?, focal_mm=?, lat=?, lon=?, meta_read_at=? WHERE id=?",
+    )
+    .bind(m.width.map(|w| w as i64))
+    .bind(m.height.map(|h| h as i64))
+    .bind(m.duration_ms.map(|d| d as i64))
+    .bind(to_rfc3339(m.taken_at))
+    .bind(&m.camera)
+    .bind(&m.lens)
+    .bind(m.aperture)
+    .bind(m.shutter)
+    .bind(m.iso.map(|i| i as i64))
+    .bind(m.focal_mm)
+    .bind(m.lat)
+    .bind(m.lon)
+    .bind(to_rfc3339(Some(read_at)))
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+
+    // FTS is derived data — never fail the write over a sync problem.
+    if let Err(e) = crate::fts::sync_fts(pool, id).await {
+        tracing::warn!(media_id = id, error = %e, "failed to sync FTS index after update_media_metadata");
+    }
+
+    Ok(())
 }
 
 /// Records the XMP sidecar's on-disk mtime as of the last time it was
@@ -269,11 +322,10 @@ pub(crate) async fn record_scan_error(
     Ok(())
 }
 
-/// How many `scan_errors` rows `drive_id` currently has. `scan_errors` has
-/// no reader anywhere else in the workspace today (it exists purely so a
-/// future error panel has something to show) — this exists so
-/// [`crate::forget_drive::forget_drive`]'s cascade test can prove its
-/// `DELETE FROM scan_errors` actually runs, not to back any UI yet.
+/// How many `scan_errors` rows `drive_id` currently has — backs both the
+/// "Errors…" drive-actions dropdown item (only shown once this is nonzero)
+/// and [`crate::forget_drive::forget_drive`]'s cascade test, which proves
+/// its `DELETE FROM scan_errors` actually runs.
 pub(crate) async fn count_scan_errors(pool: &SqlitePool, drive_id: i64) -> DpResult<u64> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scan_errors WHERE drive_id = ?")
         .bind(drive_id)
@@ -281,4 +333,54 @@ pub(crate) async fn count_scan_errors(pool: &SqlitePool, drive_id: i64) -> DpRes
         .await
         .map_err(db)?;
     Ok(count as u64)
+}
+
+/// Parses SQLite's `datetime('now')` default format (`"YYYY-MM-DD
+/// HH:MM:SS"`, UTC, no offset) — what `scan_errors.at` actually stores,
+/// unlike the app-written RFC3339 timestamps ([`to_rfc3339`]/
+/// [`from_rfc3339`]) most other datetime columns in this crate use.
+fn parse_sqlite_datetime(s: &str) -> DpResult<DateTime<Utc>> {
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .map(|naive| naive.and_utc())
+        .map_err(db)
+}
+
+fn row_to_scan_error(row: &SqliteRow) -> DpResult<ScanErrorRow> {
+    let id: i64 = row.try_get("id").map_err(db)?;
+    let drive_id: i64 = row.try_get("drive_id").map_err(db)?;
+    let path: String = row.try_get("path").map_err(db)?;
+    let code: String = row.try_get("code").map_err(db)?;
+    let message: String = row.try_get("message").map_err(db)?;
+    let at: String = row.try_get("at").map_err(db)?;
+    Ok(ScanErrorRow {
+        id,
+        drive_id,
+        path,
+        code,
+        message,
+        at: parse_sqlite_datetime(&at)?,
+    })
+}
+
+/// Pages `drive_id`'s `scan_errors` rows, newest first (`id DESC` — more
+/// reliable than ordering by `at`, since a fast scan can record many rows
+/// within the same wall-clock second) — backs `ScanErrorsDialog`'s "Load
+/// more" paging.
+pub(crate) async fn list_scan_errors(
+    pool: &SqlitePool,
+    drive_id: i64,
+    limit: u32,
+    offset: u32,
+) -> DpResult<Vec<ScanErrorRow>> {
+    let rows = sqlx::query(
+        "SELECT id, drive_id, path, code, message, at FROM scan_errors \
+         WHERE drive_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+    )
+    .bind(drive_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter().map(row_to_scan_error).collect()
 }

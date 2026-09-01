@@ -15,9 +15,9 @@ mod tags;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dp_core::{
-    AppSettings, DpResult, Drive, JobRunRow, MediaQuery, MediaRow, NewDrive, NewJobRun, NewMedia, NewPlace,
-    NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount, ScanIndexEntry, Source, Tag,
-    UnorganizedSummary,
+    AppSettings, DpResult, Drive, JobRunRow, MediaMetadata, MediaQuery, MediaRow, NewDrive, NewJobRun,
+    NewMedia, NewPlace, NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount,
+    ScanErrorRow, ScanIndexEntry, Source, Tag, UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -85,10 +85,18 @@ pub trait Catalog: Send + Sync {
     /// it; `Ok(false)` means it was left in place. See the `SqliteCatalog`
     /// implementation for why the guard exists.
     async fn delete_media(&self, id: i64) -> DpResult<bool>;
+    /// Updates one media row's metadata columns plus `meta_read_at` — see
+    /// [`crate::media::update_media_metadata`]'s doc comment for exactly
+    /// what it touches (and doesn't) and who calls it.
+    async fn update_media_metadata(&self, id: i64, m: &MediaMetadata, read_at: DateTime<Utc>)
+        -> DpResult<()>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
     /// How many `scan_errors` rows `drive_id` currently has — see
     /// [`crate::media::count_scan_errors`]'s doc comment.
     async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64>;
+    /// Pages `drive_id`'s `scan_errors` rows, newest first — see
+    /// [`crate::media::list_scan_errors`]'s doc comment.
+    async fn list_scan_errors(&self, drive_id: i64, limit: u32, offset: u32) -> DpResult<Vec<ScanErrorRow>>;
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule>;
     async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()>;
     async fn list_unorganized(&self, drive_id: i64, root: &str) -> DpResult<Vec<MediaRow>>;
@@ -265,12 +273,25 @@ impl Catalog for SqliteCatalog {
         media::delete_media(&self.pool, id).await
     }
 
+    async fn update_media_metadata(
+        &self,
+        id: i64,
+        m: &MediaMetadata,
+        read_at: DateTime<Utc>,
+    ) -> DpResult<()> {
+        media::update_media_metadata(&self.pool, id, m, read_at).await
+    }
+
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         media::record_scan_error(&self.pool, drive_id, path, code, message).await
     }
 
     async fn count_scan_errors(&self, drive_id: i64) -> DpResult<u64> {
         media::count_scan_errors(&self.pool, drive_id).await
+    }
+
+    async fn list_scan_errors(&self, drive_id: i64, limit: u32, offset: u32) -> DpResult<Vec<ScanErrorRow>> {
+        media::list_scan_errors(&self.pool, drive_id, limit, offset).await
     }
 
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {

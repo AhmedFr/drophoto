@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 dp-core = { path = "../dp-core" }
+dp-metadata = { path = "../dp-metadata" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }

@@ -440,10 +440,7 @@ async fn offline_drive_fails_job() {
 
     let job = SidecarSyncJob::new("sidecar-offline".into(), drive, deps(catalog.clone()));
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx {
-        events: tx,
-        cancel: CancellationToken::new(),
-    };
+    let ctx = JobCtx::new(tx, CancellationToken::new());
 
     let err = job.run(ctx).await.unwrap_err();
     assert!(

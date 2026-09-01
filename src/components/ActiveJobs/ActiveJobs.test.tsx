@@ -128,3 +128,26 @@ it("shows a computed rate and eta once enough samples have landed", async () => 
   expect(screen.getByText(/left/)).toBeInTheDocument();
   nowSpy.mockRestore();
 });
+
+// Regression test: the rate/ETA text used to wrap to a second line inside
+// the sidebar's fixed-width strip (the row's flex container could shrink
+// this span below its own reserved `min-w`, and without `whitespace-nowrap`
+// the browser wrapped the multi-word "· 6.5/s · ~12m left" text instead of
+// clipping/overflowing it). `whitespace-nowrap` forbids the wrap outright;
+// `shrink-0` keeps the flex layout from squeezing the span in the first
+// place.
+it("never wraps the rate/ETA text — whitespace-nowrap with a non-shrinking reserved width", async () => {
+  const nowSpy = vi.spyOn(Date, "now");
+  nowSpy.mockReturnValueOnce(0);
+  useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 0, total: 100, current: "a" });
+  nowSpy.mockReturnValueOnce(10_000);
+  useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 20, total: 100, current: "b" });
+  nowSpy.mockReturnValue(10_000);
+
+  renderWithRouter(<ActiveJobs />);
+
+  const rateSpan = await screen.findByText(/2\.0\/s/);
+  const countsRow = rateSpan.parentElement as HTMLElement;
+  expect(countsRow).toHaveClass("whitespace-nowrap", "shrink-0");
+  nowSpy.mockRestore();
+});

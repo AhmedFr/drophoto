@@ -1,4 +1,5 @@
 import { MoreVertical } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { formatBytes } from "@/lib/format/bytes";
+import { countScanErrors } from "@/lib/api/scan";
 import { ScanProgress } from "../ScanProgress";
 import type { DriveCardProps } from "./DriveCard.types";
 
@@ -21,8 +23,19 @@ export function DriveCard({
   onOpenSources,
   onForget,
   onRelink,
+  onOpenErrors,
   scanEvent,
 }: DriveCardProps) {
+  // Cheap, cached (same query key `ScanErrorsDialog` reads its own count
+  // from, so the two never disagree) — only decides whether "Errors…"
+  // appears in the dropdown at all, so a drive with a clean scan history
+  // never shows a dead-end menu item.
+  const scanErrorCount = useQuery({
+    queryKey: ["scan-error-count", drive.id],
+    queryFn: () => countScanErrors(drive.id),
+  });
+  const hasScanErrors = (scanErrorCount.data ?? 0) > 0;
+
   const scanInProgress =
     scanEvent != null && scanEvent.kind !== "finished" && scanEvent.kind !== "cancelled";
   const enabledSources = sources.filter((s) => s.enabled).length;
@@ -82,7 +95,7 @@ export function DriveCard({
             Full
           </Button>
         )}
-        {(onForget || showRelink) && (
+        {(onForget || showRelink || (hasScanErrors && onOpenErrors)) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="xs" aria-label="Drive actions">
@@ -90,6 +103,9 @@ export function DriveCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {hasScanErrors && onOpenErrors && (
+                <DropdownMenuItem onClick={onOpenErrors}>Errors…</DropdownMenuItem>
+              )}
               {showRelink && <DropdownMenuItem onClick={onRelink}>Relink…</DropdownMenuItem>}
               {onForget && (
                 <DropdownMenuItem variant="destructive" onClick={onForget}>
@@ -100,7 +116,13 @@ export function DriveCard({
           </DropdownMenu>
         )}
       </div>
-      {scanEvent && <ScanProgress event={scanEvent} onCancel={onCancelScan ?? (() => {})} />}
+      {scanEvent && (
+        <ScanProgress
+          event={scanEvent}
+          onCancel={onCancelScan ?? (() => {})}
+          onOpenErrors={onOpenErrors}
+        />
+      )}
     </li>
   );
 }

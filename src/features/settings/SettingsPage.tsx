@@ -1,15 +1,21 @@
 import { PageHeader } from "@/components/PageHeader";
 import { PREVIEW_EDGES } from "@/lib/api/settings";
+import { UpdatesSection } from "./components/UpdatesSection";
 import { StorageSection } from "./components/StorageSection";
+import { ToolsSection } from "./components/ToolsSection";
 import { QualityPicker } from "./components/QualityPicker";
 import { DangerZone } from "./components/DangerZone";
 import { useSettingsData } from "./hooks/useSettingsData";
+import { useUpdater } from "./hooks/useUpdater";
 
 export function SettingsPage() {
   const {
     settings,
     settingsLoading,
     settingsError,
+    tools,
+    toolsLoading,
+    toolsError,
     storage,
     storageLoading,
     storageError,
@@ -23,12 +29,18 @@ export function SettingsPage() {
     confirmResetAppData,
     resetting,
     resetError,
+    confirmUninstall,
+    uninstalling,
+    uninstallError,
   } = useSettingsData();
+  const updater = useUpdater();
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Settings" />
       <div className="flex-1 overflow-y-auto">
+        <UpdatesSection {...updater} />
+
         <StorageSection
           usage={storage}
           loading={storageLoading}
@@ -36,6 +48,8 @@ export function SettingsPage() {
           refreshing={storageRefreshing}
           onRefresh={refreshStorage}
         />
+
+        <ToolsSection tools={tools} loading={toolsLoading} error={toolsError} />
 
         {settingsError && <p className="px-6 pb-2 font-mono text-[11px] text-red-400">{settingsError}</p>}
 
@@ -51,7 +65,14 @@ export function SettingsPage() {
           />
         )}
 
-        <DangerZone onConfirmReset={confirmResetAppData} resetting={resetting} resetError={resetError} />
+        <DangerZone
+          onConfirmReset={confirmResetAppData}
+          resetting={resetting}
+          resetError={resetError}
+          onConfirmUninstall={confirmUninstall}
+          uninstalling={uninstalling}
+          uninstallError={uninstallError}
+        />
       </div>
     </div>
   );

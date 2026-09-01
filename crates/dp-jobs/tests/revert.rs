@@ -833,7 +833,7 @@ async fn cancelling_before_start_moves_nothing() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx { events: tx, cancel };
+    let ctx = JobCtx::new(tx, cancel);
 
     let outcome = job.run(ctx).await.unwrap();
     assert!(outcome.cancelled);
@@ -887,10 +887,7 @@ async fn offline_drive_fails_the_job_and_finishes_the_job_row_as_failed() {
     );
 
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx {
-        events: tx,
-        cancel: CancellationToken::new(),
-    };
+    let ctx = JobCtx::new(tx, CancellationToken::new());
 
     let err = job.run(ctx).await.unwrap_err();
     assert!(

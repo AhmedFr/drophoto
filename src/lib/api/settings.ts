@@ -33,8 +33,23 @@ export type StorageUsage = {
   file_count: number;
 };
 
+/**
+ * Where `exiftool`/`ffmpeg` were found at app startup — mirrors
+ * `dp_core::ToolHealth`. `null` means the tool couldn't be found anywhere
+ * (every `$PATH` directory plus the Homebrew/MacPorts fallback dirs), so
+ * metadata reads (exiftool) or video thumbnails/durations (ffmpeg) will
+ * keep failing until it's installed. A snapshot from launch, not live.
+ */
+export type ToolHealth = {
+  exiftool: string | null;
+  ffmpeg: string | null;
+};
+
 /** Current app-wide settings. */
 export const getSettings = () => invokeApi<AppSettings>("get_settings");
+
+/** Where the external tools were found at startup — see `ToolHealth`. */
+export const toolHealth = () => invokeApi<ToolHealth>("tool_health");
 
 /**
  * Sets the preview-quality edge (px) — must be one of `PREVIEW_EDGES`'
@@ -64,3 +79,16 @@ export const startRegenPreviews = () => invokeApi<string>("start_regen_previews"
  * not something to await for a response.
  */
 export const resetAppData = () => invokeApi<void>("reset_app_data");
+
+/**
+ * Danger-zone action: deletes the app's own catalog and cached thumbnails
+ * (same as `resetAppData`), then moves the running `.app` bundle itself to
+ * the Trash — never a permanent delete — and exits. Never touches the
+ * user's photos, drives, or `.xmp` sidecar files. Rejects with an
+ * `ApiError` (code `"unsupported"`) when not running from an installed
+ * `.app` bundle (e.g. a dev build). Like `resetAppData`, the promise this
+ * returns will generally never resolve on success — the app process exits
+ * as part of handling the command — so callers should treat firing it as
+ * the point of no return, not something to await for a response.
+ */
+export const uninstallApp = () => invokeApi<void>("uninstall_app");

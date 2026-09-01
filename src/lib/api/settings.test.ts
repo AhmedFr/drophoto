@@ -5,6 +5,8 @@ import {
   setPreviewQuality,
   startRegenPreviews,
   storageUsage,
+  toolHealth,
+  uninstallApp,
   PREVIEW_EDGES,
 } from "./settings";
 import { ApiError } from "./client";
@@ -78,6 +80,15 @@ it("gets storage usage with no arguments", async () => {
   expect(received).toEqual({});
 });
 
+it("round-trips tool_health", async () => {
+  const health = { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+  mockIPC((cmd) => {
+    if (cmd === "tool_health") return health;
+    return undefined;
+  });
+  await expect(toolHealth()).resolves.toEqual(health);
+});
+
 it("wraps structured errors from storage_usage", async () => {
   mockIPC(() => {
     throw { code: "db", message: "boom" };
@@ -123,4 +134,24 @@ it("wraps structured errors from reset_app_data", async () => {
     throw { code: "io", message: "boom" };
   });
   await expect(resetAppData()).rejects.toBeInstanceOf(ApiError);
+});
+
+it("calls uninstall_app with no arguments", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "uninstall_app") {
+      received = args;
+      return null;
+    }
+    return undefined;
+  });
+  await uninstallApp();
+  expect(received).toEqual({});
+});
+
+it("wraps structured errors from uninstall_app", async () => {
+  mockIPC(() => {
+    throw { code: "unsupported", message: "not running from an installed .app bundle" };
+  });
+  await expect(uninstallApp()).rejects.toBeInstanceOf(ApiError);
 });

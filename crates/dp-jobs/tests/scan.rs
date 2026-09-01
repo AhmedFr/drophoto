@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{
-    DpResult, Drive, DriveRole, MediaKind, MediaRow, NewDrive, NewMedia, NewSource, ScanIndexEntry, Source,
-    PREVIEW_EDGE_MAX,
+    DpError, DpResult, Drive, DriveRole, MediaKind, MediaMetadata, MediaRow, NewDrive, NewMedia, NewSource,
+    ScanIndexEntry, Source, PREVIEW_EDGE_MAX,
 };
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobCtx, JobEvent, JobRunner, ScanDeps, ScanJob};
-use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, Sidecars};
+use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, MetadataProvider, Sidecars};
 use dp_thumbs::{ThumbChain, ThumbStore};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -124,6 +124,39 @@ impl Sidecars for CountingSidecars {
     async fn read_subjects(&self, media_path: &Path) -> DpResult<Vec<String>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         ExiftoolSidecars::from_path().read_subjects(media_path).await
+    }
+}
+
+/// A [`MetadataProvider`] wrapper that counts every `read` call while
+/// delegating the real work to a fresh [`ExiftoolProvider`] — the Task
+/// 5b.3 metadata-backfill tests use this to prove a skip-eligible row's
+/// backfill reads metadata exactly once per file, and that an
+/// already-backfilled row is never re-read by a later scan.
+struct CountingMetadata {
+    calls: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl MetadataProvider for CountingMetadata {
+    async fn read(&self, path: &Path) -> DpResult<MediaMetadata> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        ExiftoolProvider::from_path().read(path).await
+    }
+}
+
+/// A [`MetadataProvider`] that always fails exactly the way a missing
+/// `exiftool` binary does — used to simulate the pre-Task-5b.3 bundled-app
+/// bug (every metadata read failing with "not found on PATH") without
+/// actually needing to uninstall exiftool from the test environment.
+struct FailingMetadata;
+
+#[async_trait::async_trait]
+impl MetadataProvider for FailingMetadata {
+    async fn read(&self, _path: &Path) -> DpResult<MediaMetadata> {
+        Err(DpError::Sidecar {
+            tool: "exiftool".into(),
+            message: "exiftool not found on PATH".into(),
+        })
     }
 }
 
@@ -707,7 +740,7 @@ async fn run_direct_with_pre_cancelled_token_flags_cancelled_and_processes_nothi
     let cancel = CancellationToken::new();
     cancel.cancel();
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx { events: tx, cancel };
+    let ctx = JobCtx::new(tx, cancel);
 
     let outcome = job.run(ctx).await.unwrap();
 
@@ -743,10 +776,7 @@ async fn run_direct_with_live_token_processes_everything_and_flags_not_cancelled
     // A token that is never cancelled — proves `cancelled` is derived from
     // an actual early exit, not merely the token's live/dead state.
     let (tx, _rx) = mpsc::channel(64);
-    let ctx = JobCtx {
-        events: tx,
-        cancel: CancellationToken::new(),
-    };
+    let ctx = JobCtx::new(tx, CancellationToken::new());
 
     let outcome = job.run(ctx).await.unwrap();
 
@@ -2246,5 +2276,216 @@ async fn sidecar_newer_than_recorded_baseline_reimports_once_then_converges() {
         reads.load(Ordering::SeqCst),
         1,
         "the sidecar must converge: no further reads once its mtime has been recorded"
+    );
+}
+
+/// A [`MetadataProvider`] that counts calls and always succeeds with an
+/// *empty* [`MediaMetadata`] — standing in for a real file that simply has
+/// no EXIF. A successful-but-empty read must still stamp `meta_read_at`,
+/// or the backfill would re-read such files on every scan forever.
+struct EmptyMetadata {
+    calls: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl MetadataProvider for EmptyMetadata {
+    async fn read(&self, _path: &Path) -> DpResult<MediaMetadata> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(MediaMetadata::default())
+    }
+}
+
+/// Task 5b.3 backfill: a skip-eligible row whose metadata was never
+/// successfully read (here: the first scan's reads all failed, exactly
+/// like the bundled-app "exiftool not found on PATH" bug) gets exactly one
+/// metadata read on the next incremental scan — with ZERO re-hashing — and
+/// converges: a third scan reads nothing.
+#[tokio::test]
+async fn metadata_backfill_reads_once_with_zero_hashes_then_converges() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("a.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Backfill Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    // First scan: every metadata read fails (the pre-5b.3 bundled-app
+    // bug) — the row is upserted with empty metadata and NULL meta_read_at.
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.metadata = Arc::new(FailingMetadata);
+    let (events, terminal) = run_scan(drive.clone(), vec![src.clone()], deps, no_index()).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!((ok, failed), (0, 1), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    let index = scan_index(&catalog, drive.id).await;
+    assert!(index.values().all(|e| e.meta_read_at.is_none()));
+
+    // Second scan: metadata works again — the backfill reads exactly once,
+    // hashes NOTHING, counts the file as ok, and stamps meta_read_at.
+    let meta_calls = Arc::new(AtomicU64::new(0));
+    let hash_calls = Arc::new(AtomicU64::new(0));
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.metadata = Arc::new(CountingMetadata {
+        calls: meta_calls.clone(),
+    });
+    deps.hasher = Arc::new(CountingHasher {
+        calls: hash_calls.clone(),
+    });
+    let (events, terminal) = run_scan(drive.clone(), vec![src.clone()], deps, index).await;
+    match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => {
+            assert_eq!((ok, failed, skipped), (1, 0, 0), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    assert_eq!(
+        meta_calls.load(Ordering::SeqCst),
+        1,
+        "one read per backfilled file"
+    );
+    assert_eq!(
+        hash_calls.load(Ordering::SeqCst),
+        0,
+        "backfill must never re-hash"
+    );
+
+    let index = scan_index(&catalog, drive.id).await;
+    assert!(index.values().all(|e| e.meta_read_at.is_some()));
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(
+        rows[0].width.is_some(),
+        "the backfilled metadata must actually land"
+    );
+
+    // Third scan: already backfilled — zero further reads, plain skip.
+    let mut deps = default_deps(catalog.clone(), store);
+    deps.metadata = Arc::new(CountingMetadata {
+        calls: meta_calls.clone(),
+    });
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive, vec![src], deps, index).await;
+    match terminal {
+        JobEvent::Finished { ok, skipped, .. } => {
+            assert_eq!((ok, skipped), (0, 1), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    assert_eq!(
+        meta_calls.load(Ordering::SeqCst),
+        1,
+        "no re-read once meta_read_at is stamped"
+    );
+}
+
+/// A backfill whose metadata read fails counts the file as failed, leaves
+/// `meta_read_at` NULL, and is retried on the next scan — correct while
+/// the tool is genuinely missing.
+#[tokio::test]
+async fn failed_metadata_backfill_counts_failed_and_stays_retryable() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("a.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Retry Backfill Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.metadata = Arc::new(FailingMetadata);
+    let (_events, _terminal) = run_scan(drive.clone(), vec![src.clone()], deps, no_index()).await;
+
+    // Incremental scan with the tool still broken: the backfill attempt
+    // fails, counts as failed (visible in the readout), and leaves the row
+    // retryable.
+    let mut deps = default_deps(catalog.clone(), store);
+    deps.metadata = Arc::new(FailingMetadata);
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive.clone(), vec![src], deps, index).await;
+    match terminal {
+        JobEvent::Finished {
+            ok, failed, skipped, ..
+        } => {
+            assert_eq!((ok, failed, skipped), (0, 1, 0), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    let index = scan_index(&catalog, drive.id).await;
+    assert!(
+        index.values().all(|e| e.meta_read_at.is_none()),
+        "a failed backfill must stay retryable"
+    );
+}
+
+/// A successful read that finds NO metadata still stamps `meta_read_at` —
+/// a genuinely metadata-less file must not be re-read on every scan
+/// forever.
+#[tokio::test]
+async fn metadata_less_file_still_stamps_meta_read_at_and_converges() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("a.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Empty Metadata Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.metadata = Arc::new(FailingMetadata);
+    let (_events, _terminal) = run_scan(drive.clone(), vec![src.clone()], deps, no_index()).await;
+
+    // Backfill with a read that succeeds but finds nothing.
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.metadata = Arc::new(EmptyMetadata { calls: calls.clone() });
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive.clone(), vec![src.clone()], deps, index).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!((ok, failed), (1, 0), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // Converged: the next scan reads nothing.
+    let mut deps = default_deps(catalog.clone(), store);
+    deps.metadata = Arc::new(EmptyMetadata { calls: calls.clone() });
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive, vec![src], deps, index).await;
+    match terminal {
+        JobEvent::Finished { skipped, .. } => assert_eq!(skipped, 1, "events: {events:?}"),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "empty metadata must not be re-read forever"
     );
 }

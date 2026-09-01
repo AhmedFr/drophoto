@@ -12,8 +12,6 @@ use dp_hash::Hasher;
 use dp_metadata::{sidecar_path, MetadataProvider, Sidecars};
 use dp_thumbs::{render_edge_for_slot, ThumbChain, ThumbStore, THUMB_SIZES};
 use futures::stream::{self, StreamExt};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::prune::prune_denied_legacy_rows;
@@ -146,9 +144,8 @@ impl Job for ScanJob {
         // nested-source dedup that depends on it and the walk itself —
         // runs entirely inside `spawn_blocking` rather than on the async
         // worker thread.
-        let walk_cancel = ctx.cancel.clone();
+        let walk_ctx = ctx.clone();
         let walk_home = self.deps.home.clone();
-        let walk_events = ctx.events.clone();
         let walk_job_id = self.id.clone();
         let walk_mount_path = mount_path.clone();
         let (mount, walk) = tokio::task::spawn_blocking(move || -> DpResult<(PathBuf, WalkResult)> {
@@ -157,14 +154,7 @@ impl Job for ScanJob {
                 path: Some(walk_mount_path.clone()),
             })?;
             let sources = dedup_nested_sources(&mount, sources);
-            let result = collect_media_files(
-                &mount,
-                &sources,
-                walk_home.as_deref(),
-                &walk_cancel,
-                &walk_job_id,
-                &walk_events,
-            );
+            let result = collect_media_files(&mount, &sources, walk_home.as_deref(), &walk_ctx, &walk_job_id);
             Ok((mount, result))
         })
         .await
@@ -393,18 +383,14 @@ fn dedup_nested_sources(mount: &Path, sources: Vec<Source>) -> Vec<(Source, Path
 /// starting `"Scanning "` — a distinct, lightweight signal (from the
 /// per-file progress emitted later, once the walk is done and processing
 /// starts) that the walk itself is still under way. Called from the
-/// blocking walk thread via `Sender::blocking_send`, which is safe here
-/// since this runs outside the async runtime (inside
+/// blocking walk thread via [`JobCtx::progress_blocking`], which is safe
+/// here since this runs outside the async runtime (inside
 /// `spawn_blocking`) — it never contends with the receiver, which is a
-/// separate always-draining task. Silently drops the event if the
+/// separate always-draining task. Coalesced (like every other `Progress`
+/// event) through `ctx`'s shared gate, and silently drops the event if the
 /// receiver has gone away.
-fn emit_walk_progress(job_id: &str, events: &mpsc::Sender<JobEvent>, current: &str) {
-    let _ = events.blocking_send(JobEvent::Progress {
-        job_id: job_id.to_string(),
-        done: 0,
-        total: 0,
-        current: Some(current.to_string()),
-    });
+fn emit_walk_progress(job_id: &str, ctx: &JobCtx, current: &str) {
+    ctx.progress_blocking(job_id, 0, 0, Some(current.to_string()));
 }
 
 /// Walks every entry of `sources` (each `(source, root)` pair already
@@ -417,22 +403,21 @@ fn emit_walk_progress(job_id: &str, events: &mpsc::Sender<JobEvent>, current: &s
 /// [`tokio::task::spawn_blocking`]): checks `cancel` on each entry so a
 /// long walk can be interrupted, records (rather than silently dropping)
 /// any entry walkdir fails to read, and emits a lightweight walk-progress
-/// event via `events` once at the start of each source and at most every
+/// event via `ctx` once at the start of each source and at most every
 /// [`WALK_PROGRESS_INTERVAL`] entries thereafter.
 fn collect_media_files(
     mount: &Path,
     sources: &[(Source, PathBuf)],
     home: Option<&Path>,
-    cancel: &CancellationToken,
+    ctx: &JobCtx,
     job_id: &str,
-    events: &mpsc::Sender<JobEvent>,
 ) -> WalkResult {
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut stopped_early = false;
 
     'sources: for (source, root) in sources {
-        emit_walk_progress(job_id, events, &format!("Scanning {}", dir_label(root, mount)));
+        emit_walk_progress(job_id, ctx, &format!("Scanning {}", dir_label(root, mount)));
 
         let walker = WalkDir::new(root)
             .into_iter()
@@ -440,7 +425,7 @@ fn collect_media_files(
 
         let mut entries_since_progress: u64 = 0;
         for entry in walker {
-            if cancel.is_cancelled() {
+            if ctx.cancel.is_cancelled() {
                 stopped_early = true;
                 break 'sources;
             }
@@ -463,7 +448,7 @@ fn collect_media_files(
                     entry.path().parent().unwrap_or(mount)
                 };
                 let label = dir_label(dir_path, mount);
-                emit_walk_progress(job_id, events, &format!("Scanning {label}"));
+                emit_walk_progress(job_id, ctx, &format!("Scanning {label}"));
             }
 
             if !entry.file_type().is_file() {
@@ -588,6 +573,38 @@ async fn process_file(
             sidecar_baseline,
         )
         .await;
+
+        // Task 5b.3 metadata backfill: a skip-eligible row whose metadata
+        // was never successfully read (every pre-0009 row, plus any row
+        // whose read has failed every scan since — e.g. because
+        // exiftool/ffmpeg weren't on PATH in a bundled build) gets its
+        // metadata re-read here, without re-hashing or re-thumbnailing.
+        // Real work happens on success, so it counts as `ok`, not
+        // `skipped`; a failure reports the item error and leaves
+        // `meta_read_at` NULL so it's retried on the next scan too.
+        if m.meta_read_at.is_none() {
+            match deps.metadata.read(&file.path).await {
+                Ok(metadata) => {
+                    if let Err(e) = deps
+                        .catalog
+                        .update_media_metadata(m.id, &metadata, Utc::now())
+                        .await
+                    {
+                        report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                        failed.fetch_add(1, Ordering::SeqCst);
+                    } else {
+                        ok.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                Err(e) => {
+                    report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                    failed.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            advance_progress(ctx, job_id, done, total, &rel).await;
+            return;
+        }
+
         skipped.fetch_add(1, Ordering::SeqCst);
         advance_progress(ctx, job_id, done, total, &rel).await;
         return;
@@ -688,12 +705,12 @@ async fn process_file(
         return;
     }
 
-    let metadata = match deps.metadata.read(&file.path).await {
-        Ok(m) => m,
+    let (metadata, metadata_read_ok) = match deps.metadata.read(&file.path).await {
+        Ok(m) => (m, true),
         Err(e) => {
             had_error = true;
             report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
-            MediaMetadata::default()
+            (MediaMetadata::default(), false)
         }
     };
 
@@ -708,8 +725,11 @@ async fn process_file(
         height: metadata.height,
         duration_ms: metadata.duration_ms,
         taken_at: metadata.taken_at,
-        camera: metadata.camera,
-        lens: metadata.lens,
+        // Cloned (not moved) — `metadata` is needed again below, by
+        // reference, to record `meta_read_at` via `update_media_metadata`
+        // once the row's id is known.
+        camera: metadata.camera.clone(),
+        lens: metadata.lens.clone(),
         aperture: metadata.aperture,
         shutter: metadata.shutter,
         iso: metadata.iso,
@@ -723,6 +743,24 @@ async fn process_file(
 
     match deps.catalog.upsert_media(new_media).await {
         Ok(media_id) => {
+            // `meta_read_at` is deliberately not part of `NewMedia`/
+            // `upsert_media`'s own SQL (see `Catalog::update_media_metadata`'s
+            // doc comment) — a successful read stamps it via this narrow
+            // follow-up call instead, the same call the incremental-rescan
+            // metadata-backfill path (above) makes for a skip-eligible row.
+            // A read that failed (`metadata_read_ok: false`) leaves the
+            // column NULL — already-upserted with `MediaMetadata::default()`
+            // — so it's retried on every subsequent scan until it succeeds.
+            if metadata_read_ok {
+                if let Err(e) = deps
+                    .catalog
+                    .update_media_metadata(media_id, &metadata, Utc::now())
+                    .await
+                {
+                    had_error = true;
+                    report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                }
+            }
             import_sidecar_tags(ctx, deps, job_id, drive_id, &file.path, &rel, media_id).await;
         }
         Err(e) => {
@@ -752,6 +790,10 @@ struct SkipMatch {
     /// The row's stored sidecar mtime, if one was ever recorded — see
     /// [`ScanIndexEntry::sidecar_mtime`].
     sidecar_mtime: Option<DateTime<Utc>>,
+    /// The row's stored metadata-read timestamp, if a read has ever
+    /// succeeded — see [`ScanIndexEntry::meta_read_at`]. `None` triggers
+    /// the metadata-backfill path in [`process_file`].
+    meta_read_at: Option<DateTime<Utc>>,
 }
 
 /// Whether a walked file (`rel`, with live stat `size`/`mtime`, owned by
@@ -799,6 +841,7 @@ fn find_skip_match(
         id: entry.id,
         row_mtime,
         sidecar_mtime: entry.sidecar_mtime,
+        meta_read_at: entry.meta_read_at,
     })
 }
 
@@ -937,15 +980,7 @@ async fn import_sidecar_tags(
 
 async fn advance_progress(ctx: &JobCtx, job_id: &str, done: &AtomicU64, total: u64, current: &str) {
     let d = done.fetch_add(1, Ordering::SeqCst) + 1;
-    let _ = ctx
-        .events
-        .send(JobEvent::Progress {
-            job_id: job_id.to_string(),
-            done: d,
-            total,
-            current: Some(current.to_string()),
-        })
-        .await;
+    ctx.progress(job_id, d, total, Some(current.to_string())).await;
 }
 
 async fn report_item_error(

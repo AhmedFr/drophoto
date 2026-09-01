@@ -103,15 +103,7 @@ impl Job for RegenJob {
             }
 
             let done = index as u64 + 1;
-            let _ = ctx
-                .events
-                .send(JobEvent::Progress {
-                    job_id: self.id.clone(),
-                    done,
-                    total,
-                    current: Some(hash),
-                })
-                .await;
+            ctx.progress(&self.id, done, total, Some(hash)).await;
         }
 
         Ok(JobOutcome {

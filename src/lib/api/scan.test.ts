@@ -1,5 +1,5 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { startScan, cancelJob } from "./scan";
+import { startScan, cancelJob, countScanErrors, listScanErrors } from "./scan";
 import { ApiError } from "./client";
 
 it("starts an incremental scan by default", async () => {
@@ -46,4 +46,34 @@ it("cancels a job by id", async () => {
   });
   await cancelJob("scan-0");
   expect(received).toEqual({ jobId: "scan-0" });
+});
+
+it("counts a drive's scan errors", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "count_scan_errors") {
+      received = args;
+      return 3;
+    }
+    return undefined;
+  });
+  await expect(countScanErrors(1)).resolves.toBe(3);
+  expect(received).toEqual({ driveId: 1 });
+});
+
+it("lists a page of a drive's scan errors", async () => {
+  let received: unknown;
+  const rows = [
+    { id: 2, drive_id: 1, path: "b.jpg", code: "io", message: "boom", at: "2024-01-02T00:00:00Z" },
+    { id: 1, drive_id: 1, path: "a.jpg", code: "stub", message: "too small", at: "2024-01-01T00:00:00Z" },
+  ];
+  mockIPC((cmd, args) => {
+    if (cmd === "list_scan_errors") {
+      received = args;
+      return rows;
+    }
+    return undefined;
+  });
+  await expect(listScanErrors(1, 100, 0)).resolves.toEqual(rows);
+  expect(received).toEqual({ driveId: 1, limit: 100, offset: 0 });
 });

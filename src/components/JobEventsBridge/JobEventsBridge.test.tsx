@@ -111,7 +111,11 @@ it("shows an error toast when finished with failures", async () => {
 
   await emit("job", { kind: "finished", job_id: "scan-0", ok: 5, failed: 2, skipped: 0 });
 
-  await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Scan finished with 2 errors"));
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith(
+      "Scan finished with 2 errors — see the drive's Errors list",
+    ),
+  );
 });
 
 it("shows a neutral toast with the ok tally on cancelled", async () => {
