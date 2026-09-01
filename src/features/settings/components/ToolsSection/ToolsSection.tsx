@@ -19,7 +19,7 @@ type ToolRow = {
  * `brew install` one-liner that fixes it. The snapshot is from app launch:
  * installing a tool while the app runs needs a relaunch to register.
  */
-export function ToolsSection({ tools, loading }: ToolsSectionProps) {
+export function ToolsSection({ tools, loading, error }: ToolsSectionProps) {
   const rows: ToolRow[] | null = tools
     ? [
         {
@@ -40,6 +40,8 @@ export function ToolsSection({ tools, loading }: ToolsSectionProps) {
       <div className="flex items-center px-6 pt-5 pb-2">
         <span className="font-mono text-[9px] tracking-[2px] text-faint">TOOLS</span>
       </div>
+
+      {error && <p className="px-6 pb-2 font-mono text-[11px] text-red-400">{error}</p>}
 
       {loading && !rows ? (
         <p className="px-6 pb-6 font-mono text-[11px] text-faint">Checking tools…</p>

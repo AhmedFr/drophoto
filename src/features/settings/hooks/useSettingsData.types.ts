@@ -8,6 +8,7 @@ export type UseSettingsDataResult = {
   /** Startup snapshot of where exiftool/ffmpeg were found — `null` until the `tool_health` query resolves. */
   tools: ToolHealth | null;
   toolsLoading: boolean;
+  toolsError: string | null;
 
   storage: StorageUsage | null;
   /** True only while the *first* `storage_usage` call is in flight. */

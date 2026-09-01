@@ -15,6 +15,7 @@ export function SettingsPage() {
     settingsError,
     tools,
     toolsLoading,
+    toolsError,
     storage,
     storageLoading,
     storageError,
@@ -48,7 +49,7 @@ export function SettingsPage() {
           onRefresh={refreshStorage}
         />
 
-        <ToolsSection tools={tools} loading={toolsLoading} />
+        <ToolsSection tools={tools} loading={toolsLoading} error={toolsError} />
 
         {settingsError && <p className="px-6 pb-2 font-mono text-[11px] text-red-400">{settingsError}</p>}
 

@@ -83,6 +83,7 @@ export function useSettingsData(): UseSettingsDataResult {
 
     tools: toolsQuery.data ?? null,
     toolsLoading: toolsQuery.isLoading,
+    toolsError: toolsQuery.error ? (toolsQuery.error as Error).message : null,
 
     storage: storageQuery.data ?? null,
     storageLoading: storageQuery.isLoading,
