@@ -204,6 +204,74 @@ it("locks page scroll while open", async () => {
   });
 });
 
+it("toggles fullscreen, hiding and reshowing the metadata panel", async () => {
+  const user = userEvent.setup();
+  renderLightbox({ items: items(3), index: 0, onClose: vi.fn(), onPrev: vi.fn(), onNext: vi.fn() });
+
+  expect(screen.getByRole("button", { name: /reveal in finder/i })).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Enter full screen" }));
+
+  expect(screen.queryByRole("button", { name: /reveal in finder/i })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Exit full screen" }));
+
+  expect(screen.getByRole("button", { name: /reveal in finder/i })).toBeInTheDocument();
+});
+
+it("exits fullscreen on the first Escape, and closes on the second", async () => {
+  const onClose = vi.fn();
+  const user = userEvent.setup();
+  renderLightbox({ items: items(3), index: 0, onClose, onPrev: vi.fn(), onNext: vi.fn() });
+
+  await user.click(screen.getByRole("button", { name: "Enter full screen" }));
+  expect(screen.getByRole("button", { name: "Exit full screen" })).toBeInTheDocument();
+
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+  await waitFor(() => expect(screen.getByRole("button", { name: "Enter full screen" })).toBeInTheDocument());
+  expect(onClose).not.toHaveBeenCalled();
+
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+});
+
+it("still navigates with the arrow keys while fullscreen", async () => {
+  const onNext = vi.fn();
+  const user = userEvent.setup();
+  renderLightbox({ items: items(3), index: 0, onClose: vi.fn(), onPrev: vi.fn(), onNext });
+
+  await user.click(screen.getByRole("button", { name: "Enter full screen" }));
+  fireEvent.keyDown(window, { key: "ArrowRight" });
+
+  expect(onNext).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the prev/next buttons working while fullscreen", async () => {
+  const onNext = vi.fn();
+  const user = userEvent.setup();
+  renderLightbox({ items: items(3), index: 0, onClose: vi.fn(), onPrev: vi.fn(), onNext });
+
+  await user.click(screen.getByRole("button", { name: "Enter full screen" }));
+  await user.click(screen.getByRole("button", { name: /next/i }));
+
+  expect(onNext).toHaveBeenCalledTimes(1);
+});
+
+it("toggles fullscreen on double-clicking the image", async () => {
+  const user = userEvent.setup();
+  renderLightbox({ items: items(3), index: 0, onClose: vi.fn(), onPrev: vi.fn(), onNext: vi.fn() });
+
+  await user.dblClick(screen.getByRole("img"));
+
+  expect(screen.getByRole("button", { name: "Exit full screen" })).toBeInTheDocument();
+
+  await user.dblClick(screen.getByRole("img"));
+
+  expect(screen.getByRole("button", { name: "Enter full screen" })).toBeInTheDocument();
+});
+
 // The end-to-end shape of the arrow-keys-in-a-text-field bug: the tag
 // panel's filter is a plain `<input>` inside the open lightbox, and the
 // arrow-key listener is bound on `window`, so moving the caret inside it

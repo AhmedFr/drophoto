@@ -1,5 +1,5 @@
-import type { MouseEvent } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useState, type MouseEvent } from "react";
+import { ChevronLeft, ChevronRight, Maximize2, Minimize2 } from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { useKeyboardNav } from "@/lib/hooks/useKeyboardNav";
 import { basename } from "@/lib/media/format";
@@ -21,6 +21,11 @@ export function Lightbox({
 }: LightboxProps) {
   const item = items[index];
 
+  // Per-session only — reset every time a fresh `Lightbox` mounts (i.e.
+  // whenever the lightbox is (re)opened), never persisted.
+  const [fullscreen, setFullscreen] = useState(false);
+  const toggleFullscreen = () => setFullscreen((f) => !f);
+
   // Escape is already handled by Radix's `Dialog.Content` (via its
   // focus-trapping `DismissableLayer`, which calls `onOpenChange(false)` ->
   // `onClose`), so `onClose` is intentionally omitted here — wiring it to
@@ -41,7 +46,22 @@ export function Lightbox({
     <DialogPrimitive.Root
       open
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (open) return;
+        // `open` here is always the hardcoded `true` above — this Root
+        // never actually closes on its own — so intercepting the
+        // Escape-driven `onOpenChange(false)` call (from Radix's
+        // `DismissableLayer`) to exit fullscreen first, instead of calling
+        // `onClose`, is safe: the dialog stays mounted either way, and a
+        // second Escape (fullscreen now `false`) falls through to `onClose`
+        // as before. Any `TagPanel`/`PlacePanel` open, or an active
+        // selection, still take precedence over both — `GalleryPage`'s own
+        // document-capture-phase Escape handler decides whether this
+        // callback is even reached, unchanged by fullscreen.
+        if (fullscreen) {
+          setFullscreen(false);
+          return;
+        }
+        onClose();
       }}
     >
       <DialogPrimitive.Portal>
@@ -57,7 +77,7 @@ export function Lightbox({
           <DialogPrimitive.Title className="sr-only">{basename(item.row.rel_path)}</DialogPrimitive.Title>
 
           <div className="flex flex-1 flex-col">
-            <div className="flex items-center justify-between p-6">
+            <div className="relative z-10 flex items-center justify-between p-6">
               <button
                 type="button"
                 onClick={(e) => {
@@ -68,12 +88,31 @@ export function Lightbox({
               >
                 CLOSE
               </button>
-              <span className="font-mono text-[10.5px] tracking-[1.5px] text-dim">
-                {String(index + 1).padStart(2, "0")} / {items.length}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-[10.5px] tracking-[1.5px] text-dim">
+                  {String(index + 1).padStart(2, "0")} / {items.length}
+                </span>
+                <button
+                  type="button"
+                  aria-label={fullscreen ? "Exit full screen" : "Enter full screen"}
+                  className={navButtonClass}
+                  onClick={(e) => {
+                    stop(e);
+                    toggleFullscreen();
+                  }}
+                >
+                  {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </button>
+              </div>
             </div>
 
-            <div className="flex flex-1 items-center justify-center gap-4 overflow-hidden px-6 pb-6">
+            <div
+              className={
+                fullscreen
+                  ? "fixed inset-0 z-0 flex items-center justify-center gap-4 bg-black"
+                  : "flex flex-1 items-center justify-center gap-4 overflow-hidden px-6 pb-6"
+              }
+            >
               <button
                 type="button"
                 aria-label="Previous"
@@ -86,7 +125,9 @@ export function Lightbox({
                 <ChevronLeft size={16} />
               </button>
 
-              <LightboxImage key={item.row.id} item={item} />
+              <div onDoubleClick={toggleFullscreen}>
+                <LightboxImage key={item.row.id} item={item} />
+              </div>
 
               <button
                 type="button"
@@ -102,17 +143,19 @@ export function Lightbox({
             </div>
           </div>
 
-          <aside
-            className="w-[372px] shrink-0 overflow-y-auto border-l border-border bg-[#0b0b0a] p-6"
-            onClick={stop}
-          >
-            <MetaPanel
-              key={item.row.id}
-              item={item}
-              onTagPanelOpenChange={onTagPanelOpenChange}
-              onPlacePanelOpenChange={onPlacePanelOpenChange}
-            />
-          </aside>
+          {!fullscreen && (
+            <aside
+              className="w-[372px] shrink-0 overflow-y-auto border-l border-border bg-[#0b0b0a] p-6"
+              onClick={stop}
+            >
+              <MetaPanel
+                key={item.row.id}
+                item={item}
+                onTagPanelOpenChange={onTagPanelOpenChange}
+                onPlacePanelOpenChange={onPlacePanelOpenChange}
+              />
+            </aside>
+          )}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
