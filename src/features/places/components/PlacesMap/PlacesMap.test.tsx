@@ -101,3 +101,13 @@ it("syncs markers when placeCounts changes, without recreating the map", () => {
   expect(maplibreSpies.maps).toHaveLength(1);
   expect(maplibreSpies.maps[0].markers).toHaveLength(2);
 });
+
+// Regression: the packaged app is served from `tauri://localhost`, where
+// MapLibre v6's own worker-URL detection (`import.meta.url` must be
+// http(s)) returns "" and the worker dies silently — the map rendered as
+// a black canvas with no error events. The module must pin the worker to
+// the Vite-bundled chunk instead.
+it("pins MapLibre's worker to the bundled chunk at module load", () => {
+  expect(typeof maplibreSpies.workerUrl).toBe("string");
+  expect(maplibreSpies.workerUrl!.length).toBeGreaterThan(0);
+});

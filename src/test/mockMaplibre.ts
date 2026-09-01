@@ -63,7 +63,7 @@ export class FakeMap {
   }
 }
 
-export type MaplibreSpies = { maps: FakeMap[]; markers: FakeMarker[] };
+export type MaplibreSpies = { maps: FakeMap[]; markers: FakeMarker[]; workerUrl?: string };
 
 /**
  * Factory for a `maplibre-gl` mock. `maplibre-gl` only has named exports
@@ -92,7 +92,13 @@ export function maplibreMockFactory(spies: MaplibreSpies) {
       spies.markers.push(this);
     }
   }
-  return { Map, Marker };
+  // `PlacesMap` calls `setWorkerUrl` at module scope (the packaged app's
+  // `tauri://` origin defeats MapLibre's own worker-URL detection), so the
+  // mock records what it was called with for the regression test.
+  function setWorkerUrl(url: string) {
+    spies.workerUrl = url;
+  }
+  return { Map, Marker, setWorkerUrl };
 }
 
 /** Convenience for tests that don't need to assert on spy contents directly (e.g. just rendering `PlacesPage`). */

@@ -1,8 +1,19 @@
 import { useEffect, useRef } from "react";
-import { Map as MaplibreMap, Marker } from "maplibre-gl";
+import { Map as MaplibreMap, Marker, setWorkerUrl } from "maplibre-gl";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { PLACES_MAP_STYLE_URL } from "./PlacesMap.constants";
 import type { PlacesMapProps } from "./PlacesMap.types";
+
+// MapLibre v6 derives its default worker URL from `import.meta.url` and
+// gives up with an empty string when the page isn't served over http(s) —
+// which a packaged Tauri app never is (`tauri://localhost`). The worker
+// then dies instantly with a message-less error event, no tile ever
+// parses, and the map stays a silent black canvas (dev is served over
+// http, so this only ever bit the installed app). Point it at the worker
+// chunk Vite bundles for us instead — a real file served from 'self',
+// covered by the CSP's `worker-src 'self'`.
+setWorkerUrl(maplibreWorkerUrl);
 
 /**
  * The map pane of `PlacesPage`: one marker per place, labeled with its
