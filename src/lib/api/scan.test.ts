@@ -1,5 +1,5 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { startScan, cancelJob, countScanErrors, listScanErrors } from "./scan";
+import { startScan, cancelJob, countScanErrors, listScanErrors, scanErrorCodeCounts } from "./scan";
 import { ApiError } from "./client";
 
 it("starts an incremental scan by default", async () => {
@@ -76,4 +76,21 @@ it("lists a page of a drive's scan errors", async () => {
   });
   await expect(listScanErrors(1, 100, 0)).resolves.toEqual(rows);
   expect(received).toEqual({ driveId: 1, limit: 100, offset: 0 });
+});
+
+it("gets a drive's scan-error code counts", async () => {
+  let received: unknown;
+  const counts = [
+    { code: "io", count: 5 },
+    { code: "db", count: 2 },
+  ];
+  mockIPC((cmd, args) => {
+    if (cmd === "scan_error_code_counts") {
+      received = args;
+      return counts;
+    }
+    return undefined;
+  });
+  await expect(scanErrorCodeCounts(1)).resolves.toEqual(counts);
+  expect(received).toEqual({ driveId: 1 });
 });

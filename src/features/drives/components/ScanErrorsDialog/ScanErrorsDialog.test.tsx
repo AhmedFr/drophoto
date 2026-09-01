@@ -40,6 +40,7 @@ it("shows the empty state when the drive has no scan errors", async () => {
   mockIPC((cmd) => {
     if (cmd === "count_scan_errors") return 0;
     if (cmd === "list_scan_errors") return [];
+    if (cmd === "scan_error_code_counts") return [];
     return undefined;
   });
   renderDialog({ drive });
@@ -51,6 +52,7 @@ it("lists rows with path, code, and message, and shows the total count in the ti
   mockIPC((cmd) => {
     if (cmd === "count_scan_errors") return 2;
     if (cmd === "list_scan_errors") return [row(2, "b.jpg", "stub", "too small"), row(1, "a.jpg", "io", "boom")];
+    if (cmd === "scan_error_code_counts") return [];
     return undefined;
   });
   renderDialog({ drive });
@@ -66,6 +68,7 @@ it("puts the full path in the row's title attribute for truncation", async () =>
   mockIPC((cmd) => {
     if (cmd === "count_scan_errors") return 1;
     if (cmd === "list_scan_errors") return [row(1, "DCIM/very/deeply/nested/path/photo.jpg")];
+    if (cmd === "scan_error_code_counts") return [];
     return undefined;
   });
   renderDialog({ drive });
@@ -85,6 +88,7 @@ it("pages via Load more, requesting the next offset", async () => {
       const offset = (args as { offset: number }).offset;
       return offset === 0 ? fullPage : [row(1, "f1.jpg")];
     }
+    if (cmd === "scan_error_code_counts") return [];
     return undefined;
   });
   renderDialog({ drive });
@@ -101,6 +105,7 @@ it("hides Load more once every row is loaded", async () => {
   mockIPC((cmd) => {
     if (cmd === "count_scan_errors") return 1;
     if (cmd === "list_scan_errors") return [row(1, "a.jpg")];
+    if (cmd === "scan_error_code_counts") return [];
     return undefined;
   });
   renderDialog({ drive });
@@ -113,6 +118,7 @@ it("closes via onOpenChange when dismissed", async () => {
   mockIPC((cmd) => {
     if (cmd === "count_scan_errors") return 0;
     if (cmd === "list_scan_errors") return [];
+    if (cmd === "scan_error_code_counts") return [];
     return undefined;
   });
   const onClose = vi.fn();
@@ -121,4 +127,50 @@ it("closes via onOpenChange when dismissed", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: /close/i }));
   expect(onClose).toHaveBeenCalled();
+});
+
+it("colors each row's code chip by its severity", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "count_scan_errors") return 2;
+    if (cmd === "list_scan_errors")
+      return [row(2, "b.jpg", "db", "locked"), row(1, "a.jpg", "unsupported", "not media")];
+    if (cmd === "scan_error_code_counts") return [];
+    return undefined;
+  });
+  renderDialog({ drive });
+
+  const dbChip = await screen.findByText("db");
+  expect(dbChip).toHaveClass("text-red-400");
+  const unsupportedChip = screen.getByText("unsupported");
+  expect(unsupportedChip).toHaveClass("text-faint");
+});
+
+it("shows per-severity counts in the header, derived from the code-counts query", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "count_scan_errors") return 9;
+    if (cmd === "list_scan_errors") return [row(1, "a.jpg", "db")];
+    if (cmd === "scan_error_code_counts")
+      return [
+        { code: "db", count: 2 },
+        { code: "io", count: 5 },
+        { code: "sidecar", count: 2 },
+      ];
+    return undefined;
+  });
+  renderDialog({ drive });
+
+  expect(await screen.findByText("2 critical · 5 error · 2 warning")).toBeInTheDocument();
+});
+
+it("shows no severity summary line when there are no scan errors", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "count_scan_errors") return 0;
+    if (cmd === "list_scan_errors") return [];
+    if (cmd === "scan_error_code_counts") return [];
+    return undefined;
+  });
+  renderDialog({ drive });
+
+  await screen.findByText("No scan errors");
+  expect(screen.queryByText(/critical|warning/)).not.toBeInTheDocument();
 });

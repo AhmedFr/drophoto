@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { ScanErrorSeverityHoverCard } from "../ScanErrorSeverityHoverCard";
 import type { ScanProgressProps } from "./ScanProgress.types";
 
 /**
@@ -25,7 +26,7 @@ import type { ScanProgressProps } from "./ScanProgress.types";
  * with a huge amount of errors but no reason, no place to check the
  * errors".
  */
-export function ScanProgress({ event, onCancel, onOpenErrors }: ScanProgressProps) {
+export function ScanProgress({ event, onCancel, onOpenErrors, driveId }: ScanProgressProps) {
   if (!event) return null;
 
   const isTerminal = event.kind === "finished" || event.kind === "cancelled";
@@ -43,6 +44,30 @@ export function ScanProgress({ event, onCancel, onOpenErrors }: ScanProgressProp
   // a placeholder digit count before `total` is known (during the walk).
   const totalDigits = total > 0 ? String(total).length : 4;
 
+  const failedButton = onOpenErrors && event.kind === "finished" && event.failed > 0 && (
+    <button
+      type="button"
+      onClick={onOpenErrors}
+      className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+    >
+      {event.failed} failed
+    </button>
+  );
+  // The hover card needs a drive id to query `scan_error_code_counts`;
+  // without one (a caller that doesn't have it handy) the button still
+  // works, just without the hover repartition.
+  // `failedButton` is `false` — not `undefined` — when `failed === 0` or
+  // `onOpenErrors` is absent, so it can't be used as the `??` fallback
+  // trigger directly (`false ?? …` is still `false`). Normalizing to `null`
+  // here lets the `?? \`${event.failed} failed\`` below actually engage.
+  const failedReadout = failedButton
+    ? driveId != null ? (
+        <ScanErrorSeverityHoverCard driveId={driveId}>{failedButton}</ScanErrorSeverityHoverCard>
+      ) : (
+        failedButton
+      )
+    : null;
+
   return (
     <div className="flex flex-col gap-1.5 px-5 pb-3">
       {!isTerminal && <Progress value={percent} indeterminate={isWalking} />}
@@ -54,18 +79,7 @@ export function ScanProgress({ event, onCancel, onOpenErrors }: ScanProgressProp
                 `Up to date · ${event.skipped} skipped`
               ) : (
                 <>
-                  {event.ok} ok ·{" "}
-                  {event.failed > 0 && onOpenErrors ? (
-                    <button
-                      type="button"
-                      onClick={onOpenErrors}
-                      className="underline decoration-dotted underline-offset-2 hover:text-foreground"
-                    >
-                      {event.failed} failed
-                    </button>
-                  ) : (
-                    `${event.failed} failed`
-                  )}
+                  {event.ok} ok · {failedReadout ?? `${event.failed} failed`}
                   {event.skipped > 0 ? ` · ${event.skipped} skipped` : ""}
                 </>
               )

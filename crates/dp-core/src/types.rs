@@ -293,6 +293,17 @@ pub struct ScanErrorRow {
     pub at: DateTime<Utc>,
 }
 
+/// One `code`'s share of `drive_id`'s `scan_errors` rows — returned by
+/// `Catalog::scan_error_code_counts`, grouped and ordered `count DESC`, for
+/// the severity repartition `ScanProgress`'s failed-count hover card (and
+/// `ScanErrorsDialog`'s header) show alongside [`ScanErrorRow::code`]'s
+/// severity mapping (frontend-only, see `ScanErrorSeverity`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ScanErrorCodeCount {
+    pub code: String,
+    pub count: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OrganizeRule {
     pub drive_id: i64,

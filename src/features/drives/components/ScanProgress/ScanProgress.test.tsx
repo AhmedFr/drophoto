@@ -1,10 +1,23 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { render as rtlRender, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { mockIPC } from "@tauri-apps/api/mocks";
 import { vi } from "vitest";
 import type { JobEvent } from "@/lib/api/scan";
 import { ScanProgress } from "./ScanProgress";
 
 function progressIndicatorClass(container: HTMLElement): string {
   return container.querySelector('[data-slot="progress-indicator"]')?.className ?? "";
+}
+
+// `render` (not `rtlRender`) throughout — most existing tests below don't
+// pass `driveId`, so `ScanProgress` never mounts `ScanErrorSeverityHoverCard`
+// and never touches this context, but the handful of new tests that do
+// pass `driveId` need a `QueryClient` in context, same as `DriveCard.test.tsx`.
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
 it("renders nothing when there is no event", () => {
@@ -134,4 +147,46 @@ it("renders the same fixed block (progress bar, counts row, current-file row) fo
   expect(walkBlock.children[0].getAttribute("data-slot")).toBe(
     progressBlock.children[0].getAttribute("data-slot"),
   );
+});
+
+it("wraps the failed button in a severity hover card when driveId is given, and shows the repartition on hover", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "scan_error_code_counts") return [{ code: "db", count: 2 }];
+    return undefined;
+  });
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 2, skipped: 0 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} onOpenErrors={vi.fn()} driveId={1} />);
+
+  const button = screen.getByRole("button", { name: "2 failed" });
+  await userEvent.hover(button);
+
+  expect(await screen.findByText("critical")).toBeInTheDocument();
+});
+
+it("still calls onOpenErrors when the failed button is clicked with driveId given", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "scan_error_code_counts") return [];
+    return undefined;
+  });
+  const onOpenErrors = vi.fn();
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 2, skipped: 0 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} onOpenErrors={onOpenErrors} driveId={1} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "2 failed" }));
+  expect(onOpenErrors).toHaveBeenCalled();
+});
+
+it("shows the literal '0 failed' text — not a dangling separator — for a successful scan with onOpenErrors and driveId given", () => {
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 0, skipped: 3 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} onOpenErrors={vi.fn()} driveId={1} />);
+
+  expect(screen.getByText("8 ok · 0 failed · 3 skipped")).toBeInTheDocument();
+});
+
+it("shows 'N failed' as plain text (no button) when onOpenErrors is not given, even with failures", () => {
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 3, skipped: 0 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+
+  expect(screen.getByText("8 ok · 3 failed")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /failed/i })).not.toBeInTheDocument();
 });

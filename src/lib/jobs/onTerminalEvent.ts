@@ -19,6 +19,12 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
   // after a second scan shows a freshly-invalidated header count next to
   // stale cached rows.
   ["scan-errors"],
+  // The severity repartition `ScanErrorsDialog`'s header and
+  // `ScanProgress`'s failed-count hover card both read (`["scan-error-code-
+  // counts", driveId]`) — without this, a second scan's fresh failures
+  // wouldn't shift either one's per-severity counts until a refocus or
+  // remount, same reasoning as `["scan-error-count"]` above.
+  ["scan-error-code-counts"],
 ];
 
 /**

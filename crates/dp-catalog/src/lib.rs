@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use dp_core::{
     AppSettings, DpResult, Drive, JobRunRow, MediaMetadata, MediaQuery, MediaRow, NewDrive, NewJobRun,
     NewMedia, NewPlace, NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount,
-    ScanErrorRow, ScanIndexEntry, Source, Tag, UnorganizedSummary,
+    ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, Source, Tag, UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -97,6 +97,9 @@ pub trait Catalog: Send + Sync {
     /// Pages `drive_id`'s `scan_errors` rows, newest first — see
     /// [`crate::media::list_scan_errors`]'s doc comment.
     async fn list_scan_errors(&self, drive_id: i64, limit: u32, offset: u32) -> DpResult<Vec<ScanErrorRow>>;
+    /// `drive_id`'s `scan_errors` rows grouped by `code`, count DESC — see
+    /// [`crate::media::scan_error_code_counts`]'s doc comment.
+    async fn scan_error_code_counts(&self, drive_id: i64) -> DpResult<Vec<ScanErrorCodeCount>>;
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule>;
     async fn save_rule(&self, r: &OrganizeRule) -> DpResult<()>;
     async fn list_unorganized(&self, drive_id: i64, root: &str) -> DpResult<Vec<MediaRow>>;
@@ -292,6 +295,10 @@ impl Catalog for SqliteCatalog {
 
     async fn list_scan_errors(&self, drive_id: i64, limit: u32, offset: u32) -> DpResult<Vec<ScanErrorRow>> {
         media::list_scan_errors(&self.pool, drive_id, limit, offset).await
+    }
+
+    async fn scan_error_code_counts(&self, drive_id: i64) -> DpResult<Vec<ScanErrorCodeCount>> {
+        media::scan_error_code_counts(&self.pool, drive_id).await
     }
 
     async fn get_rule(&self, drive_id: i64) -> DpResult<OrganizeRule> {

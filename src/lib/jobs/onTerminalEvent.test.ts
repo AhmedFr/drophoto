@@ -38,11 +38,22 @@ it("is a no-op for started, progress, and item_error events", () => {
   expect(toast.error).not.toHaveBeenCalled();
 });
 
-it("invalidates media, media-count, jobs, unorganized, drives, scan-error-count, and scan-errors on finished", () => {
+const SCAN_INVALIDATE_KEYS = [
+  "media",
+  "media-count",
+  "jobs",
+  "unorganized",
+  "drives",
+  "scan-error-count",
+  "scan-errors",
+  "scan-error-code-counts",
+];
+
+it("invalidates media, media-count, jobs, unorganized, drives, scan-error-count, scan-errors, and scan-error-code-counts on finished", () => {
   const { queryClient, invalidateSpy } = client();
   onTerminalEvent({ kind: "finished", job_id: "scan-0", ok: 9, failed: 0, skipped: 1 }, queryClient, "Scan");
 
-  for (const key of ["media", "media-count", "jobs", "unorganized", "drives", "scan-error-count", "scan-errors"]) {
+  for (const key of SCAN_INVALIDATE_KEYS) {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key] });
   }
 });
@@ -51,7 +62,7 @@ it("invalidates the same queries on cancelled", () => {
   const { queryClient, invalidateSpy } = client();
   onTerminalEvent({ kind: "cancelled", job_id: "scan-0", ok: 0, failed: 0, skipped: 0 }, queryClient, "Scan");
 
-  for (const key of ["media", "media-count", "jobs", "unorganized", "drives", "scan-error-count", "scan-errors"]) {
+  for (const key of SCAN_INVALIDATE_KEYS) {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key] });
   }
 });

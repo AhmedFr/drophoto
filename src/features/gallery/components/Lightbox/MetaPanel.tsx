@@ -76,9 +76,12 @@ export function MetaPanel({ item, onTagPanelOpenChange, onPlacePanelOpenChange }
   // data from `usePlaces`.
   const { placeCounts } = usePlaces();
   const place = placeCounts.find((pc) => pc.place.id === row.place_id)?.place ?? null;
+  // The geocoder's nearest known city — no neighborhood data exists in the
+  // GeoNames cities dataset it's built on, so this is as precise as the
+  // human-readable name ever gets.
   const placeLabel = place
     ? [place.name, place.admin, place.country].filter(Boolean).join(", ")
-    : "—";
+    : null;
 
   // A single-id `states` map can only ever read "all" (has the tag) or be
   // absent (doesn't) — "some" needs more than one id — so this doubles as
@@ -121,13 +124,27 @@ export function MetaPanel({ item, onTagPanelOpenChange, onPlacePanelOpenChange }
           </div>
         </MetaSection>
 
-        <MetaSection title="LOCATION">
-          <p className="py-1.5 font-mono text-[11px] text-dim">{coords || "No location data"}</p>
-        </MetaSection>
-
         <MetaSection title="PLACE">
-          <div className="flex items-center justify-between py-1.5 font-mono text-[11px]">
-            <span className="text-dim">{placeLabel}</span>
+          <div className="flex items-start justify-between py-1.5 font-mono text-[11px]">
+            {placeLabel ? (
+              // Geocoded: the human name leads, raw coords trail as a
+              // faint secondary line for anyone who wants the precise fix.
+              <div>
+                <p className="text-dim">{placeLabel}</p>
+                {coords && <p className="mt-0.5 text-faint text-[10px]">{coords}</p>}
+              </div>
+            ) : coords ? (
+              // Has coords but hasn't been geocoded yet (or was cleared) —
+              // lead with the coords and point at Places to geocode it.
+              <div>
+                <p className="text-dim">{coords}</p>
+                <p className="mt-0.5 text-faint text-[10px]">
+                  not placed yet — GEOCODE NOW on Places
+                </p>
+              </div>
+            ) : (
+              <p className="text-dim">No location data</p>
+            )}
             <button
               type="button"
               onClick={() => setPlacePanelOpen(true)}

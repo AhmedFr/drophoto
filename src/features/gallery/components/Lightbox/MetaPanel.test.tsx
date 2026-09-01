@@ -87,18 +87,6 @@ it("shows the taken date and drive name", () => {
   expect(screen.getByText("Kodachrome")).toBeInTheDocument();
 });
 
-it("shows formatted coordinates when present", () => {
-  renderPanel(item());
-
-  expect(screen.getByText("37.77°N 122.42°W")).toBeInTheDocument();
-});
-
-it("shows 'No location data' when there are no coordinates", () => {
-  renderPanel(item({ row: { ...item().row, lat: null, lon: null } }));
-
-  expect(screen.getByText("No location data")).toBeInTheDocument();
-});
-
 it("shows an OFFLINE badge and disables Reveal in Finder when offline", () => {
   renderPanel(item({ online: false }));
 
@@ -247,12 +235,7 @@ it("notifies the tag panel closed when unmounting (lightbox item change)", async
   expect(onOpenChange).toHaveBeenLastCalledWith(false);
 });
 
-it("shows '—' for PLACE when the item has no place assigned", () => {
-  renderPanel(item());
-  expect(screen.getByText("—")).toBeInTheDocument();
-});
-
-it("shows the place's name when place_id matches a place from list_place_counts", async () => {
+it("shows the place name as the primary line and coords as a faint secondary line, when both are known", async () => {
   mockIPC((cmd) => {
     if (cmd === "list_tags") return [];
     if (cmd === "tags_for_media") return [];
@@ -269,6 +252,41 @@ it("shows the place's name when place_id matches a place from list_place_counts"
   renderPanel(item({ row: { ...item().row, place_id: 5 } }));
 
   expect(await screen.findByText("Lisbon, Lisboa, Portugal")).toBeInTheDocument();
+  expect(screen.getByText("37.77°N 122.42°W")).toBeInTheDocument();
+});
+
+it("shows the place name with no secondary coords line, when a place is assigned but the photo has no GPS coords", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_tags") return [];
+    if (cmd === "tags_for_media") return [];
+    if (cmd === "list_place_counts") {
+      return [
+        {
+          place: { id: 5, lat: 38.7, lon: -9.1, name: "Lisbon", admin: "Lisboa", country: "Portugal", source: "geocoder" },
+          count: 1,
+        },
+      ];
+    }
+    return undefined;
+  });
+  renderPanel(item({ row: { ...item().row, place_id: 5, lat: null, lon: null } }));
+
+  const placeName = await screen.findByText("Lisbon, Lisboa, Portugal");
+  // No stray empty <p> for the coords secondary line — just the place name.
+  expect(placeName.parentElement?.children).toHaveLength(1);
+});
+
+it("shows coords as the primary line with a 'not placed yet' hint, when there are coords but no place", () => {
+  renderPanel(item());
+
+  expect(screen.getByText("37.77°N 122.42°W")).toBeInTheDocument();
+  expect(screen.getByText("not placed yet — GEOCODE NOW on Places")).toBeInTheDocument();
+});
+
+it("shows 'No location data' when there are neither coords nor a place", () => {
+  renderPanel(item({ row: { ...item().row, lat: null, lon: null } }));
+
+  expect(screen.getByText("No location data")).toBeInTheDocument();
 });
 
 it("the Change button opens the PlacePanel for this item", async () => {

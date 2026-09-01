@@ -35,6 +35,7 @@ pub fn run() {
             commands::scan::cancel_job,
             commands::scan::count_scan_errors,
             commands::scan::list_scan_errors,
+            commands::scan::scan_error_code_counts,
             commands::search::search_media,
             commands::search::rebuild_fts,
             commands::sidecars::start_sidecar_sync_all,

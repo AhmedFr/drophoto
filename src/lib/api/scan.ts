@@ -17,6 +17,12 @@ export type ScanErrorRow = {
   at: string;
 };
 
+/** One `code`'s share of a drive's `scan_errors` — mirrors `dp_core::ScanErrorCodeCount`. */
+export type ScanErrorCodeCount = {
+  code: string;
+  count: number;
+};
+
 /**
  * Starts a scan of `driveId`. Incremental by default: unchanged files
  * (matching stat size/mtime, thumbnails already on disk) are skipped
@@ -35,3 +41,11 @@ export const countScanErrors = (driveId: number) =>
 /** Pages `driveId`'s `scan_errors` rows, newest first — backs `ScanErrorsDialog`'s "Load more" paging. */
 export const listScanErrors = (driveId: number, limit: number, offset: number) =>
   invokeApi<ScanErrorRow[]>("list_scan_errors", { driveId, limit, offset });
+
+/**
+ * `driveId`'s `scan_errors` rows grouped by `code`, count DESC — backs the
+ * severity repartition `ScanProgress`'s failed-count hover card and
+ * `ScanErrorsDialog`'s header show.
+ */
+export const scanErrorCodeCounts = (driveId: number) =>
+  invokeApi<ScanErrorCodeCount[]>("scan_error_code_counts", { driveId });
