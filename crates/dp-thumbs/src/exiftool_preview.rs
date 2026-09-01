@@ -26,6 +26,14 @@ impl ExiftoolPreviewThumb {
         Self::new("exiftool")
     }
 
+    /// Same resolution as `dp_metadata::ExiftoolProvider::from_resolved`
+    /// (see its doc comment) — RAW preview extraction shells out to the
+    /// exact same `exiftool` binary as metadata reads and sidecar I/O, so
+    /// all three must resolve it identically.
+    pub fn from_resolved() -> Self {
+        Self::new(dp_metadata::resolve_tool("exiftool").unwrap_or_else(|| PathBuf::from("exiftool")))
+    }
+
     async fn extract_preview(&self, path: &Path) -> DpResult<Vec<u8>> {
         let mut last_stderr = String::new();
 

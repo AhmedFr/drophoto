@@ -46,6 +46,7 @@ function mockDefaults() {
   mockIPC((cmd) => {
     if (cmd === "get_settings") return settings;
     if (cmd === "storage_usage") return usage;
+    if (cmd === "tool_health") return { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
     return undefined;
   });
 }
@@ -80,6 +81,13 @@ it("renders the quality picker pre-selected to the current setting", async () =>
   mockDefaults();
   renderPage();
   expect(await screen.findByRole("radio", { name: /Max/ })).toBeChecked();
+});
+
+it("renders the tools section with each tool's resolved state", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByText("found at /opt/homebrew/bin/exiftool")).toBeInTheDocument();
+  expect(screen.getByText("brew install ffmpeg")).toBeInTheDocument();
 });
 
 it("renders the danger zone with the reset button", async () => {

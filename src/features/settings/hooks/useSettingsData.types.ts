@@ -1,9 +1,13 @@
-import type { AppSettings, StorageUsage } from "@/lib/api/settings";
+import type { AppSettings, StorageUsage, ToolHealth } from "@/lib/api/settings";
 
 export type UseSettingsDataResult = {
   settings: AppSettings | null;
   settingsLoading: boolean;
   settingsError: string | null;
+
+  /** Startup snapshot of where exiftool/ffmpeg were found — `null` until the `tool_health` query resolves. */
+  tools: ToolHealth | null;
+  toolsLoading: boolean;
 
   storage: StorageUsage | null;
   /** True only while the *first* `storage_usage` call is in flight. */

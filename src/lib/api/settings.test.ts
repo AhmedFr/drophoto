@@ -5,6 +5,7 @@ import {
   setPreviewQuality,
   startRegenPreviews,
   storageUsage,
+  toolHealth,
   uninstallApp,
   PREVIEW_EDGES,
 } from "./settings";
@@ -77,6 +78,15 @@ it("gets storage usage with no arguments", async () => {
   });
   await expect(storageUsage()).resolves.toEqual(usage);
   expect(received).toEqual({});
+});
+
+it("round-trips tool_health", async () => {
+  const health = { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+  mockIPC((cmd) => {
+    if (cmd === "tool_health") return health;
+    return undefined;
+  });
+  await expect(toolHealth()).resolves.toEqual(health);
 });
 
 it("wraps structured errors from storage_usage", async () => {

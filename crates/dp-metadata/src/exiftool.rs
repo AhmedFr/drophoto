@@ -46,6 +46,18 @@ impl ExiftoolProvider {
     pub fn from_path() -> Self {
         Self::new("exiftool")
     }
+
+    /// Resolves `exiftool` via [`crate::resolve_tool`] ($PATH plus the
+    /// Homebrew/MacPorts fallback dirs — see its doc comment for why a
+    /// bundled, Finder-launched app needs this), falling back to the bare
+    /// `"exiftool"` command name when it can't be found anywhere — the
+    /// same behavior [`Self::from_path`] always had, so a dev environment
+    /// with `exiftool` genuinely on `$PATH` (already covered by the
+    /// `$PATH` scan) or truly missing everywhere behaves identically to
+    /// before.
+    pub fn from_resolved() -> Self {
+        Self::new(crate::resolve_tool("exiftool").unwrap_or_else(|| PathBuf::from("exiftool")))
+    }
 }
 
 #[async_trait::async_trait]

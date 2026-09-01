@@ -27,6 +27,17 @@ impl FfmpegThumb {
         Self::new("ffmpeg")
     }
 
+    /// Resolves `ffmpeg` via `dp_metadata::resolve_tool` ($PATH plus the
+    /// Homebrew/MacPorts fallback dirs a bundled, Finder-launched app's
+    /// environment doesn't inherit — see its doc comment), falling back to
+    /// the bare `"ffmpeg"` command name when it can't be found anywhere
+    /// (same behavior [`Self::from_path`] always had). Mirrors
+    /// `dp_metadata::ExiftoolProvider::from_resolved` exactly — see Task
+    /// 5b.3.
+    pub fn from_resolved() -> Self {
+        Self::new(dp_metadata::resolve_tool("ffmpeg").unwrap_or_else(|| PathBuf::from("ffmpeg")))
+    }
+
     async fn extract_frame(&self, path: &Path, max_px: u32, out_path: &Path) -> DpResult<()> {
         let mut last_message = String::new();
 

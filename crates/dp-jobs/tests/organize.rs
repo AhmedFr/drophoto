@@ -765,6 +765,15 @@ impl Catalog for FailingCatalog {
         self.0.delete_media(id).await
     }
 
+    async fn update_media_metadata(
+        &self,
+        id: i64,
+        m: &dp_core::MediaMetadata,
+        read_at: DateTime<Utc>,
+    ) -> DpResult<()> {
+        self.0.update_media_metadata(id, m, read_at).await
+    }
+
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         self.0.record_scan_error(drive_id, path, code, message).await
     }

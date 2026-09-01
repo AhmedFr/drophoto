@@ -1,5 +1,5 @@
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DpError, DpResult};
+use dp_core::{DpError, DpResult, ToolHealth};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobRunner};
 use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, MetadataProvider, Sidecars};
@@ -49,6 +49,11 @@ pub struct AppState {
     /// `storage_usage` and `reset_app_data`, rather than re-querying
     /// `AppHandle::path()` on every call.
     pub app_data_dir: PathBuf,
+    /// Where `exiftool`/`ffmpeg` were found at startup — the same
+    /// resolution the providers above were built with, snapshotted once
+    /// so the `tool_health` command can show it in Settings without
+    /// re-probing the filesystem on every call.
+    pub tool_health: ToolHealth,
 }
 
 impl AppState {
@@ -86,20 +91,29 @@ impl AppState {
 
         let geocoder: Arc<dyn Geocoder> = Arc::new(BundledGeocoder::load()?);
 
+        // Resolved once: a Finder-launched bundle's PATH has no
+        // /opt/homebrew/bin, so the bare command names the providers used
+        // to spawn failed on every call in the installed app (Task 5b.3).
+        let tool_health = ToolHealth {
+            exiftool: dp_metadata::resolve_tool("exiftool"),
+            ffmpeg: dp_metadata::resolve_tool("ffmpeg"),
+        };
+
         Ok(Self {
             volumes: Arc::new(SysinfoVolumes::default()),
             catalog,
             strategy: default_strategy(hasher.clone()),
             hasher,
-            metadata: Arc::new(ExiftoolProvider::from_path()),
-            thumbs: Arc::new(ThumbChain::default_chain()),
+            metadata: Arc::new(ExiftoolProvider::from_resolved()),
+            thumbs: Arc::new(ThumbChain::resolved_chain()),
             store: Arc::new(ThumbStore::new(thumbs_root)),
-            sidecars: Arc::new(ExiftoolSidecars::from_path()),
+            sidecars: Arc::new(ExiftoolSidecars::from_resolved()),
             geocoder,
             runner,
             home,
             active_jobs: Mutex::new(HashMap::new()),
             app_data_dir: dir,
+            tool_health,
         })
     }
 

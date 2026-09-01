@@ -44,6 +44,23 @@ it("loads settings and storage usage on mount", async () => {
   await waitFor(() => expect(result.current.storage?.total_bytes).toBe(6));
 });
 
+it("exposes the tool-health snapshot once its query resolves", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "storage_usage") {
+      return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
+    }
+    if (cmd === "tool_health") return { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+    return undefined;
+  });
+
+  const { result } = render();
+  await waitFor(() =>
+    expect(result.current.tools).toEqual({ exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null }),
+  );
+  expect(result.current.toolsLoading).toBe(false);
+});
+
 it("surfaces a settings query error message", async () => {
   mockIPC((cmd) => {
     if (cmd === "get_settings") throw { code: "db", message: "boom" };

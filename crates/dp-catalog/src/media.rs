@@ -1,6 +1,6 @@
 use crate::sqlite::db;
 use chrono::{DateTime, Utc};
-use dp_core::{DpError, DpResult, MediaKind, MediaRow, NewMedia, ScanIndexEntry};
+use dp_core::{DpError, DpResult, MediaKind, MediaMetadata, MediaRow, NewMedia, ScanIndexEntry};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn kind_to_str(kind: MediaKind) -> &'static str {
@@ -199,7 +199,8 @@ pub(crate) async fn delete_media(pool: &SqlitePool, id: i64) -> DpResult<bool> {
 /// walk starts. See [`ScanIndexEntry`].
 pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<ScanIndexEntry>> {
     let rows = sqlx::query(
-        "SELECT id, rel_path, size, mtime, hash, source_id, sidecar_mtime FROM media WHERE drive_id = ?",
+        "SELECT id, rel_path, size, mtime, hash, source_id, sidecar_mtime, meta_read_at \
+         FROM media WHERE drive_id = ?",
     )
     .bind(drive_id)
     .fetch_all(pool)
@@ -210,6 +211,7 @@ pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResul
             let size: i64 = r.try_get("size").map_err(db)?;
             let mtime: Option<String> = r.try_get("mtime").map_err(db)?;
             let sidecar_mtime: Option<String> = r.try_get("sidecar_mtime").map_err(db)?;
+            let meta_read_at: Option<String> = r.try_get("meta_read_at").map_err(db)?;
             Ok(ScanIndexEntry {
                 id: r.try_get("id").map_err(db)?,
                 rel_path: r.try_get("rel_path").map_err(db)?,
@@ -218,9 +220,58 @@ pub(crate) async fn list_scan_index(pool: &SqlitePool, drive_id: i64) -> DpResul
                 hash: r.try_get("hash").map_err(db)?,
                 source_id: r.try_get("source_id").map_err(db)?,
                 sidecar_mtime: from_rfc3339(sidecar_mtime)?,
+                meta_read_at: from_rfc3339(meta_read_at)?,
             })
         })
         .collect()
+}
+
+/// Updates media row `id`'s metadata columns (everything
+/// [`MediaMetadata`] carries) plus `meta_read_at`, then syncs its FTS row
+/// (log-only, like every other write in this module — FTS is derived
+/// data, never a reason to fail the write). Called by `dp_jobs::ScanJob`
+/// both right after a fresh upsert whose metadata read succeeded, and by
+/// the incremental-rescan metadata-backfill path for a skip-eligible row
+/// whose `meta_read_at` is still `NULL` — see [`ScanIndexEntry::meta_read_at`].
+///
+/// Deliberately narrower than [`upsert_media`]: it never touches
+/// `hash`/`size`/`kind`/`ext`/`mtime`/`source_id`/`organized_at` — only
+/// the metadata columns exiftool/ffmpeg actually produce, so it's safe to
+/// call on a row the backfill path never re-hashed or re-thumbnailed.
+pub(crate) async fn update_media_metadata(
+    pool: &SqlitePool,
+    id: i64,
+    m: &MediaMetadata,
+    read_at: DateTime<Utc>,
+) -> DpResult<()> {
+    sqlx::query(
+        "UPDATE media SET width=?, height=?, duration_ms=?, taken_at=?, camera=?, lens=?, \
+         aperture=?, shutter=?, iso=?, focal_mm=?, lat=?, lon=?, meta_read_at=? WHERE id=?",
+    )
+    .bind(m.width.map(|w| w as i64))
+    .bind(m.height.map(|h| h as i64))
+    .bind(m.duration_ms.map(|d| d as i64))
+    .bind(to_rfc3339(m.taken_at))
+    .bind(&m.camera)
+    .bind(&m.lens)
+    .bind(m.aperture)
+    .bind(m.shutter)
+    .bind(m.iso.map(|i| i as i64))
+    .bind(m.focal_mm)
+    .bind(m.lat)
+    .bind(m.lon)
+    .bind(to_rfc3339(Some(read_at)))
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db)?;
+
+    // FTS is derived data — never fail the write over a sync problem.
+    if let Err(e) = crate::fts::sync_fts(pool, id).await {
+        tracing::warn!(media_id = id, error = %e, "failed to sync FTS index after update_media_metadata");
+    }
+
+    Ok(())
 }
 
 /// Records the XMP sidecar's on-disk mtime as of the last time it was

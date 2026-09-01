@@ -588,6 +588,38 @@ async fn process_file(
             sidecar_baseline,
         )
         .await;
+
+        // Task 5b.3 metadata backfill: a skip-eligible row whose metadata
+        // was never successfully read (every pre-0009 row, plus any row
+        // whose read has failed every scan since — e.g. because
+        // exiftool/ffmpeg weren't on PATH in a bundled build) gets its
+        // metadata re-read here, without re-hashing or re-thumbnailing.
+        // Real work happens on success, so it counts as `ok`, not
+        // `skipped`; a failure reports the item error and leaves
+        // `meta_read_at` NULL so it's retried on the next scan too.
+        if m.meta_read_at.is_none() {
+            match deps.metadata.read(&file.path).await {
+                Ok(metadata) => {
+                    if let Err(e) = deps
+                        .catalog
+                        .update_media_metadata(m.id, &metadata, Utc::now())
+                        .await
+                    {
+                        report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                        failed.fetch_add(1, Ordering::SeqCst);
+                    } else {
+                        ok.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                Err(e) => {
+                    report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                    failed.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            advance_progress(ctx, job_id, done, total, &rel).await;
+            return;
+        }
+
         skipped.fetch_add(1, Ordering::SeqCst);
         advance_progress(ctx, job_id, done, total, &rel).await;
         return;
@@ -688,12 +720,12 @@ async fn process_file(
         return;
     }
 
-    let metadata = match deps.metadata.read(&file.path).await {
-        Ok(m) => m,
+    let (metadata, metadata_read_ok) = match deps.metadata.read(&file.path).await {
+        Ok(m) => (m, true),
         Err(e) => {
             had_error = true;
             report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
-            MediaMetadata::default()
+            (MediaMetadata::default(), false)
         }
     };
 
@@ -708,8 +740,11 @@ async fn process_file(
         height: metadata.height,
         duration_ms: metadata.duration_ms,
         taken_at: metadata.taken_at,
-        camera: metadata.camera,
-        lens: metadata.lens,
+        // Cloned (not moved) — `metadata` is needed again below, by
+        // reference, to record `meta_read_at` via `update_media_metadata`
+        // once the row's id is known.
+        camera: metadata.camera.clone(),
+        lens: metadata.lens.clone(),
         aperture: metadata.aperture,
         shutter: metadata.shutter,
         iso: metadata.iso,
@@ -723,6 +758,24 @@ async fn process_file(
 
     match deps.catalog.upsert_media(new_media).await {
         Ok(media_id) => {
+            // `meta_read_at` is deliberately not part of `NewMedia`/
+            // `upsert_media`'s own SQL (see `Catalog::update_media_metadata`'s
+            // doc comment) — a successful read stamps it via this narrow
+            // follow-up call instead, the same call the incremental-rescan
+            // metadata-backfill path (above) makes for a skip-eligible row.
+            // A read that failed (`metadata_read_ok: false`) leaves the
+            // column NULL — already-upserted with `MediaMetadata::default()`
+            // — so it's retried on every subsequent scan until it succeeds.
+            if metadata_read_ok {
+                if let Err(e) = deps
+                    .catalog
+                    .update_media_metadata(media_id, &metadata, Utc::now())
+                    .await
+                {
+                    had_error = true;
+                    report_item_error(ctx, deps, job_id, drive_id, &rel, &e).await;
+                }
+            }
             import_sidecar_tags(ctx, deps, job_id, drive_id, &file.path, &rel, media_id).await;
         }
         Err(e) => {
@@ -752,6 +805,10 @@ struct SkipMatch {
     /// The row's stored sidecar mtime, if one was ever recorded — see
     /// [`ScanIndexEntry::sidecar_mtime`].
     sidecar_mtime: Option<DateTime<Utc>>,
+    /// The row's stored metadata-read timestamp, if a read has ever
+    /// succeeded — see [`ScanIndexEntry::meta_read_at`]. `None` triggers
+    /// the metadata-backfill path in [`process_file`].
+    meta_read_at: Option<DateTime<Utc>>,
 }
 
 /// Whether a walked file (`rel`, with live stat `size`/`mtime`, owned by
@@ -799,6 +856,7 @@ fn find_skip_match(
         id: entry.id,
         row_mtime,
         sidecar_mtime: entry.sidecar_mtime,
+        meta_read_at: entry.meta_read_at,
     })
 }
 

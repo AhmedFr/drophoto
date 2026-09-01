@@ -1154,6 +1154,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "dp-core",
+ "dp-metadata",
  "image",
  "tempfile",
  "tokio",

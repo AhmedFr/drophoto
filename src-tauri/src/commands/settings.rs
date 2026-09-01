@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use dp_core::{
-    AppSettings, DpError, DpResult, StorageUsage, PREVIEW_EDGE_BALANCED, PREVIEW_EDGE_COMPACT,
+    AppSettings, DpError, DpResult, StorageUsage, ToolHealth, PREVIEW_EDGE_BALANCED, PREVIEW_EDGE_COMPACT,
     PREVIEW_EDGE_MAX,
 };
 use dp_jobs::{Job, RegenDeps, RegenJob};
@@ -74,6 +74,15 @@ pub async fn storage_usage(state: State<'_, AppState>) -> Result<StorageUsage, D
             message: format!("storage usage task failed: {e}"),
             path: None,
         })?
+}
+
+/// Where `exiftool`/`ffmpeg` were found at startup, for Settings' tools
+/// panel. A `None` here explains the field-reported all-metadata-empty
+/// bug: the tool isn't reachable, so every read that needs it fails (see
+/// `dp_core::ToolHealth`'s docs — snapshot from app launch, not live).
+#[tauri::command]
+pub async fn tool_health(state: State<'_, AppState>) -> Result<ToolHealth, DpError> {
+    Ok(state.tool_health.clone())
 }
 
 /// Starts (or reuses, if one is already running) the global preview-regen

@@ -7,6 +7,7 @@ import {
   setPreviewQuality,
   startRegenPreviews,
   storageUsage,
+  toolHealth,
   uninstallApp,
 } from "@/lib/api/settings";
 import type { JobEvent } from "@/lib/api/scan";
@@ -41,6 +42,9 @@ export function useSettingsData(): UseSettingsDataResult {
 
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const storageQuery = useQuery({ queryKey: ["storage-usage"], queryFn: storageUsage });
+  // A startup snapshot on the Rust side — never changes while the app
+  // runs, so staleTime: Infinity (no background refetches).
+  const toolsQuery = useQuery({ queryKey: ["tool-health"], queryFn: toolHealth, staleTime: Infinity });
 
   const applyQualityMutation = useMutation({
     mutationFn: setPreviewQuality,
@@ -76,6 +80,9 @@ export function useSettingsData(): UseSettingsDataResult {
     settings,
     settingsLoading: settingsQuery.isLoading,
     settingsError: settingsQuery.error ? (settingsQuery.error as Error).message : null,
+
+    tools: toolsQuery.data ?? null,
+    toolsLoading: toolsQuery.isLoading,
 
     storage: storageQuery.data ?? null,
     storageLoading: storageQuery.isLoading,

@@ -2,6 +2,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { PREVIEW_EDGES } from "@/lib/api/settings";
 import { UpdatesSection } from "./components/UpdatesSection";
 import { StorageSection } from "./components/StorageSection";
+import { ToolsSection } from "./components/ToolsSection";
 import { QualityPicker } from "./components/QualityPicker";
 import { DangerZone } from "./components/DangerZone";
 import { useSettingsData } from "./hooks/useSettingsData";
@@ -12,6 +13,8 @@ export function SettingsPage() {
     settings,
     settingsLoading,
     settingsError,
+    tools,
+    toolsLoading,
     storage,
     storageLoading,
     storageError,
@@ -44,6 +47,8 @@ export function SettingsPage() {
           refreshing={storageRefreshing}
           onRefresh={refreshStorage}
         />
+
+        <ToolsSection tools={tools} loading={toolsLoading} />
 
         {settingsError && <p className="px-6 pb-2 font-mono text-[11px] text-red-400">{settingsError}</p>}
 

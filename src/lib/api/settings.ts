@@ -33,8 +33,23 @@ export type StorageUsage = {
   file_count: number;
 };
 
+/**
+ * Where `exiftool`/`ffmpeg` were found at app startup — mirrors
+ * `dp_core::ToolHealth`. `null` means the tool couldn't be found anywhere
+ * (every `$PATH` directory plus the Homebrew/MacPorts fallback dirs), so
+ * metadata reads (exiftool) or video thumbnails/durations (ffmpeg) will
+ * keep failing until it's installed. A snapshot from launch, not live.
+ */
+export type ToolHealth = {
+  exiftool: string | null;
+  ffmpeg: string | null;
+};
+
 /** Current app-wide settings. */
 export const getSettings = () => invokeApi<AppSettings>("get_settings");
+
+/** Where the external tools were found at startup — see `ToolHealth`. */
+export const toolHealth = () => invokeApi<ToolHealth>("tool_health");
 
 /**
  * Sets the preview-quality edge (px) — must be one of `PREVIEW_EDGES`'
