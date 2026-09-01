@@ -259,6 +259,29 @@ it("keeps the prev/next buttons working while fullscreen", async () => {
   expect(onNext).toHaveBeenCalledTimes(1);
 });
 
+it("does not close when clicking the backdrop while fullscreen", async () => {
+  const onClose = vi.fn();
+  const user = userEvent.setup();
+  renderLightbox({ items: items(3), index: 0, onClose, onPrev: vi.fn(), onNext: vi.fn() });
+
+  await user.click(screen.getByRole("button", { name: "Enter full screen" }));
+  await user.click(screen.getByRole("dialog"));
+
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it("closes on backdrop click again after exiting fullscreen", async () => {
+  const onClose = vi.fn();
+  const user = userEvent.setup();
+  renderLightbox({ items: items(3), index: 0, onClose, onPrev: vi.fn(), onNext: vi.fn() });
+
+  await user.click(screen.getByRole("button", { name: "Enter full screen" }));
+  await user.click(screen.getByRole("button", { name: "Exit full screen" }));
+  await user.click(screen.getByRole("dialog"));
+
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
 it("toggles fullscreen on double-clicking the image", async () => {
   const user = userEvent.setup();
   renderLightbox({ items: items(3), index: 0, onClose: vi.fn(), onPrev: vi.fn(), onNext: vi.fn() });

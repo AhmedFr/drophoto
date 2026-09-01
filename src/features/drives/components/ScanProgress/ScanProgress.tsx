@@ -56,13 +56,17 @@ export function ScanProgress({ event, onCancel, onOpenErrors, driveId }: ScanPro
   // The hover card needs a drive id to query `scan_error_code_counts`;
   // without one (a caller that doesn't have it handy) the button still
   // works, just without the hover repartition.
-  const failedReadout = failedButton && (
-    driveId != null ? (
-      <ScanErrorSeverityHoverCard driveId={driveId}>{failedButton}</ScanErrorSeverityHoverCard>
-    ) : (
-      failedButton
-    )
-  );
+  // `failedButton` is `false` — not `undefined` — when `failed === 0` or
+  // `onOpenErrors` is absent, so it can't be used as the `??` fallback
+  // trigger directly (`false ?? …` is still `false`). Normalizing to `null`
+  // here lets the `?? \`${event.failed} failed\`` below actually engage.
+  const failedReadout = failedButton
+    ? driveId != null ? (
+        <ScanErrorSeverityHoverCard driveId={driveId}>{failedButton}</ScanErrorSeverityHoverCard>
+      ) : (
+        failedButton
+      )
+    : null;
 
   return (
     <div className="flex flex-col gap-1.5 px-5 pb-3">

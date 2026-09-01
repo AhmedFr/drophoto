@@ -255,6 +255,27 @@ it("shows the place name as the primary line and coords as a faint secondary lin
   expect(screen.getByText("37.77°N 122.42°W")).toBeInTheDocument();
 });
 
+it("shows the place name with no secondary coords line, when a place is assigned but the photo has no GPS coords", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_tags") return [];
+    if (cmd === "tags_for_media") return [];
+    if (cmd === "list_place_counts") {
+      return [
+        {
+          place: { id: 5, lat: 38.7, lon: -9.1, name: "Lisbon", admin: "Lisboa", country: "Portugal", source: "geocoder" },
+          count: 1,
+        },
+      ];
+    }
+    return undefined;
+  });
+  renderPanel(item({ row: { ...item().row, place_id: 5, lat: null, lon: null } }));
+
+  const placeName = await screen.findByText("Lisbon, Lisboa, Portugal");
+  // No stray empty <p> for the coords secondary line — just the place name.
+  expect(placeName.parentElement?.children).toHaveLength(1);
+});
+
 it("shows coords as the primary line with a 'not placed yet' hint, when there are coords but no place", () => {
   renderPanel(item());
 

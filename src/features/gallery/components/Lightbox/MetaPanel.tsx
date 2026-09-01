@@ -131,7 +131,7 @@ export function MetaPanel({ item, onTagPanelOpenChange, onPlacePanelOpenChange }
               // faint secondary line for anyone who wants the precise fix.
               <div>
                 <p className="text-dim">{placeLabel}</p>
-                <p className="mt-0.5 text-faint text-[10px]">{coords}</p>
+                {coords && <p className="mt-0.5 text-faint text-[10px]">{coords}</p>}
               </div>
             ) : coords ? (
               // Has coords but hasn't been geocoded yet (or was cleared) —

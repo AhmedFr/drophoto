@@ -72,7 +72,14 @@ export function Lightbox({
         <DialogPrimitive.Content
           aria-describedby={undefined}
           className="fixed inset-0 z-50 flex outline-none"
-          onClick={onClose}
+          // In fullscreen the "backdrop" is the full-bleed black canvas
+          // the photo itself sits on, not a visually distinct border — so
+          // click-outside-to-close is suppressed there. Otherwise a click
+          // meant to dismiss fullscreen (or the first click of a
+          // double-click landing on the letterbox bars) would close the
+          // whole lightbox instead. Normal mode keeps click-outside as
+          // before.
+          onClick={fullscreen ? undefined : onClose}
         >
           <DialogPrimitive.Title className="sr-only">{basename(item.row.rel_path)}</DialogPrimitive.Title>
 
@@ -125,7 +132,17 @@ export function Lightbox({
                 <ChevronLeft size={16} />
               </button>
 
-              <div onDoubleClick={toggleFullscreen}>
+              {/*
+                `contents` keeps this wrapper out of the box tree entirely
+                so `LightboxImage`'s `max-h-full` still resolves against
+                the sized image-area container above (a percentage
+                `max-height` against an auto-height box computes to `none`
+                per CSS 2.1 §10.7 — an unstyled wrapper here would silently
+                remove the height constraint and let portrait previews
+                overflow/crop). `dblclick` still bubbles up through a
+                `display:contents` element, so the toggle keeps working.
+              */}
+              <div className="contents" onDoubleClick={toggleFullscreen}>
                 <LightboxImage key={item.row.id} item={item} />
               </div>
 
@@ -143,6 +160,15 @@ export function Lightbox({
             </div>
           </div>
 
+          {/*
+            Deliberately a conditional mount, not `hidden`/`aria-hidden` —
+            entering fullscreen unmounts `MetaPanel` rather than just
+            hiding it. That's relied upon: `MetaPanel`'s cleanup effects
+            reset `TagPanel`/`PlacePanel`'s open flags (via
+            `onTagPanelOpenChange`/`onPlacePanelOpenChange`) on unmount, so
+            a fullscreen round-trip can't strand either flag `true`. Swap
+            this for `hidden` only if that reset is reworked too.
+          */}
           {!fullscreen && (
             <aside
               className="w-[372px] shrink-0 overflow-y-auto border-l border-border bg-[#0b0b0a] p-6"

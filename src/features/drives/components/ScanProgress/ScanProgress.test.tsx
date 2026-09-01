@@ -175,3 +175,18 @@ it("still calls onOpenErrors when the failed button is clicked with driveId give
   fireEvent.click(screen.getByRole("button", { name: "2 failed" }));
   expect(onOpenErrors).toHaveBeenCalled();
 });
+
+it("shows the literal '0 failed' text — not a dangling separator — for a successful scan with onOpenErrors and driveId given", () => {
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 0, skipped: 3 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} onOpenErrors={vi.fn()} driveId={1} />);
+
+  expect(screen.getByText("8 ok · 0 failed · 3 skipped")).toBeInTheDocument();
+});
+
+it("shows 'N failed' as plain text (no button) when onOpenErrors is not given, even with failures", () => {
+  const event: JobEvent = { kind: "finished", job_id: "scan-0", ok: 8, failed: 3, skipped: 0 };
+  render(<ScanProgress event={event} onCancel={vi.fn()} />);
+
+  expect(screen.getByText("8 ok · 3 failed")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /failed/i })).not.toBeInTheDocument();
+});
