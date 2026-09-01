@@ -50,13 +50,21 @@ it("exposes the tool-health snapshot once its query resolves", async () => {
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
-    if (cmd === "tool_health") return { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+    if (cmd === "tool_health") {
+      return {
+        exiftool: { path: "/opt/homebrew/bin/exiftool", version: "13.10", outdated: false },
+        ffmpeg: { path: null, version: null, outdated: false },
+      };
+    }
     return undefined;
   });
 
   const { result } = render();
   await waitFor(() =>
-    expect(result.current.tools).toEqual({ exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null }),
+    expect(result.current.tools).toEqual({
+      exiftool: { path: "/opt/homebrew/bin/exiftool", version: "13.10", outdated: false },
+      ffmpeg: { path: null, version: null, outdated: false },
+    }),
   );
   expect(result.current.toolsLoading).toBe(false);
 });

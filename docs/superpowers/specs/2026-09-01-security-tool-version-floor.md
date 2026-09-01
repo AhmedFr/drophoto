@@ -71,8 +71,11 @@ startup, same snapshot semantics as today (relaunch to re-probe).
   - missing: unchanged red state.
 - **Launch warning**: when tool health first resolves with any `outdated` tool,
   fire one sonner warning toast ("exiftool 12.10 is outdated — see Settings →
-  Tools") from the hook that already fetches tool health, guarded so it shows
-  once per app run. Settings itself never toasts (the panel is the detail view).
+  Tools"), guarded so it shows once per app run. Implemented as a standalone
+  renderless `ToolHealthNotifier` mounted in `AppShell` (the `UpdateNotifier`
+  pattern) rather than inside the Settings data hook — that hook only runs
+  while Settings is mounted, so it can never be relied on to fire at launch.
+  Settings itself never toasts (the panel is the detail view).
 
 ## Testing (per test-coverage skill)
 

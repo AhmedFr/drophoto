@@ -19,6 +19,19 @@ impl std::fmt::Display for ToolVersion {
     }
 }
 
+/// A successfully parsed tool version: the numeric `(major, minor)` used
+/// for floor comparison plus the verbatim numeric text the tool printed
+/// (`"12.05"`, `"6.1.1"`) for display. The display text is kept rather
+/// than reconstructed from the numbers because exiftool zero-pads minors:
+/// `12.05` parses to `(12, 5)`, and rendering that back as `"12.5"` would
+/// read as ABOVE the `12.24` floor in the very warning that says it's
+/// below it (review finding, PR #33).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedVersion {
+    pub number: ToolVersion,
+    pub display: String,
+}
+
 /// Security floor for exiftool: CVE-2021-22204 (arbitrary code execution
 /// from a crafted file's embedded metadata) was fixed in 12.24. drophoto
 /// feeds exiftool untrusted media from attached drives, so anything older
@@ -34,7 +47,7 @@ pub const MIN_FFMPEG: ToolVersion = ToolVersion { major: 6, minor: 0 };
 /// Parses `exiftool -ver` output (a bare version like `"13.10\n"`).
 /// `None` for anything unparsable — unknown is reported as unknown, never
 /// as outdated.
-pub fn parse_exiftool_version(output: &str) -> Option<ToolVersion> {
+pub fn parse_exiftool_version(output: &str) -> Option<ParsedVersion> {
     parse_dotted(output.trim())
 }
 
@@ -42,7 +55,7 @@ pub fn parse_exiftool_version(output: &str) -> Option<ToolVersion> {
 /// `"ffmpeg version 7.1-tessus …"` / `"ffmpeg version n6.1.1 …"`. Dev
 /// builds (`"ffmpeg version N-113594-g<sha>"`) have no release version and
 /// parse to `None` — unknown, not outdated.
-pub fn parse_ffmpeg_version(output: &str) -> Option<ToolVersion> {
+pub fn parse_ffmpeg_version(output: &str) -> Option<ParsedVersion> {
     let rest = output.strip_prefix("ffmpeg version ")?;
     let token = rest.split_whitespace().next()?;
     // Distro builds prefix a lowercase 'n' ("n6.1.1"); dev builds start
@@ -52,20 +65,22 @@ pub fn parse_ffmpeg_version(output: &str) -> Option<ToolVersion> {
 }
 
 /// Parses the leading `major[.minor…]` of `s`, tolerating a build suffix
-/// glued to a component ("1-tessus" → 1). The major component must START
-/// with a digit; a missing/empty minor is 0.
-fn parse_dotted(s: &str) -> Option<ToolVersion> {
-    let mut components = s.split('.');
-    let major = leading_number(components.next()?)?;
-    let minor = components.next().and_then(leading_number).unwrap_or(0);
-    Some(ToolVersion { major, minor })
-}
-
-/// The number formed by `s`'s leading digits; `None` if it starts with a
-/// non-digit.
-fn leading_number(s: &str) -> Option<u32> {
-    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
+/// glued on ("1-tessus" → 1). The major component must START with a
+/// digit; a missing/empty minor is 0. `display` is the leading
+/// digits-and-dots prefix verbatim (trailing dots trimmed), so `"12.05"`
+/// stays `"12.05"` and `"6.1.1-full"` displays `"6.1.1"`.
+fn parse_dotted(s: &str) -> Option<ParsedVersion> {
+    let prefix: &str = &s[..s
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(s.len())];
+    let display = prefix.trim_end_matches('.');
+    let mut components = display.split('.');
+    let major: u32 = components.next()?.parse().ok()?;
+    let minor: u32 = components.next().and_then(|m| m.parse().ok()).unwrap_or(0);
+    Some(ParsedVersion {
+        number: ToolVersion { major, minor },
+        display: display.to_string(),
+    })
 }
 
 /// Builds one tool's [`dp_core::ToolStatus`] from its resolved path, the
@@ -73,26 +88,26 @@ fn leading_number(s: &str) -> Option<u32> {
 /// itself happens in the `probe_*` functions.
 pub fn status_from(
     path: Option<std::path::PathBuf>,
-    version: Option<ToolVersion>,
+    version: Option<ParsedVersion>,
     floor: ToolVersion,
 ) -> dp_core::ToolStatus {
     dp_core::ToolStatus {
         path,
-        version: version.map(|v| v.to_string()),
-        outdated: version.is_some_and(|v| v < floor),
+        outdated: version.as_ref().is_some_and(|v| v.number < floor),
+        version: version.map(|v| v.display),
     }
 }
 
 /// Runs `<path> -ver` and parses the result. `None` on spawn failure or
 /// unparsable output.
-pub fn probe_exiftool_version(path: &Path) -> Option<ToolVersion> {
+pub fn probe_exiftool_version(path: &Path) -> Option<ParsedVersion> {
     let out = Command::new(path).arg("-ver").output().ok()?;
     parse_exiftool_version(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// Runs `<path> -version` and parses the result. `None` on spawn failure
 /// or unparsable output.
-pub fn probe_ffmpeg_version(path: &Path) -> Option<ToolVersion> {
+pub fn probe_ffmpeg_version(path: &Path) -> Option<ParsedVersion> {
     let out = Command::new(path).arg("-version").output().ok()?;
     parse_ffmpeg_version(&String::from_utf8_lossy(&out.stdout))
 }
@@ -101,20 +116,31 @@ pub fn probe_ffmpeg_version(path: &Path) -> Option<ToolVersion> {
 mod tests {
     use super::*;
 
+    fn parsed(major: u32, minor: u32, display: &str) -> ParsedVersion {
+        ParsedVersion {
+            number: ToolVersion { major, minor },
+            display: display.to_string(),
+        }
+    }
+
     #[test]
     fn parses_exiftool_bare_version_with_trailing_newline() {
-        assert_eq!(
-            parse_exiftool_version("13.10\n"),
-            Some(ToolVersion { major: 13, minor: 10 })
-        );
+        assert_eq!(parse_exiftool_version("13.10\n"), Some(parsed(13, 10, "13.10")));
     }
 
     #[test]
     fn parses_exiftool_floor_version() {
-        assert_eq!(
-            parse_exiftool_version("12.24"),
-            Some(ToolVersion { major: 12, minor: 24 })
-        );
+        assert_eq!(parse_exiftool_version("12.24"), Some(parsed(12, 24, "12.24")));
+    }
+
+    /// The review finding: exiftool zero-pads minors, so `12.05` must
+    /// compare as `(12, 5)` (below the floor) while DISPLAYING verbatim as
+    /// `"12.05"` — never reconstructed to a misleading `"12.5"`.
+    #[test]
+    fn exiftool_zero_padded_minor_compares_numerically_but_displays_verbatim() {
+        let v = parse_exiftool_version("12.05\n").expect("must parse");
+        assert!(v.number < MIN_EXIFTOOL);
+        assert_eq!(v.display, "12.05");
     }
 
     #[test]
@@ -126,17 +152,16 @@ mod tests {
     #[test]
     fn parses_ffmpeg_version_with_build_suffix() {
         let out = "ffmpeg version 7.1-tessus https://evermeet.cx/ffmpeg/\nbuilt with clang\n";
-        assert_eq!(
-            parse_ffmpeg_version(out),
-            Some(ToolVersion { major: 7, minor: 1 })
-        );
+        assert_eq!(parse_ffmpeg_version(out), Some(parsed(7, 1, "7.1")));
     }
 
+    /// The patch component is kept in the display ("6.1.1", not "6.1")
+    /// even though only `(major, minor)` participates in the comparison.
     #[test]
     fn parses_ffmpeg_version_with_n_prefix_and_patch() {
         assert_eq!(
             parse_ffmpeg_version("ffmpeg version n6.1.1 Copyright (c) 2000-2023"),
-            Some(ToolVersion { major: 6, minor: 1 })
+            Some(parsed(6, 1, "6.1.1"))
         );
     }
 
@@ -144,7 +169,7 @@ mod tests {
     fn parses_ffmpeg_two_component_version() {
         assert_eq!(
             parse_ffmpeg_version("ffmpeg version 6.0 Copyright (c) 2000-2023"),
-            Some(ToolVersion { major: 6, minor: 0 })
+            Some(parsed(6, 0, "6.0"))
         );
     }
 
@@ -152,7 +177,7 @@ mod tests {
     fn parses_ffmpeg_major_only_version_as_minor_zero() {
         assert_eq!(
             parse_ffmpeg_version("ffmpeg version 8 Copyright"),
-            Some(ToolVersion { major: 8, minor: 0 })
+            Some(parsed(8, 0, "8"))
         );
     }
 
@@ -179,7 +204,7 @@ mod tests {
     fn status_from_flags_a_version_below_the_floor_as_outdated() {
         let s = status_from(
             Some("/opt/homebrew/bin/exiftool".into()),
-            Some(ToolVersion { major: 12, minor: 23 }),
+            Some(parsed(12, 23, "12.23")),
             MIN_EXIFTOOL,
         );
         assert_eq!(s.path, Some("/opt/homebrew/bin/exiftool".into()));
@@ -187,11 +212,24 @@ mod tests {
         assert!(s.outdated);
     }
 
+    /// Verbatim contract at the `ToolStatus` level: the zero-padded
+    /// display survives into the version the UI renders.
+    #[test]
+    fn status_from_keeps_the_verbatim_zero_padded_display() {
+        let s = status_from(
+            Some("/opt/homebrew/bin/exiftool".into()),
+            parse_exiftool_version("12.05"),
+            MIN_EXIFTOOL,
+        );
+        assert_eq!(s.version, Some("12.05".to_string()));
+        assert!(s.outdated);
+    }
+
     #[test]
     fn status_from_does_not_flag_a_version_at_the_floor() {
         let s = status_from(
             Some("/opt/homebrew/bin/exiftool".into()),
-            Some(MIN_EXIFTOOL),
+            Some(parsed(12, 24, "12.24")),
             MIN_EXIFTOOL,
         );
         assert_eq!(s.version, Some("12.24".to_string()));

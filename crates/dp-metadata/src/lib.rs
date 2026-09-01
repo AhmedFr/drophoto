@@ -10,7 +10,7 @@ pub use resolve::{resolve_tool, resolve_tool_in};
 pub use sidecar::{sidecar_path, ExiftoolSidecars, Sidecars};
 pub use version::{
     parse_exiftool_version, parse_ffmpeg_version, probe_exiftool_version, probe_ffmpeg_version, status_from,
-    ToolVersion, MIN_EXIFTOOL, MIN_FFMPEG,
+    ParsedVersion, ToolVersion, MIN_EXIFTOOL, MIN_FFMPEG,
 };
 
 use std::path::Path;
