@@ -72,6 +72,20 @@ unchanged.
 5. Legacy drive (no uuid) with label/name/mount-path matches → unchanged
    (existing tests keep passing).
 
+## Residual risk (issue #34)
+
+`SysinfoVolumes` caches a volume's uuid keyed by mount path and only evicts
+entries whose path disappears from the mount set. A same-labeled impostor
+attached within one 5s poll tick of the real drive's removal reuses the same
+`/Volumes/<name>` path, so the stale cache can report the impostor **with the
+real drive's uuid** — matching at tier 1 and bypassing this gate entirely.
+Tracked as issue #34 (key the cache on `(mount_path, fsid)` or re-read per
+tick); until it lands, this spec's guarantee holds only for swaps slower than
+one poll interval.
+
+A reformatted trusted drive (new uuid) now shows unplugged permanently — the
+existing `relink_drive` command is the intended, user-consented recovery path.
+
 ## Out of scope
 
 - A UI confirmation flow for adopting a look-alike volume ("is this really

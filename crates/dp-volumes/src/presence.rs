@@ -102,8 +102,10 @@ pub fn resolve_presence(drives: &[Drive], volumes: &[Volume]) -> Vec<PresenceMat
     resolve_tier(drives, volumes, &mut claimed, &mut resolved, |d, vs, c| {
         // Gated on `volume_label` being unset — see tier 3's doc comment
         // above. A drive with a known label must never fall back to
-        // matching an unrelated same-named volume. (The uuid gate is
-        // implied: a stored uuid always comes with a stored label.)
+        // matching an unrelated same-named volume. The uuid gate is
+        // stated explicitly rather than relying on "a stored uuid comes
+        // with a stored label" — registration can record a uuid with an
+        // empty/absent label, so the invariant is not guaranteed.
         if d.volume_uuid.is_some() || d.volume_label.is_some() {
             None
         } else {
