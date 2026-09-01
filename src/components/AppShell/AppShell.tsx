@@ -1,5 +1,6 @@
 import { Toaster } from "sonner";
 import { JobEventsBridge } from "@/components/JobEventsBridge";
+import { ToolHealthNotifier } from "@/components/ToolHealthNotifier";
 import { UpdateNotifier } from "@/components/UpdateNotifier";
 import type { AppShellProps } from "./AppShell.types";
 
@@ -14,6 +15,9 @@ export function AppShell({ sidebar, children }: AppShellProps) {
           independent of whether Settings is ever opened; see
           `UpdateNotifier`'s own docs. */}
       <UpdateNotifier />
+      {/* And the once-per-run outdated-tool warning (security floor,
+          issue #29) — see `ToolHealthNotifier`'s own docs. */}
+      <ToolHealthNotifier />
       {sidebar}
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">{children}</main>
       <Toaster

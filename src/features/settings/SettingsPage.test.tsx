@@ -46,7 +46,11 @@ function mockDefaults() {
   mockIPC((cmd) => {
     if (cmd === "get_settings") return settings;
     if (cmd === "storage_usage") return usage;
-    if (cmd === "tool_health") return { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+    if (cmd === "tool_health")
+      return {
+        exiftool: { path: "/opt/homebrew/bin/exiftool", version: "13.10", outdated: false },
+        ffmpeg: { path: null, version: null, outdated: false },
+      };
     return undefined;
   });
 }
@@ -86,7 +90,7 @@ it("renders the quality picker pre-selected to the current setting", async () =>
 it("renders the tools section with each tool's resolved state", async () => {
   mockDefaults();
   renderPage();
-  expect(await screen.findByText("found at /opt/homebrew/bin/exiftool")).toBeInTheDocument();
+  expect(await screen.findByText("found at /opt/homebrew/bin/exiftool · v13.10")).toBeInTheDocument();
   expect(screen.getByText("brew install ffmpeg")).toBeInTheDocument();
 });
 

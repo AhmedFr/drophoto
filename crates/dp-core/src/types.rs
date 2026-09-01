@@ -607,8 +607,24 @@ pub struct StorageUsage {
 /// reflected here until the next launch.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct ToolHealth {
-    pub exiftool: Option<PathBuf>,
-    pub ffmpeg: Option<PathBuf>,
+    pub exiftool: ToolStatus,
+    pub ffmpeg: ToolStatus,
+}
+
+/// One external tool's startup snapshot: where it was found, what version
+/// it reported, and whether that version sits below the tool's security
+/// floor (issue #29 — these tools parse untrusted media, and old builds
+/// have known RCEs from crafted files, e.g. exiftool CVE-2021-22204).
+///
+/// `outdated` is true ONLY when a version was actually parsed and it is
+/// below the floor — an unparsable/unknown version reports as unknown
+/// (`version: None`, `outdated: false`) rather than crying wolf on dev
+/// builds, and a missing tool is its own (`path: None`) state.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct ToolStatus {
+    pub path: Option<PathBuf>,
+    pub version: Option<String>,
+    pub outdated: bool,
 }
 
 #[cfg(test)]
