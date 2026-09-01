@@ -63,6 +63,12 @@ tighten the ACL later in Keychain Access if desired.
   can't quietly linger.
 - If neither file nor Keychain item exists → keep today's "run
   scripts/updater-keygen.sh first" error.
+- The fetched key must be non-empty — `security` exits 0 with empty output
+  for an empty-password item, so an explicit emptiness check is the last
+  fail-closed guard (review finding). The migration and keygen scripts
+  likewise refuse empty key material, and keygen passes `--password ""`
+  explicitly so an interactively-encrypted key can never be pinned into a
+  pipeline that exports an empty password.
 - The pubkey-mismatch rotation guard is unchanged (still reads `…key.pub`).
 
 ### 3. `scripts/updater-keygen.sh` (changed, for the fresh-machine path)

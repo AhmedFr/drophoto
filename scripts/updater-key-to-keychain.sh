@@ -23,7 +23,7 @@
 set -eu
 SERVICE="${DROPHOTO_KEYCHAIN_SERVICE:-drophoto-updater-key}"
 KEY_PATH="${DROPHOTO_UPDATER_KEY_PATH:-$HOME/.tauri/drophoto_updater.key}"
-ACCOUNT="$USER"
+ACCOUNT="${USER:-$(id -un)}"
 
 EXISTING="$(security find-generic-password -s "$SERVICE" -a "$ACCOUNT" -w 2>/dev/null || true)"
 
@@ -40,6 +40,12 @@ if [ ! -f "$KEY_PATH" ]; then
 fi
 
 KEY_CONTENT="$(cat "$KEY_PATH")"
+if [ -z "$KEY_CONTENT" ]; then
+    echo "error: $KEY_PATH is empty — refusing to import empty key material." >&2
+    echo "restore the real key from your backup first (an empty item would silently" >&2
+    echo "break signing at release time)." >&2
+    exit 1
+fi
 
 if [ -n "$EXISTING" ] && [ "$EXISTING" != "$KEY_CONTENT" ]; then
     echo "error: the Keychain item '$SERVICE' already exists and DIFFERS from $KEY_PATH." >&2
@@ -63,7 +69,7 @@ else
 fi
 
 printf "delete the plaintext %s now? [y/N] " "$KEY_PATH"
-read -r ANSWER
+read -r ANSWER || ANSWER=""
 case "$ANSWER" in
 y | Y)
     rm "$KEY_PATH"

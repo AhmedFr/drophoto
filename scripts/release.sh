@@ -45,11 +45,16 @@ if [ -f "$UPDATER_KEY" ]; then
     echo "(and let it delete the plaintext file) — release.sh no longer reads key files." >&2
     exit 1
 fi
-if ! TAURI_SIGNING_PRIVATE_KEY="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$USER" -w 2>/dev/null)"; then
+if ! TAURI_SIGNING_PRIVATE_KEY="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "${USER:-$(id -un)}" -w 2>/dev/null)"; then
     echo "error: no '$KEYCHAIN_SERVICE' item in the login Keychain (and no key file at $UPDATER_KEY)." >&2
     echo "run scripts/updater-keygen.sh first to generate the updater signing keypair" >&2
     echo "(and put its public half in src-tauri/tauri.conf.json's plugins.updater.pubkey)," >&2
     echo "or restore the key from backup and import it with scripts/updater-key-to-keychain.sh." >&2
+    exit 1
+fi
+if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+    echo "error: the '$KEYCHAIN_SERVICE' Keychain item exists but holds EMPTY key material." >&2
+    echo "delete it and re-import the real key from backup with scripts/updater-key-to-keychain.sh." >&2
     exit 1
 fi
 

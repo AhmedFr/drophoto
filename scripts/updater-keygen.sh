@@ -20,7 +20,7 @@ set -eu
 SERVICE="${DROPHOTO_KEYCHAIN_SERVICE:-drophoto-updater-key}"
 KEY_PATH="${DROPHOTO_UPDATER_KEY_PATH:-$HOME/.tauri/drophoto_updater.key}"
 PUB_PATH="$KEY_PATH.pub"
-ACCOUNT="$USER"
+ACCOUNT="${USER:-$(id -un)}"
 
 if [ -f "$KEY_PATH" ]; then
     echo "error: $KEY_PATH already exists — refusing to overwrite it." >&2
@@ -38,9 +38,18 @@ if security find-generic-password -s "$SERVICE" -a "$ACCOUNT" >/dev/null 2>&1; t
     exit 1
 fi
 
-pnpm tauri signer generate -w "$KEY_PATH"
+# --password "" pins the key itself passwordless EXPLICITLY: release.sh
+# exports TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" forever, so letting the
+# CLI interactively accept a password here would finalize an encrypted
+# key into the Keychain that no release could ever use (at-rest
+# protection comes from the Keychain, not a passphrase on the blob).
+pnpm tauri signer generate -w "$KEY_PATH" --password ""
 
 KEY_CONTENT="$(cat "$KEY_PATH")"
+if [ -z "$KEY_CONTENT" ]; then
+    echo "error: tauri signer generate left an empty $KEY_PATH — not importing it." >&2
+    exit 1
+fi
 security add-generic-password -s "$SERVICE" -a "$ACCOUNT" -w "$KEY_CONTENT"
 READBACK="$(security find-generic-password -s "$SERVICE" -a "$ACCOUNT" -w)"
 if [ "$READBACK" != "$KEY_CONTENT" ]; then
