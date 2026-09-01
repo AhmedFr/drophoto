@@ -37,6 +37,27 @@ if [ ! -f "$UPDATER_KEY" ]; then
     exit 1
 fi
 
+CONF_PUBKEY="$(jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json)"
+if [ "$CONF_PUBKEY" = "UPDATER_PUBKEY_TBD" ]; then
+    echo "error: src-tauri/tauri.conf.json's plugins.updater.pubkey is still the UPDATER_PUBKEY_TBD placeholder." >&2
+    echo "run scripts/updater-keygen.sh and paste the real pubkey in first — otherwise every" >&2
+    echo "installed copy will silently fail to verify this release's updates forever." >&2
+    exit 1
+fi
+
+if [ -f "$UPDATER_KEY.pub" ] && [ "$CONF_PUBKEY" != "$(cat "$UPDATER_KEY.pub")" ]; then
+    echo "error: src-tauri/tauri.conf.json's plugins.updater.pubkey does not match $UPDATER_KEY.pub." >&2
+    echo "a rotated key produces the same silent, permanent update failure — fix tauri.conf.json first." >&2
+    exit 1
+fi
+
+CONF_VERSION="$(jq -r '.version' src-tauri/tauri.conf.json)"
+if [ "$VERSION" != "$CONF_VERSION" ]; then
+    echo "error: version mismatch: scripts/release.sh was called with $VERSION but" >&2
+    echo "src-tauri/tauri.conf.json's version is $CONF_VERSION." >&2
+    exit 1
+fi
+
 TAURI_SIGNING_PRIVATE_KEY="$(cat "$UPDATER_KEY")"
 export TAURI_SIGNING_PRIVATE_KEY
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""

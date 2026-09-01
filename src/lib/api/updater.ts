@@ -16,12 +16,23 @@ export type UpdateInfo = { version: string; notes: string | null };
 let pendingUpdate: Update | null = null;
 
 /**
- * Checks the configured endpoint for a newer release. Resolves `null` both
- * when the app is already current and when the check itself fails (e.g. the
- * updater `pubkey` is still the `UPDATER_PUBKEY_TBD` placeholder, which the
- * plugin rejects) — callers can't tell those two apart from this call alone,
- * which is intentional: neither is worth more than a quiet "can't tell right
- * now" in the UI (see `useUpdater`'s `error` state, driven separately).
+ * Set for the duration of `downloadAndInstallUpdate`. Guards against the
+ * scenario where remounting `useUpdater` (e.g. navigating away from
+ * Settings and back) fires a fresh `checkForUpdate()` while a download
+ * started from the *previous* mount is still streaming: without this flag,
+ * that re-check would `close()` the very `Update` resource the download is
+ * reading from and abort an otherwise-healthy install.
+ */
+let isDownloading = false;
+
+/**
+ * Checks the configured endpoint for a newer release. Resolves `null` when
+ * the app is already current; propagates a rejection when the check itself
+ * fails (e.g. the updater `pubkey` is still the `UPDATER_PUBKEY_TBD`
+ * placeholder, which the plugin rejects) — callers map that into their own
+ * error state rather than this function swallowing it (see `useUpdater`'s
+ * `error` state; `UpdateNotifier` swallows it itself, deliberately, since a
+ * startup check has nowhere to surface an error).
  */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   const update = await check();
@@ -29,8 +40,12 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   // now that it's about to be replaced and unreachable — a re-check (the
   // manual "Check for updates" button, or the startup check racing a
   // Settings-page mount) would otherwise leak one `Update` handle per call.
-  // Never worth failing the new check over.
-  pendingUpdate?.close().catch(() => {});
+  // Never worth failing the new check over. Skipped while a download is in
+  // flight (see `isDownloading`) — that same resource may be the one being
+  // downloaded right now.
+  if (!isDownloading) {
+    pendingUpdate?.close().catch(() => {});
+  }
   pendingUpdate = update;
   if (!update) return null;
   return { version: update.version, notes: update.body ?? null };
@@ -46,18 +61,23 @@ export async function downloadAndInstallUpdate(onProgress: (percent: number) => 
   const update = pendingUpdate;
   if (!update) throw new Error("No update available to install.");
 
-  let contentLength = 0;
-  let downloaded = 0;
-  await update.downloadAndInstall((event) => {
-    if (event.event === "Started") {
-      contentLength = event.data.contentLength ?? 0;
-    } else if (event.event === "Progress") {
-      downloaded += event.data.chunkLength;
-      onProgress(contentLength > 0 ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : 0);
-    } else if (event.event === "Finished") {
-      onProgress(100);
-    }
-  });
+  isDownloading = true;
+  try {
+    let contentLength = 0;
+    let downloaded = 0;
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        contentLength = event.data.contentLength ?? 0;
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+        onProgress(contentLength > 0 ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : 0);
+      } else if (event.event === "Finished") {
+        onProgress(100);
+      }
+    });
+  } finally {
+    isDownloading = false;
+  }
 }
 
 /** Exits and relaunches the app — call once `downloadAndInstallUpdate` resolves. */

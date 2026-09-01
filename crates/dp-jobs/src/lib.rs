@@ -99,11 +99,16 @@ const PROGRESS_COALESCE_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Per-job gate deciding whether a `Progress` event should actually go out
 /// right now. Always lets through: the very first progress tick of a job
-/// (`last_emit` still `None`), and the terminal tick where `done` has
-/// reached a known nonzero `total` — so the final, most up-to-date count
-/// is never dropped or delayed behind the job's own `Finished`/`Cancelled`
-/// event. Everything else is allowed at most once per
-/// [`PROGRESS_COALESCE_INTERVAL`].
+/// (`last_emit` still `None`), and the tick where `done` reaches a known
+/// nonzero `total` — so a job that runs to completion always emits its
+/// final, most up-to-date count. Everything else is allowed at most once
+/// per [`PROGRESS_COALESCE_INTERVAL`], and a suppressed tick is simply
+/// dropped rather than queued for later — this is a pure rate gate, not a
+/// trailing flush. A job that ends *without* reaching `total` (e.g.
+/// cancellation) can therefore lose its last displayed `Progress` count to
+/// this gate; nothing user-visible is lost by it, since the job's terminal
+/// event (`Finished`/`Cancelled`) always carries its own authoritative
+/// final tallies and the UI switches to that readout immediately.
 ///
 /// Shared (via `Arc`) across every clone of the [`JobCtx`] a single job
 /// run hands out — including the ones cloned per concurrently-processed

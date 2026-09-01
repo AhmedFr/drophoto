@@ -14,6 +14,16 @@ const SAMPLE_CAP = 60;
  * currently-stored `progress` event for the same job is ignored, since
  * concurrent scan workers each report their own `done` count and can
  * race each other's events out of order.
+ *
+ * An `item_error` never replaces a `started`/`progress` event for the same
+ * job: the metadata backfill can emit one per file (thousands in a single
+ * scan, un-coalesced), and if the store took each as the job's new "latest
+ * event", `ScanProgress`/`activeJobs` would snap to a blank 0/0 state
+ * between every pair of real progress ticks — the exact jitter the
+ * coalescing gate exists to prevent. Nothing currently reads `item_error`
+ * back out of `events`, so simply keeping the prior event is enough; a
+ * future reader that needs per-item errors should track them in their own
+ * slice rather than relying on this one.
  */
 export function applyJobEvent(
   events: Record<string, JobEvent>,
@@ -21,6 +31,9 @@ export function applyJobEvent(
 ): Record<string, JobEvent> {
   const current = events[event.job_id];
   if (event.kind === "progress" && current?.kind === "progress" && event.done < current.done) {
+    return events;
+  }
+  if (event.kind === "item_error" && (current?.kind === "started" || current?.kind === "progress")) {
     return events;
   }
   return { ...events, [event.job_id]: event };

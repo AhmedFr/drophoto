@@ -14,6 +14,11 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
   // just-finished scan's new failures stay invisible in the dropdown until
   // a refocus or remount.
   ["scan-error-count"],
+  // The row list `ScanErrorsDialog` pages through (`["scan-errors",
+  // driveId]`) — matched by this prefix. Without it, reopening the dialog
+  // after a second scan shows a freshly-invalidated header count next to
+  // stale cached rows.
+  ["scan-errors"],
 ];
 
 /**

@@ -97,6 +97,43 @@ it("does not let a rejected close() from the previous update break the new check
   await expect(checkForUpdate()).resolves.toBeNull();
 });
 
+it("does not close the pending update while a download is in flight, even if a re-check races it", async () => {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const close = vi.fn().mockResolvedValue(undefined);
+  let resolveDownload: () => void = () => {};
+  const downloadAndInstall = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveDownload = resolve;
+      }),
+  );
+  vi.mocked(check).mockResolvedValue({
+    version: "0.4.0",
+    body: null,
+    downloadAndInstall,
+    close,
+  } as never);
+  await checkForUpdate();
+
+  const installPromise = downloadAndInstallUpdate(() => {});
+
+  // A remount (e.g. Settings closed and reopened) fires another check while
+  // the download above is still streaming — it must not close() the Update
+  // resource the in-flight download is reading from.
+  vi.mocked(check).mockResolvedValueOnce({
+    version: "0.4.0",
+    body: null,
+    downloadAndInstall: vi.fn(),
+    close: () => Promise.resolve(),
+  } as never);
+  await checkForUpdate();
+  expect(close).not.toHaveBeenCalled();
+
+  resolveDownload();
+  await installPromise;
+  expect(close).not.toHaveBeenCalled();
+});
+
 it("propagates a rejection from check()", async () => {
   const { check } = await import("@tauri-apps/plugin-updater");
   vi.mocked(check).mockRejectedValue(new Error("placeholder pubkey"));
