@@ -2,6 +2,7 @@ import { memo, useMemo } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
 import { DotLoader } from "@/components/DotLoader";
+import { Progress } from "@/components/ui/progress";
 import { formatDurationShort } from "@/lib/format/duration";
 import { activeJobs, etaSeconds, jobRate, useJobsStore } from "@/lib/jobs/jobsStore";
 
@@ -50,34 +51,38 @@ type ActiveJobRowProps = {
  * single fast-moving scan would repaint every other active job's row on
  * every one of its progress ticks: the flicker this exists to prevent.
  *
- * The numeric spans use `tabular-nums` plus a fixed `min-width` so a
- * digit count changing (e.g. `9/10` -> `10/10`, or the rate gaining a
- * digit) never shifts the row's layout.
+ * Stacked three-line layout, because the sidebar is 212px wide and a real
+ * scan's readout (`715/16210 · 56.5/s · ~4m 34s left`) simply does not fit
+ * beside a label on one line — it used to overflow the strip. Line one is
+ * the label with `done/total` right-aligned, line two a slim progress bar
+ * (indeterminate during the walk, when there is no total yet), line three
+ * the rate/ETA. The bar is always mounted and line three keeps a fixed
+ * height even while empty, so the row never changes size as the walk
+ * finishes or the first rate sample lands.
  */
 const ActiveJobRow = memo(function ActiveJobRow({ jobId, label, done, total, rateLabel, etaLabel }: ActiveJobRowProps) {
+  const percent = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+  const rateLine = [rateLabel, etaLabel].filter(Boolean).join(" · ");
   return (
     <li className="border-b border-border last:border-b-0">
       <Link<typeof router, string, string>
         to={targetPath(jobId)}
-        className="flex items-center gap-2 px-3 py-2 font-mono text-[9.5px] tracking-[1px] text-muted-foreground uppercase hover:bg-surface hover:text-foreground"
+        className="flex flex-col gap-1.5 px-3 py-2 hover:bg-surface"
       >
-        <span className="min-w-0 truncate">{label}</span>
-        <span className="flex-1" />
-        {total > 0 ? (
-          <span className="flex shrink-0 items-center whitespace-nowrap font-mono text-[9px] text-faint normal-case">
-            <span className="inline-block min-w-[5ch] tabular-nums text-right">
+        <span className="flex items-center gap-2 font-mono text-[9.5px] tracking-[1px] text-muted-foreground uppercase">
+          <span className="min-w-0 flex-1 truncate">{label}</span>
+          {total > 0 ? (
+            <span className="shrink-0 font-mono text-[9px] whitespace-nowrap tabular-nums text-faint normal-case">
               {done}/{total}
             </span>
-            {rateLabel && (
-              <span className="inline-block min-w-[16ch] tabular-nums text-right">
-                · {rateLabel}
-                {etaLabel ? ` · ${etaLabel}` : ""}
-              </span>
-            )}
-          </span>
-        ) : (
-          <DotLoader size={11} />
-        )}
+          ) : (
+            <DotLoader size={11} />
+          )}
+        </span>
+        <Progress value={percent} indeterminate={total === 0} className="h-1" />
+        <span className="h-3 overflow-hidden text-right font-mono text-[9px] leading-3 whitespace-nowrap tabular-nums text-faint">
+          {rateLine}
+        </span>
       </Link>
     </li>
   );

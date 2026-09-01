@@ -129,25 +129,43 @@ it("shows a computed rate and eta once enough samples have landed", async () => 
   nowSpy.mockRestore();
 });
 
-// Regression test: the rate/ETA text used to wrap to a second line inside
-// the sidebar's fixed-width strip (the row's flex container could shrink
-// this span below its own reserved `min-w`, and without `whitespace-nowrap`
-// the browser wrapped the multi-word "· 6.5/s · ~12m left" text instead of
-// clipping/overflowing it). `whitespace-nowrap` forbids the wrap outright;
-// `shrink-0` keeps the flex layout from squeezing the span in the first
-// place.
-it("never wraps the rate/ETA text — whitespace-nowrap with a non-shrinking reserved width", async () => {
+// Regression test: the row used to cram label + counts + rate/ETA onto a
+// single flex line, which overflowed the sidebar's 212px strip during a
+// real scan ("715/16210 · 56.5/s · ~4m 34s left"). The rework stacks the
+// readout: the rate/ETA lives on its own full-width, nowrap line so it can
+// never collide with the label, and it keeps a fixed height (`h-3`) while
+// empty so the row doesn't grow when the first rate sample lands.
+it("renders the rate/ETA on its own fixed-height nowrap line, separate from the label", async () => {
   const nowSpy = vi.spyOn(Date, "now");
   nowSpy.mockReturnValueOnce(0);
   useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 0, total: 100, current: "a" });
   nowSpy.mockReturnValueOnce(10_000);
+  useJobsStore.getState().setLabel("scan-0", "T7");
   useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 20, total: 100, current: "b" });
   nowSpy.mockReturnValue(10_000);
 
   renderWithRouter(<ActiveJobs />);
 
-  const rateSpan = await screen.findByText(/2\.0\/s/);
-  const countsRow = rateSpan.parentElement as HTMLElement;
-  expect(countsRow).toHaveClass("whitespace-nowrap", "shrink-0");
+  const rateLine = await screen.findByText(/2\.0\/s · ~\d+.* left/);
+  expect(rateLine).toHaveClass("whitespace-nowrap", "h-3");
+  // The label lives on a different line entirely — never a flex sibling
+  // competing for the same row's width.
+  const label = screen.getByText("Scan T7");
+  expect(rateLine.parentElement).not.toBe(label.parentElement);
   nowSpy.mockRestore();
+});
+
+it("shows a determinate progress bar once the scan has a total", async () => {
+  useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 3, total: 10, current: "a.jpg" });
+  renderWithRouter(<ActiveJobs />);
+
+  expect(await screen.findByRole("progressbar")).toBeInTheDocument();
+});
+
+it("keeps the progress bar mounted (indeterminate) during the walk phase, total 0", async () => {
+  useJobsStore.getState().applyEvent({ kind: "progress", job_id: "scan-0", done: 0, total: 0, current: "a.jpg" });
+  renderWithRouter(<ActiveJobs />);
+
+  expect(await screen.findByRole("progressbar")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toBeInTheDocument();
 });
