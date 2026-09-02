@@ -4,7 +4,7 @@
 
 use crate::media::row_to_media;
 use crate::sqlite::db;
-use dp_core::{DpResult, MediaRow, Tag};
+use dp_core::{DpResult, MediaRow, SidecarHealth, Tag};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use std::collections::HashSet;
 
@@ -182,4 +182,46 @@ pub(crate) async fn mark_sidecar_pending(pool: &SqlitePool, media_id: i64) -> Dp
         .await
         .map_err(db)?;
     Ok(())
+}
+
+/// Every media row on `drive_id` with at least one `media_tags` link — the
+/// exact set `check_sidecar_files` stats a `.xmp` for, and whose count is
+/// [`SidecarHealth::tagged`]. `EXISTS` rather than a `JOIN` +
+/// `SELECT DISTINCT`: a row with several tags must still appear once.
+pub(crate) async fn list_tagged_media(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+    let rows = sqlx::query(
+        "SELECT * FROM media WHERE drive_id = ? \
+         AND EXISTS (SELECT 1 FROM media_tags WHERE media_tags.media_id = media.id) \
+         ORDER BY id",
+    )
+    .bind(drive_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter().map(row_to_media).collect()
+}
+
+/// `drive_id`'s sidecar coverage for Settings' SIDECARS panel — see
+/// [`SidecarHealth`]'s doc comment for what each count means.
+pub(crate) async fn sidecar_health(pool: &SqlitePool, drive_id: i64) -> DpResult<SidecarHealth> {
+    let tagged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media WHERE drive_id = ? \
+         AND EXISTS (SELECT 1 FROM media_tags WHERE media_tags.media_id = media.id)",
+    )
+    .bind(drive_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db)?;
+
+    let pending: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE drive_id = ? AND sidecar_pending = 1")
+            .bind(drive_id)
+            .fetch_one(pool)
+            .await
+            .map_err(db)?;
+
+    Ok(SidecarHealth {
+        tagged: tagged as u64,
+        pending: pending as u64,
+    })
 }

@@ -47,6 +47,7 @@ function mockDefaults() {
     if (cmd === "get_settings") return settings;
     if (cmd === "storage_usage") return usage;
     if (cmd === "tool_health") return { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+    if (cmd === "list_drives") return [];
     return undefined;
   });
 }
@@ -88,6 +89,13 @@ it("renders the tools section with each tool's resolved state", async () => {
   renderPage();
   expect(await screen.findByText("found at /opt/homebrew/bin/exiftool")).toBeInTheDocument();
   expect(screen.getByText("brew install ffmpeg")).toBeInTheDocument();
+});
+
+it("renders the sidecars section after tools", async () => {
+  mockDefaults();
+  renderPage();
+  const labels = await screen.findAllByText(/^(TOOLS|SIDECARS)$/);
+  expect(labels.map((el) => el.textContent)).toEqual(["TOOLS", "SIDECARS"]);
 });
 
 it("renders the danger zone with the reset button", async () => {

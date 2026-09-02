@@ -3,6 +3,7 @@ import { PREVIEW_EDGES } from "@/lib/api/settings";
 import { UpdatesSection } from "./components/UpdatesSection";
 import { StorageSection } from "./components/StorageSection";
 import { ToolsSection } from "./components/ToolsSection";
+import { SidecarsSection } from "./components/SidecarsSection";
 import { QualityPicker } from "./components/QualityPicker";
 import { DangerZone } from "./components/DangerZone";
 import { useSettingsData } from "./hooks/useSettingsData";
@@ -50,6 +51,8 @@ export function SettingsPage() {
         />
 
         <ToolsSection tools={tools} loading={toolsLoading} error={toolsError} />
+
+        <SidecarsSection />
 
         {settingsError && <p className="px-6 pb-2 font-mono text-[11px] text-red-400">{settingsError}</p>}
 

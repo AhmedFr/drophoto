@@ -41,6 +41,8 @@ pub fn run() {
             commands::search::search_media,
             commands::search::rebuild_fts,
             commands::sidecars::start_sidecar_sync_all,
+            commands::sidecars::sidecar_health,
+            commands::sidecars::check_sidecar_files,
             commands::sources::detect_sources,
             commands::sources::list_sources,
             commands::sources::save_sources,

@@ -181,6 +181,111 @@ async fn has_sidecar_pending_reports_whether_any_row_is_flagged() {
 }
 
 #[tokio::test]
+async fn list_tagged_media_returns_only_rows_with_at_least_one_tag() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let b = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    c.upsert_media(nm(drive_id, "c.jpg", "h-c")).await.unwrap();
+
+    c.tag_media(&[a], &["Trip".into()], &[]).await.unwrap();
+    c.tag_media(&[b], &["Trip".into(), "beach".into()], &[])
+        .await
+        .unwrap();
+
+    let tagged = c.list_tagged_media(drive_id).await.unwrap();
+    let mut ids: Vec<i64> = tagged.iter().map(|r| r.id).collect();
+    ids.sort();
+    // `b` has two tags but must appear exactly once.
+    assert_eq!(ids, vec![a, b]);
+}
+
+#[tokio::test]
+async fn list_tagged_media_is_scoped_to_one_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let other_id = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            capacity: 100,
+            free: 40,
+            volume_uuid: None,
+            volume_label: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h1")).await.unwrap();
+    c.tag_media(&[a], &["x".into()], &[]).await.unwrap();
+
+    assert_eq!(c.list_tagged_media(drive_id).await.unwrap().len(), 1);
+    assert!(c.list_tagged_media(other_id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sidecar_health_counts_tagged_and_pending_independently() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let b = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    c.upsert_media(nm(drive_id, "c.jpg", "h-c")).await.unwrap();
+
+    let health = c.sidecar_health(drive_id).await.unwrap();
+    assert_eq!(health.tagged, 0);
+    assert_eq!(health.pending, 0);
+
+    c.tag_media(&[a, b], &["Trip".into()], &[]).await.unwrap();
+    let health = c.sidecar_health(drive_id).await.unwrap();
+    assert_eq!(health.tagged, 2);
+    assert_eq!(health.pending, 2);
+
+    // A row can be tagged with its sidecar already written — `pending`
+    // must drop while `tagged` stays put.
+    c.clear_sidecar_pending(a).await.unwrap();
+    let health = c.sidecar_health(drive_id).await.unwrap();
+    assert_eq!(health.tagged, 2);
+    assert_eq!(health.pending, 1);
+
+    // `mark_sidecar_pending` (e.g. from `check_sidecar_files` finding a
+    // missing `.xmp`) bumps `pending` without touching `tagged`.
+    c.mark_sidecar_pending(a).await.unwrap();
+    let health = c.sidecar_health(drive_id).await.unwrap();
+    assert_eq!(health.tagged, 2);
+    assert_eq!(health.pending, 2);
+}
+
+#[tokio::test]
+async fn sidecar_health_is_scoped_to_one_drive() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let other_id = c
+        .register_drive(NewDrive {
+            name: "B".into(),
+            mount_path: "/Volumes/B".into(),
+            role: DriveRole::Archive,
+            capacity: 100,
+            free: 40,
+            volume_uuid: None,
+            volume_label: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h1")).await.unwrap();
+    c.tag_media(&[a], &["x".into()], &[]).await.unwrap();
+
+    let health = c.sidecar_health(drive_id).await.unwrap();
+    assert_eq!(health.tagged, 1);
+    assert_eq!(health.pending, 1);
+
+    let other_health = c.sidecar_health(other_id).await.unwrap();
+    assert_eq!(other_health.tagged, 0);
+    assert_eq!(other_health.pending, 0);
+}
+
+#[tokio::test]
 async fn has_sidecar_pending_is_scoped_to_one_drive() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
     let drive_id = drive(&c).await;

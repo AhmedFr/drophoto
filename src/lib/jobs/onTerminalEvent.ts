@@ -47,8 +47,9 @@ const INVALIDATE_KEYS: readonly (readonly string[])[] = [
  * trigger it, is a long-running maintenance pass, not something with a
  * result to review). A sidecar sync writes `.xmp` files on disk, clears a
  * flag no query here reads, and can import externally-edited subjects
- * into the catalog — so only the tag queries are refreshed. A geocode
- * sweep assigns `place_id`s — so only the place, search, and media
+ * into the catalog, and either can shift a drive's tagged/pending
+ * counts — so only the tag and sidecar-health queries are refreshed. A
+ * geocode sweep assigns `place_id`s — so only the place, search, and media
  * queries are refreshed. A regen sweep only ever rewrites cached preview
  * bytes in place (same hash, same dimensions on disk elsewhere) — so only
  * the storage-usage query (Settings' storage panel) is refreshed. Either
@@ -68,9 +69,13 @@ export function onTerminalEvent(event: JobEvent, queryClient: QueryClient, label
   if (isSidecarSync) {
     // The sweep can import externally-added subjects into the catalog
     // (see `merged_names` in dp-jobs), so the tag queries — and only
-    // those — are refreshed; the gallery grid itself is untouched.
+    // those — are refreshed; the gallery grid itself is untouched. Every
+    // written/cleared row also shifts the SIDECARS panel's per-drive
+    // tagged/pending counts (`["sidecar-health", driveId]`, matched by
+    // this prefix), so that's refreshed too.
     queryClient.invalidateQueries({ queryKey: ["tags"] });
     queryClient.invalidateQueries({ queryKey: ["media-tags"] });
+    queryClient.invalidateQueries({ queryKey: ["sidecar-health"] });
     if (event.failed === 0) return;
   } else if (isGeocode) {
     // The sweep only ever assigns `place_id`s (never touches tags or

@@ -935,6 +935,14 @@ impl Catalog for FailingCatalog {
         self.0.mark_sidecar_pending(media_id).await
     }
 
+    async fn list_tagged_media(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        self.0.list_tagged_media(drive_id).await
+    }
+
+    async fn sidecar_health(&self, drive_id: i64) -> DpResult<dp_core::SidecarHealth> {
+        self.0.sidecar_health(drive_id).await
+    }
+
     async fn sync_fts(&self, media_id: i64) -> DpResult<()> {
         self.0.sync_fts(media_id).await
     }

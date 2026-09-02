@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use dp_core::{
     AppSettings, DpResult, Drive, JobRunRow, MediaMetadata, MediaQuery, MediaRow, NewDrive, NewJobRun,
     NewMedia, NewPlace, NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount,
-    ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, Source, Tag, UnorganizedSummary,
+    ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source, Tag, UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -174,6 +174,12 @@ pub trait Catalog: Send + Sync {
     async fn has_sidecar_pending(&self, drive_id: i64) -> DpResult<bool>;
     async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
     async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
+    /// Every media row on `drive_id` with at least one tag — see
+    /// [`crate::tags::list_tagged_media`]'s doc comment.
+    async fn list_tagged_media(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    /// `drive_id`'s sidecar coverage (tagged/pending counts) for
+    /// Settings' SIDECARS panel — see [`dp_core::SidecarHealth`].
+    async fn sidecar_health(&self, drive_id: i64) -> DpResult<SidecarHealth>;
     /// Rebuilds one media row's FTS text (stem, tags, place, camera) from
     /// current catalog state; deletes the FTS row when the media row is gone.
     /// `media.rs`/`tags.rs` never propagate this method's errors to the
@@ -458,6 +464,14 @@ impl Catalog for SqliteCatalog {
 
     async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()> {
         tags::mark_sidecar_pending(&self.pool, media_id).await
+    }
+
+    async fn list_tagged_media(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        tags::list_tagged_media(&self.pool, drive_id).await
+    }
+
+    async fn sidecar_health(&self, drive_id: i64) -> DpResult<SidecarHealth> {
+        tags::sidecar_health(&self.pool, drive_id).await
     }
 
     async fn sync_fts(&self, media_id: i64) -> DpResult<()> {

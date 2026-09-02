@@ -619,6 +619,21 @@ pub struct ToolHealth {
     pub ffmpeg: Option<PathBuf>,
 }
 
+/// Per-drive sidecar coverage for Settings' SIDECARS panel — returned by
+/// `Catalog::sidecar_health`/the `sidecar_health` Tauri command. `tagged`
+/// is how many of the drive's media rows carry at least one tag (the set
+/// `check_sidecar_files` stats against); `pending` is how many rows are
+/// currently flagged `sidecar_pending` (queued for the next
+/// `SidecarSyncJob` sweep — whether from a tag edit or `check_sidecar_files`
+/// finding a missing `.xmp`). Both counts move independently: a row can be
+/// tagged with its sidecar already written (not pending), or pending from a
+/// tag edit that hasn't synced yet.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+pub struct SidecarHealth {
+    pub tagged: u64,
+    pub pending: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
