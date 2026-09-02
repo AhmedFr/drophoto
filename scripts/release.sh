@@ -10,9 +10,12 @@
 #   xcrun notarytool store-credentials drophoto-notary \
 #     --apple-id <your-apple-id-email> --team-id 82S6RGN448
 #
-# Also one-time: an updater signing keypair at ~/.tauri/drophoto_updater.key
-# (see scripts/updater-keygen.sh) — required for every release from here on,
-# since an update the plugin can't verify is one it won't install.
+# Also one-time: an updater signing keypair (see scripts/updater-keygen.sh)
+# — required for every release from here on, since an update the plugin
+# can't verify is one it won't install. The private half lives in the login
+# Keychain (service drophoto-updater-key, imported by updater-keygen.sh or
+# migrated from the old plaintext file by updater-key-to-keychain.sh); only
+# the public half stays on disk at ~/.tauri/drophoto_updater.key.pub.
 #
 # Usage: scripts/release.sh <version>   (must match tauri.conf.json/package.json)
 set -eu
@@ -29,11 +32,29 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
-UPDATER_KEY="$HOME/.tauri/drophoto_updater.key"
-if [ ! -f "$UPDATER_KEY" ]; then
-    echo "error: $UPDATER_KEY not found." >&2
+# The signing key is read from the login Keychain — never from a plaintext
+# file (issue #28: the key gates code delivery to every install and can't
+# be rotated, so it must not sit readable in the home directory). A
+# still-present plaintext file is a hard error even when the Keychain item
+# exists, so the unprotected copy can't quietly linger.
+KEYCHAIN_SERVICE="${DROPHOTO_KEYCHAIN_SERVICE:-drophoto-updater-key}"
+UPDATER_KEY="${DROPHOTO_UPDATER_KEY_PATH:-$HOME/.tauri/drophoto_updater.key}"
+if [ -f "$UPDATER_KEY" ]; then
+    echo "error: plaintext signing key found at $UPDATER_KEY." >&2
+    echo "run scripts/updater-key-to-keychain.sh to move it into the login Keychain" >&2
+    echo "(and let it delete the plaintext file) — release.sh no longer reads key files." >&2
+    exit 1
+fi
+if ! TAURI_SIGNING_PRIVATE_KEY="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "${USER:-$(id -un)}" -w 2>/dev/null)"; then
+    echo "error: no '$KEYCHAIN_SERVICE' item in the login Keychain (and no key file at $UPDATER_KEY)." >&2
     echo "run scripts/updater-keygen.sh first to generate the updater signing keypair" >&2
-    echo "(and put its public half in src-tauri/tauri.conf.json's plugins.updater.pubkey)." >&2
+    echo "(and put its public half in src-tauri/tauri.conf.json's plugins.updater.pubkey)," >&2
+    echo "or restore the key from backup and import it with scripts/updater-key-to-keychain.sh." >&2
+    exit 1
+fi
+if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+    echo "error: the '$KEYCHAIN_SERVICE' Keychain item exists but holds EMPTY key material." >&2
+    echo "delete it and re-import the real key from backup with scripts/updater-key-to-keychain.sh." >&2
     exit 1
 fi
 
@@ -58,8 +79,9 @@ if [ "$VERSION" != "$CONF_VERSION" ]; then
     exit 1
 fi
 
-TAURI_SIGNING_PRIVATE_KEY="$(cat "$UPDATER_KEY")"
 export TAURI_SIGNING_PRIVATE_KEY
+# The key material itself is passwordless (tauri has no re-encrypt flow);
+# at-rest protection comes from the Keychain, not a passphrase on the blob.
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
