@@ -120,7 +120,7 @@ async fn check_sidecar_files_at(catalog: &Arc<dyn Catalog>, drive_id: i64, mount
 mod tests {
     use super::*;
     use dp_catalog::SqliteCatalog;
-    use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia};
+    use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, NewSource};
 
     fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         NewMedia {
@@ -245,5 +245,47 @@ mod tests {
 
         let pending = catalog.list_sidecar_pending(drive_id).await.unwrap();
         assert_eq!(pending.iter().map(|r| r.id).collect::<Vec<_>>(), vec![a]);
+    }
+
+    /// MAJOR-1: a photo deleted outside drophoto takes its `.xmp` with it —
+    /// its row is marked `missing_at`, and there's no sidecar to verify.
+    /// Without the `missing_at IS NULL` filter in `list_tagged_media`, this
+    /// sweep would stat a sidecar that's correctly absent, flag
+    /// `sidecar_pending`, and — since the file is gone — nothing could ever
+    /// clear it, wedging a repair queue that fails every launch forever.
+    #[tokio::test]
+    async fn ignores_a_tagged_row_marked_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+        // No sidecar for a.jpg on disk — if the missing row weren't
+        // excluded, this would be flagged pending.
+
+        let (catalog, drive_id) = catalog_with_drive(dir.path()).await;
+        let source_id = catalog
+            .upsert_source(NewSource {
+                drive_id,
+                rel_path: "".into(),
+            })
+            .await
+            .unwrap()
+            .id;
+        let mut media = nm(drive_id, "a.jpg", "h-a");
+        media.source_id = Some(source_id);
+        let a = catalog.upsert_media(media).await.unwrap();
+        catalog.tag_media(&[a], &["Trip".into()], &[]).await.unwrap();
+        catalog.clear_sidecar_pending(a).await.unwrap();
+
+        // The last scan didn't see a.jpg — mark it missing the way a real
+        // scan's reconcile step would.
+        catalog.reconcile_missing(drive_id, source_id, &[]).await.unwrap();
+
+        let missing = check_sidecar_files_at(&catalog, drive_id, dir.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            missing, 0,
+            "a missing row's sidecar can't be written — it must not be queued"
+        );
+        assert!(catalog.list_sidecar_pending(drive_id).await.unwrap().is_empty());
     }
 }

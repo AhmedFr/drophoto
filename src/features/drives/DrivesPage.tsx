@@ -160,6 +160,10 @@ export function DrivesPage() {
       queryClient.invalidateQueries({ queryKey: ["media"] });
       queryClient.invalidateQueries({ queryKey: ["media-count"] });
       queryClient.invalidateQueries({ queryKey: ["driveMediaCount", removedDriveId] });
+      // Removing missing rows can change both `tagged` and `pending` for
+      // this drive — keep Settings' SIDECARS panel from showing stale
+      // counts until an unrelated remount refetches it.
+      queryClient.invalidateQueries({ queryKey: ["sidecar-health"] });
       setDriveForMissing(null);
     },
   });

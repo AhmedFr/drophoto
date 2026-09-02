@@ -108,6 +108,22 @@ impl AppState {
             fallback,
         };
 
+        // The static `assetProtocol.scope` in `tauri.conf.json` only covers
+        // the default `$APPDATA/thumbs/**` location, resolved once at build
+        // time. When Settings → Cache location relocates the thumbs root
+        // outside `$APPDATA` (see `commands::settings::move_cache`), the
+        // webview's `asset:` protocol (`convertFileSrc`, used for every
+        // thumbnail/preview) would 403 everything under the new root unless
+        // we also register the *actually resolved* root here at runtime —
+        // this is in addition to, not instead of, the static config scope,
+        // which still covers the unmoved default case.
+        if let Err(e) = app.asset_protocol_scope().allow_directory(&thumbs_root, true) {
+            tracing::warn!(
+                "failed to register {} in the asset protocol scope: {e}",
+                thumbs_root.display()
+            );
+        }
+
         let (tx, mut rx) = mpsc::channel(JOB_EVENT_CHANNEL_CAPACITY);
         let runner = JobRunner::new(tx).with_recorder(catalog.clone());
 

@@ -28,12 +28,25 @@ export function CacheLocationSection() {
 
   // The folder the user picked, while the confirm dialog is open.
   const [pickedDir, setPickedDir] = useState<string | null>(null);
+  // Set only if the move succeeded but the relaunch itself failed — kept
+  // separate from `moveMutation.error`, which would wrongly suggest the
+  // move (not the relaunch) needs retrying.
+  const [relaunchError, setRelaunchError] = useState(false);
 
   const moveMutation = useMutation({
     mutationFn: moveCache,
-    onSuccess: () => {
-      // The setting is persisted; only a fresh process reads it.
-      relaunchApp();
+    onSuccess: async () => {
+      // The setting is persisted; only a fresh process reads it. Await
+      // (rather than fire-and-forget) so a relaunch failure — the app
+      // stays running with a `ThumbStore` pointing at a directory that no
+      // longer exists — surfaces instead of leaving the dialog silently
+      // open forever.
+      setRelaunchError(false);
+      try {
+        await relaunchApp();
+      } catch {
+        setRelaunchError(true);
+      }
     },
   });
 
@@ -45,6 +58,7 @@ export function CacheLocationSection() {
   function handleDialogChange(open: boolean) {
     if (!open) {
       setPickedDir(null);
+      setRelaunchError(false);
       moveMutation.reset();
     }
   }
@@ -97,6 +111,12 @@ export function CacheLocationSection() {
           </p>
           {moveMutation.error && (
             <p className="font-mono text-[11px] text-red-400">{(moveMutation.error as Error).message}</p>
+          )}
+          {relaunchError && (
+            <p className="font-mono text-[11px] text-red-400">
+              Cache moved, but drophoto couldn't relaunch automatically — quit and reopen drophoto manually to
+              finish.
+            </p>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => handleDialogChange(false)}>

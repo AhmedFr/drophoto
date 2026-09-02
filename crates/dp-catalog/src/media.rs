@@ -411,6 +411,14 @@ pub(crate) async fn list_scan_errors(
 /// caller in `dp_jobs::ScanJob` for why a source whose walk errored, or a
 /// scan that was cancelled, never reaches this call at all.
 ///
+/// One deliberate consequence of that scoping: `source_id = ?` never
+/// matches a legacy row (`source_id IS NULL`, from before sources
+/// existed) — SQL's `NULL = ?` is never true — so those rows are never
+/// marked missing here, and never cleared either. That's not an oversight:
+/// a legacy row was never attributed to any source, so there is no walk
+/// result that could correctly speak for it either way. Consistent with
+/// `DriveSummary.legacy` treating those rows as a separate bucket.
+///
 /// `seen_rel_paths` is loaded into a temp table (`INSERT OR IGNORE`,
 /// chunked at 500 rows per statement to stay well under SQLite's default
 /// bound-parameter limit) rather than inlined into a `NOT IN (...)`/`IN

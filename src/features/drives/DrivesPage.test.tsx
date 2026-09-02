@@ -627,6 +627,35 @@ it("removes a drive's missing media with no typed confirmation and closes the di
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });
 
+it("invalidates sidecar-health after removing a drive's missing media (MINOR-2)", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_missing_media") return 4;
+    if (cmd === "remove_missing_media") return 4;
+    return undefined;
+  });
+
+  const queryClient = new QueryClient();
+  const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+  render(
+    <QueryClientProvider client={queryClient}>
+      <DrivesPage />
+    </QueryClientProvider>,
+  );
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Remove missing… (4)" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove missing" }));
+
+  // Removing missing rows changes both `tagged` and `pending` for this
+  // drive — Settings' SIDECARS panel must not keep showing stale counts.
+  await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["sidecar-health"] }));
+});
+
 it("shows the backend's refusal message when a job is running on the drive for Remove missing", async () => {
   mockIPC((cmd) => {
     if (cmd === "list_drives") return [onlineDrive];

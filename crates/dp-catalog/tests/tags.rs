@@ -1,5 +1,5 @@
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia};
+use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, NewSource};
 
 fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
     NewMedia {
@@ -40,6 +40,30 @@ async fn drive(c: &SqliteCatalog) -> i64 {
     .await
     .unwrap()
     .id
+}
+
+/// A drive plus a registered source — needed to exercise `reconcile_missing`
+/// (which, per `MINOR-3`, only ever touches rows attributed to a source).
+async fn drive_with_source(c: &SqliteCatalog) -> (i64, i64) {
+    let drive_id = drive(c).await;
+    let source_id = c
+        .upsert_source(NewSource {
+            drive_id,
+            rel_path: "".into(),
+        })
+        .await
+        .unwrap()
+        .id;
+    (drive_id, source_id)
+}
+
+/// Same shape as [`nm`], but attributed to `source_id` so
+/// `reconcile_missing` can mark it missing.
+fn nm_with_source(drive_id: i64, rel_path: &str, hash: &str, source_id: i64) -> NewMedia {
+    NewMedia {
+        source_id: Some(source_id),
+        ..nm(drive_id, rel_path, hash)
+    }
 }
 
 #[tokio::test]
@@ -307,4 +331,94 @@ async fn has_sidecar_pending_is_scoped_to_one_drive() {
 
     assert!(c.has_sidecar_pending(drive_id).await.unwrap());
     assert!(!c.has_sidecar_pending(other_id).await.unwrap());
+}
+
+/// MAJOR-1/MINOR-1: a photo deleted outside drophoto takes its `.xmp` with
+/// it — the row is marked `missing_at` by `reconcile_missing`, and has no
+/// sidecar that can ever be verified or written. `list_tagged_media` is
+/// what `check_sidecar_files` sweeps, so a missing row must never appear
+/// in it (that's what previously wedged `sidecar_pending` on permanently).
+#[tokio::test]
+async fn list_tagged_media_excludes_rows_marked_missing() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let (drive_id, source_id) = drive_with_source(&c).await;
+    let present = c
+        .upsert_media(nm_with_source(drive_id, "present.jpg", "h-present", source_id))
+        .await
+        .unwrap();
+    let gone = c
+        .upsert_media(nm_with_source(drive_id, "gone.jpg", "h-gone", source_id))
+        .await
+        .unwrap();
+    c.tag_media(&[present, gone], &["Trip".into()], &[])
+        .await
+        .unwrap();
+
+    // The last scan didn't see gone.jpg — mark it missing exactly the way
+    // a real scan's reconcile step would.
+    c.reconcile_missing(drive_id, source_id, &["present.jpg".to_string()])
+        .await
+        .unwrap();
+
+    let tagged = c.list_tagged_media(drive_id).await.unwrap();
+    let ids: Vec<i64> = tagged.iter().map(|r| r.id).collect();
+    assert_eq!(ids, vec![present], "the missing row must be excluded");
+}
+
+/// Same seam, `sidecar_health`'s counts: a missing row must count toward
+/// neither `tagged` nor `pending`, or the two numbers stop agreeing (and
+/// the panel reports a repair queue that can never drain).
+#[tokio::test]
+async fn sidecar_health_excludes_rows_marked_missing() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let (drive_id, source_id) = drive_with_source(&c).await;
+    let present = c
+        .upsert_media(nm_with_source(drive_id, "present.jpg", "h-present", source_id))
+        .await
+        .unwrap();
+    let gone = c
+        .upsert_media(nm_with_source(drive_id, "gone.jpg", "h-gone", source_id))
+        .await
+        .unwrap();
+    c.tag_media(&[present, gone], &["Trip".into()], &[])
+        .await
+        .unwrap();
+
+    let health = c.sidecar_health(drive_id).await.unwrap();
+    assert_eq!(health.tagged, 2);
+    assert_eq!(health.pending, 2);
+
+    c.reconcile_missing(drive_id, source_id, &["present.jpg".to_string()])
+        .await
+        .unwrap();
+
+    let health = c.sidecar_health(drive_id).await.unwrap();
+    assert_eq!(health.tagged, 1, "the missing row must drop out of tagged");
+    assert_eq!(health.pending, 1, "the missing row must drop out of pending");
+}
+
+/// `has_sidecar_pending` gates `start_sidecar_sync_all` (fired on every app
+/// launch and after every tag edit) — if it stayed `true` for a row whose
+/// file is gone, that sweep would spawn a guaranteed-to-fail job forever.
+#[tokio::test]
+async fn has_sidecar_pending_ignores_rows_marked_missing() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let (drive_id, source_id) = drive_with_source(&c).await;
+    let gone = c
+        .upsert_media(nm_with_source(drive_id, "gone.jpg", "h-gone", source_id))
+        .await
+        .unwrap();
+    c.tag_media(&[gone], &["Trip".into()], &[]).await.unwrap();
+    assert!(c.has_sidecar_pending(drive_id).await.unwrap());
+
+    // gone.jpg vanishes and the next scan marks it missing; its
+    // `sidecar_pending` flag is deliberately left set by `sidecar_sync`
+    // (nothing else can ever clear it), so the exclusion has to happen on
+    // the read side.
+    c.reconcile_missing(drive_id, source_id, &[]).await.unwrap();
+
+    assert!(
+        !c.has_sidecar_pending(drive_id).await.unwrap(),
+        "a missing row's stuck pending flag must not keep re-triggering the sweep"
+    );
 }

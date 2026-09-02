@@ -86,6 +86,27 @@ it("keeps the dialog open with the error when the move is refused, and never rel
   expect(relaunchApp).not.toHaveBeenCalled();
 });
 
+it("surfaces a relaunch failure instead of leaving the dialog silent (MINOR-4)", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "cache_status") return { thumbs_dir: "/old/thumbs", fallback: false };
+    if (cmd === "move_cache") return "/Volumes/Fast/drophoto-thumbs";
+    return undefined;
+  });
+  vi.mocked(pickFolder).mockResolvedValue("/Volumes/Fast");
+  vi.mocked(relaunchApp).mockRejectedValue(new Error("relaunch failed"));
+  renderSection();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Change…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Move and relaunch" }));
+
+  // The move itself succeeded — only the relaunch failed — so the user
+  // must be told to finish the job manually rather than staring at a
+  // dialog that silently never closes.
+  await waitFor(() => expect(relaunchApp).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText(/quit and reopen drophoto manually/i)).toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
 it("does nothing when the folder picker is cancelled", async () => {
   mockIPC((cmd) => {
     if (cmd === "cache_status") return { thumbs_dir: "/old/thumbs", fallback: false };
