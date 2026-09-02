@@ -116,8 +116,31 @@ pub async fn start_regen_previews(state: State<'_, AppState>) -> Result<String, 
 /// (in its documented `thumbs/`-then-`catalog.db*` order) has succeeded.
 #[tauri::command]
 pub async fn reset_app_data(state: State<'_, AppState>) -> Result<(), DpError> {
-    reset_app_data_at(&state.app_data_dir, state.store.root())?;
+    let roots = cache_roots_to_delete(
+        state.store.root(),
+        &state.catalog.get_settings().await?.thumbs_dir,
+    );
+    reset_app_data_at(&state.app_data_dir, &roots)?;
     std::process::exit(0);
+}
+
+/// Every cache root a reset/uninstall should delete: the ACTIVE store
+/// root, plus a configured-but-inactive one (the app launched in fallback
+/// mode with the cache drive unplugged, and it's reachable again now).
+/// The inactive root is only included when it's structurally a cache dir
+/// (`is_cache_shaped` — leaf literally `drophoto-thumbs`), actually
+/// exists, and isn't just the active root again; a configured cache
+/// that's still unreachable can't be deleted from here and is left as an
+/// orphan of re-renderable thumbnails on a drive that isn't in use.
+fn cache_roots_to_delete(active_root: &Path, configured: &Option<String>) -> Vec<PathBuf> {
+    let mut roots = vec![active_root.to_path_buf()];
+    if let Some(configured) = configured {
+        let p = PathBuf::from(configured);
+        if crate::state::is_cache_shaped(&p) && p.exists() && p != active_root {
+            roots.push(p);
+        }
+    }
+    roots
 }
 
 /// The actual deletion [`reset_app_data`] performs, factored out so it can
@@ -140,10 +163,11 @@ pub async fn reset_app_data(state: State<'_, AppState>) -> Result<(), DpError> {
 /// have been relocated (Settings → Cache location): the active store root
 /// — wherever it lives — is what gets deleted, not a possibly-empty
 /// default `thumbs/` under the app-data dir.
-fn reset_app_data_at(dir: &Path, thumbs_root: &Path) -> DpResult<()> {
-    let thumbs = thumbs_root.to_path_buf();
-    if thumbs.exists() {
-        std::fs::remove_dir_all(&thumbs).map_err(|e| DpError::io(&e, thumbs.display().to_string()))?;
+fn reset_app_data_at(dir: &Path, thumbs_roots: &[PathBuf]) -> DpResult<()> {
+    for thumbs in thumbs_roots {
+        if thumbs.exists() {
+            std::fs::remove_dir_all(thumbs).map_err(|e| DpError::io(&e, thumbs.display().to_string()))?;
+        }
     }
 
     for suffix in ["", "-wal", "-shm"] {
@@ -193,7 +217,11 @@ pub async fn uninstall_app(state: State<'_, AppState>) -> Result<(), DpError> {
         path: Some(bundle_path.display().to_string()),
     })?;
 
-    if let Err(data_err) = reset_app_data_at(&state.app_data_dir, state.store.root()) {
+    let roots = cache_roots_to_delete(
+        state.store.root(),
+        &state.catalog.get_settings().await?.thumbs_dir,
+    );
+    if let Err(data_err) = reset_app_data_at(&state.app_data_dir, &roots) {
         return Err(DpError::Io {
             message: partial_uninstall_message(&state.app_data_dir, &data_err),
             path: Some(state.app_data_dir.display().to_string()),
@@ -387,17 +415,18 @@ pub async fn cache_status(state: State<'_, AppState>) -> Result<CacheStatus, DpE
 /// authoritative and the setting untouched.
 #[tauri::command]
 pub async fn move_cache(state: State<'_, AppState>, new_dir: String) -> Result<String, DpError> {
-    if state.any_job_running() {
-        return Err(DpError::Unsupported {
-            message: "a job is running — wait for it to finish before moving the cache".into(),
-            path: None,
-        });
-    }
+    refuse_move_while_running(state.any_job_running())?;
+    // Held (RAII) until this function returns: job admission refuses
+    // every new job for the whole move, closing the other half of the
+    // race the check above closes (a job starting mid-move).
+    let _guard = state.begin_cache_move();
 
     let mut source_roots = Vec::new();
     for drive in state.catalog.list_drives().await? {
         let Some(mount) = drive.mount_path else { continue };
-        for source in state.catalog.list_enabled_sources(drive.id).await? {
+        // ALL sources, enabled or not — a disabled source is still a
+        // photo folder the cache must never move into.
+        for source in state.catalog.list_sources(drive.id).await? {
             source_roots.push(PathBuf::from(&mount).join(&source.rel_path));
         }
     }
@@ -417,6 +446,20 @@ pub async fn move_cache(state: State<'_, AppState>, new_dir: String) -> Result<S
     let dest_str = dest.display().to_string();
     state.catalog.set_thumbs_dir(Some(&dest_str)).await?;
     Ok(dest_str)
+}
+
+/// The move/job gate's refusal, factored pure so the exact behavior is
+/// unit-testable without an `AppState`: any running job refuses the move
+/// outright (a scan or regen writing thumbnails mid-move would strand
+/// files in a tree about to be deleted).
+fn refuse_move_while_running(any_job_running: bool) -> DpResult<()> {
+    if any_job_running {
+        return Err(DpError::Unsupported {
+            message: "a job is running — wait for it to finish before moving the cache".into(),
+            path: None,
+        });
+    }
+    Ok(())
 }
 
 /// Validates `new_dir` and returns the destination root
@@ -474,6 +517,17 @@ fn plan_cache_destination(
     // A leftover `drophoto-thumbs` with contents at the destination is
     // ambiguous (another install's cache? a half-finished move?) — refuse
     // rather than merging into or clobbering it. An empty one is fine.
+    // A pre-placed symlink named `drophoto-thumbs` could point the
+    // containment-checked path somewhere else entirely — refuse anything
+    // at the destination that isn't a real directory.
+    if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+        if !meta.is_dir() {
+            return Err(DpError::Unsupported {
+                message: "destination already contains a drophoto-thumbs entry that is not a folder".into(),
+                path: Some(dest.display().to_string()),
+            });
+        }
+    }
     if dest.exists() {
         let mut entries =
             std::fs::read_dir(&dest).map_err(|e| DpError::io(&e, dest.display().to_string()))?;
@@ -620,7 +674,7 @@ mod tests {
         write(dir.path(), "unrelated.txt", b"leave me alone");
         write(dir.path(), "logs/app.log", b"log line");
 
-        reset_app_data_at(dir.path(), &dir.path().join("thumbs")).unwrap();
+        reset_app_data_at(dir.path(), &[dir.path().join("thumbs")]).unwrap();
 
         assert!(!dir.path().join("catalog.db").exists());
         assert!(!dir.path().join("catalog.db-wal").exists());
@@ -633,7 +687,7 @@ mod tests {
     #[test]
     fn reset_app_data_at_is_a_no_op_on_an_already_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(reset_app_data_at(dir.path(), &dir.path().join("thumbs")).is_ok());
+        assert!(reset_app_data_at(dir.path(), &[dir.path().join("thumbs")]).is_ok());
     }
 
     // Review finding 4: `thumbs/` must be deleted before `catalog.db*`, and
@@ -654,7 +708,7 @@ mod tests {
         // it can't be unlinked — `remove_dir_all` fails partway through.
         std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-        let result = reset_app_data_at(dir.path(), &dir.path().join("thumbs"));
+        let result = reset_app_data_at(dir.path(), &[dir.path().join("thumbs")]);
 
         // Restore permissions so the tempdir can clean itself up.
         std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -868,5 +922,66 @@ mod tests {
             src.join("ab/400.webp").exists(),
             "source must survive a failed move"
         );
+    }
+
+    #[test]
+    fn refuse_move_while_running_refuses_with_the_documented_message() {
+        match refuse_move_while_running(true) {
+            Err(DpError::Unsupported { message, .. }) => {
+                assert_eq!(
+                    message,
+                    "a job is running — wait for it to finish before moving the cache"
+                );
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refuse_move_while_running_allows_the_move_when_idle() {
+        assert!(refuse_move_while_running(false).is_ok());
+    }
+
+    #[test]
+    fn cache_roots_to_delete_always_includes_the_active_root() {
+        let roots = cache_roots_to_delete(Path::new("/data/thumbs"), &None);
+        assert_eq!(roots, vec![PathBuf::from("/data/thumbs")]);
+    }
+
+    /// The blocker case: app launched in fallback (cache drive was
+    /// unplugged), the drive is back — reset must delete the real,
+    /// configured cache too, not just the substitute default.
+    #[test]
+    fn cache_roots_to_delete_adds_a_reachable_configured_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("drophoto-thumbs");
+        std::fs::create_dir_all(&cache).unwrap();
+        let roots = cache_roots_to_delete(Path::new("/data/thumbs"), &Some(cache.display().to_string()));
+        assert_eq!(roots, vec![PathBuf::from("/data/thumbs"), cache]);
+    }
+
+    #[test]
+    fn cache_roots_to_delete_never_adds_a_configured_dir_not_named_drophoto_thumbs() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = cache_roots_to_delete(Path::new("/data/thumbs"), &Some(dir.path().display().to_string()));
+        assert_eq!(roots, vec![PathBuf::from("/data/thumbs")]);
+    }
+
+    #[test]
+    fn cache_roots_to_delete_skips_an_unreachable_configured_cache() {
+        let roots = cache_roots_to_delete(
+            Path::new("/data/thumbs"),
+            &Some("/Volumes/Unplugged/drophoto-thumbs".into()),
+        );
+        assert_eq!(roots, vec![PathBuf::from("/data/thumbs")]);
+    }
+
+    #[test]
+    fn plan_cache_destination_refuses_a_symlink_at_the_destination_name() {
+        let current = tempfile::tempdir().unwrap();
+        let picked = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), picked.path().join("drophoto-thumbs")).unwrap();
+        assert!(plan_cache_destination(picked.path(), current.path(), &[]).is_err());
     }
 }

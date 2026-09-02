@@ -60,6 +60,26 @@ pub struct AppState {
     /// and served verbatim by the `cache_status` command. `store` above
     /// was built from this same resolution, so the two can never disagree.
     pub cache_status: CacheStatus,
+    /// `true` while `move_cache` is relocating the thumbs tree — job
+    /// admission refuses every new job for that window (see
+    /// [`AppState::begin_cache_move`]), so nothing can start writing into
+    /// the tree being moved out from under it.
+    cache_moving: std::sync::atomic::AtomicBool,
+}
+
+/// RAII guard from [`AppState::begin_cache_move`]: clears the
+/// move-in-flight flag on drop, so an early return or error inside
+/// `move_cache` can never leave job admission wedged shut.
+pub struct CacheMoveGuard<'a> {
+    state: &'a AppState,
+}
+
+impl Drop for CacheMoveGuard<'_> {
+    fn drop(&mut self) {
+        self.state
+            .cache_moving
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl AppState {
@@ -80,20 +100,7 @@ impl AppState {
         // it. `fallback` tells Settings to warn about the substitution.
         let default_thumbs = dir.join("thumbs");
         let configured = catalog.get_settings().await?.thumbs_dir;
-        let (thumbs_root, fallback) = match configured {
-            Some(configured) => {
-                let p = PathBuf::from(&configured);
-                if p.is_dir() {
-                    (p, false)
-                } else {
-                    tracing::warn!(
-                        "configured thumbs dir {configured} is unavailable; using the default for this launch"
-                    );
-                    (default_thumbs, true)
-                }
-            }
-            None => (default_thumbs, false),
-        };
+        let (thumbs_root, fallback) = resolve_thumbs_root(default_thumbs, configured.as_deref());
         std::fs::create_dir_all(&thumbs_root)
             .map_err(|e| DpError::io(&e, thumbs_root.display().to_string()))?;
         let cache_status = CacheStatus {
@@ -146,6 +153,7 @@ impl AppState {
             app_data_dir: dir,
             tool_health,
             cache_status,
+            cache_moving: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -156,6 +164,16 @@ impl AppState {
     pub fn any_job_running(&self) -> bool {
         let jobs = lock_active_jobs(&self.active_jobs);
         jobs.values().any(|job_id| self.runner.is_running(job_id))
+    }
+
+    /// Marks a cache move as in flight for the duration of the returned
+    /// guard — while set, [`Self::start_job_as`] refuses every new job.
+    /// Closes the other half of the move/job race: `any_job_running`
+    /// keeps a move from starting under a job, this keeps a job from
+    /// starting under a move.
+    pub fn begin_cache_move(&self) -> CacheMoveGuard<'_> {
+        self.cache_moving.store(true, std::sync::atomic::Ordering::SeqCst);
+        CacheMoveGuard { state: self }
     }
 
     /// Starts a scan for `drive_id`, unless a job is already running for
@@ -310,6 +328,12 @@ impl AppState {
         drive_id: i64,
         make_job: impl FnOnce(String) -> Arc<dyn Job>,
     ) -> DpResult<String> {
+        if self.cache_moving.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DpError::Unsupported {
+                message: "the thumbnail cache is being moved — try again when it finishes".into(),
+                path: None,
+            });
+        }
         let mut jobs = lock_active_jobs(&self.active_jobs);
         let decision = job_admission(&jobs, admission_kind, drive_id, |id| self.runner.is_running(id));
 
@@ -471,6 +495,44 @@ fn lock_active_jobs(
     active_jobs
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Resolves which thumbs root this launch uses: the configured relocation
+/// when it's usable, else `default_thumbs` (flagging the fallback).
+/// A configured path is only ever adopted when its leaf directory is
+/// literally named `drophoto-thumbs` — the name `move_cache` always
+/// creates — so a hand-edited or corrupted setting pointing at an
+/// arbitrary folder (say, a Pictures directory) is never adopted as a
+/// cache root the app would later treat as its own to delete.
+fn resolve_thumbs_root(default_thumbs: PathBuf, configured: Option<&str>) -> (PathBuf, bool) {
+    match configured {
+        Some(configured) => {
+            let p = PathBuf::from(configured);
+            if !is_cache_shaped(&p) {
+                tracing::warn!(
+                    "configured thumbs dir {configured} is not a drophoto-thumbs directory; ignoring it"
+                );
+                (default_thumbs, true)
+            } else if p.is_dir() {
+                (p, false)
+            } else {
+                tracing::warn!(
+                    "configured thumbs dir {configured} is unavailable; using the default for this launch"
+                );
+                (default_thumbs, true)
+            }
+        }
+        None => (default_thumbs, false),
+    }
+}
+
+/// Whether `path`'s leaf is the directory name `move_cache` always
+/// creates — the structural marker separating "a cache root this app
+/// made" from "some arbitrary folder a bad setting points at". Shared by
+/// startup adoption ([`resolve_thumbs_root`]) and the reset path's
+/// deletion of a configured-but-inactive cache (`commands::settings`).
+pub fn is_cache_shaped(path: &std::path::Path) -> bool {
+    path.file_name().is_some_and(|n| n == "drophoto-thumbs")
 }
 
 #[cfg(test)]
@@ -714,5 +776,45 @@ mod tests {
             ),
             Resolution::Refuse("a regen sweep is already running".into())
         );
+    }
+
+    #[test]
+    fn resolve_thumbs_root_uses_the_default_when_nothing_is_configured() {
+        let (root, fallback) = resolve_thumbs_root(PathBuf::from("/data/thumbs"), None);
+        assert_eq!(root, PathBuf::from("/data/thumbs"));
+        assert!(!fallback);
+    }
+
+    #[test]
+    fn resolve_thumbs_root_adopts_a_usable_cache_shaped_configured_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("drophoto-thumbs");
+        std::fs::create_dir_all(&cache).unwrap();
+        let (root, fallback) =
+            resolve_thumbs_root(PathBuf::from("/data/thumbs"), Some(cache.to_str().unwrap()));
+        assert_eq!(root, cache);
+        assert!(!fallback);
+    }
+
+    #[test]
+    fn resolve_thumbs_root_falls_back_when_the_configured_dir_is_missing() {
+        let (root, fallback) = resolve_thumbs_root(
+            PathBuf::from("/data/thumbs"),
+            Some("/Volumes/Unplugged/drophoto-thumbs"),
+        );
+        assert_eq!(root, PathBuf::from("/data/thumbs"));
+        assert!(fallback);
+    }
+
+    /// The structural guard: a hand-edited setting pointing at an
+    /// arbitrary existing folder must never be adopted as the cache root
+    /// — the app would otherwise use it AND later delete it on reset.
+    #[test]
+    fn resolve_thumbs_root_never_adopts_a_dir_not_named_drophoto_thumbs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, fallback) =
+            resolve_thumbs_root(PathBuf::from("/data/thumbs"), Some(dir.path().to_str().unwrap()));
+        assert_eq!(root, PathBuf::from("/data/thumbs"));
+        assert!(fallback);
     }
 }
