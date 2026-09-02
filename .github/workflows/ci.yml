@@ -1,7 +1,40 @@
 name: ci
-on: { pull_request: {}, push: { branches: [main] } }
+
+# Runs on pushes to `main` only. PRs are gated locally: `pnpm check` runs the
+# same suite (scripts/check.sh) and `pnpm install` wires it into a pre-push
+# hook. GitHub bills macOS minutes at 10x, so the JS half runs on ubuntu and
+# only the Rust/Tauri half pays the macOS rate. `workflow_dispatch` is there
+# for a manual run when one is genuinely needed.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  web:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:coverage
+
+  native:
+    name: Rust + Tauri build
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -14,9 +47,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: brew install exiftool ffmpeg
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test:coverage
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# Installed by `pnpm install` (the `prepare` script points core.hooksPath here).
+# Runs the local gate suite minus the Tauri build. Bypass: SKIP_CHECKS=1 git push
+[ -n "$SKIP_CHECKS" ] && exit 0
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh" --fast
