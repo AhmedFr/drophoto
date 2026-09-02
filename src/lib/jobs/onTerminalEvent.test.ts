@@ -41,6 +41,7 @@ it("is a no-op for started, progress, and item_error events", () => {
 const SCAN_INVALIDATE_KEYS = [
   "media",
   "media-count",
+  "missing-count",
   "jobs",
   "unorganized",
   "drives",
@@ -136,7 +137,7 @@ it("uses singular 'file' when cancelled after exactly one file", () => {
   expect(toast).toHaveBeenCalledWith("Scan cancelled — 1 file done");
 });
 
-it("is silent and refreshes only the tag queries for a clean sidecar sync", () => {
+it("is silent and refreshes only the tag and sidecar-health queries for a clean sidecar sync", () => {
   const { queryClient, invalidateSpy } = client();
   onTerminalEvent(
     { kind: "finished", job_id: "sidecar-0", ok: 3, failed: 0, skipped: 0 },
@@ -144,13 +145,17 @@ it("is silent and refreshes only the tag queries for a clean sidecar sync", () =
     "Sidecar sync",
   );
 
-  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["tags"], ["media-tags"]]);
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([
+    ["tags"],
+    ["media-tags"],
+    ["sidecar-health"],
+  ]);
   expect(toast).not.toHaveBeenCalled();
   expect(toast.success).not.toHaveBeenCalled();
   expect(toast.error).not.toHaveBeenCalled();
 });
 
-it("refreshes only the tag queries for a cancelled sidecar sync", () => {
+it("refreshes only the tag and sidecar-health queries for a cancelled sidecar sync", () => {
   const { queryClient, invalidateSpy } = client();
   onTerminalEvent(
     { kind: "cancelled", job_id: "sidecar-0", ok: 1, failed: 0, skipped: 0 },
@@ -158,7 +163,11 @@ it("refreshes only the tag queries for a cancelled sidecar sync", () => {
     "Sidecar sync",
   );
 
-  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["tags"], ["media-tags"]]);
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([
+    ["tags"],
+    ["media-tags"],
+    ["sidecar-health"],
+  ]);
   expect(toast).not.toHaveBeenCalled();
 });
 
@@ -173,7 +182,7 @@ it("still shows an error toast for a sidecar sync that finishes with failures", 
   expect(toast.error).toHaveBeenCalledWith("Sidecar sync finished with 2 errors");
 });
 
-it("refreshes only the tag queries even when a sidecar sync fails", () => {
+it("refreshes only the tag and sidecar-health queries even when a sidecar sync fails", () => {
   const { queryClient, invalidateSpy } = client();
   onTerminalEvent(
     { kind: "finished", job_id: "sidecar-0", ok: 1, failed: 2, skipped: 0 },
@@ -181,7 +190,11 @@ it("refreshes only the tag queries even when a sidecar sync fails", () => {
     "Sidecar sync",
   );
 
-  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([["tags"], ["media-tags"]]);
+  expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([
+    ["tags"],
+    ["media-tags"],
+    ["sidecar-health"],
+  ]);
 });
 
 it("is silent and refreshes only places, search, and media for a clean geocode sweep", () => {

@@ -16,8 +16,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dp_core::{
     AppSettings, DpResult, Drive, JobRunRow, MediaMetadata, MediaQuery, MediaRow, NewDrive, NewJobRun,
-    NewMedia, NewPlace, NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount,
-    ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, Source, Tag, UnorganizedSummary,
+    NewMedia, NewPlace, NewSource, OrganizeDefaults, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place,
+    PlaceCount, ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source, Tag,
+    UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -90,6 +91,25 @@ pub trait Catalog: Send + Sync {
     /// what it touches (and doesn't) and who calls it.
     async fn update_media_metadata(&self, id: i64, m: &MediaMetadata, read_at: DateTime<Utc>)
         -> DpResult<()>;
+    /// Reconciles presence for `drive_id`+`source_id` against
+    /// `seen_rel_paths` (this scan's walked file list for that source):
+    /// stamps `missing_at` on rows not seen (first-detected time only),
+    /// clears it on rows that are seen — see
+    /// [`crate::media::reconcile_missing`]'s doc comment. Returns the
+    /// count newly marked missing.
+    async fn reconcile_missing(
+        &self,
+        drive_id: i64,
+        source_id: i64,
+        seen_rel_paths: &[String],
+    ) -> DpResult<u64>;
+    /// How many media rows on `drive_id` are currently marked missing —
+    /// see [`crate::media::count_missing`]'s doc comment.
+    async fn count_missing(&self, drive_id: i64) -> DpResult<u64>;
+    /// Deletes every media row on `drive_id` currently marked missing —
+    /// see [`crate::media::remove_missing`]'s doc comment. Catalog rows
+    /// only; never touches the filesystem.
+    async fn remove_missing(&self, drive_id: i64) -> DpResult<u64>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
     /// How many `scan_errors` rows `drive_id` currently has — see
     /// [`crate::media::count_scan_errors`]'s doc comment.
@@ -155,6 +175,12 @@ pub trait Catalog: Send + Sync {
     async fn has_sidecar_pending(&self, drive_id: i64) -> DpResult<bool>;
     async fn clear_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
     async fn mark_sidecar_pending(&self, media_id: i64) -> DpResult<()>;
+    /// Every media row on `drive_id` with at least one tag — see
+    /// [`crate::tags::list_tagged_media`]'s doc comment.
+    async fn list_tagged_media(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
+    /// `drive_id`'s sidecar coverage (tagged/pending counts) for
+    /// Settings' SIDECARS panel — see [`dp_core::SidecarHealth`].
+    async fn sidecar_health(&self, drive_id: i64) -> DpResult<SidecarHealth>;
     /// Rebuilds one media row's FTS text (stem, tags, place, camera) from
     /// current catalog state; deletes the FTS row when the media row is gone.
     /// `media.rs`/`tags.rs` never propagate this method's errors to the
@@ -192,6 +218,19 @@ pub trait Catalog: Send + Sync {
     /// [`dp_core::AppSettings::preview_edge`]. Does not itself trigger a
     /// regen; that's the caller's job (see `start_regen_previews`).
     async fn set_preview_edge(&self, edge: u32) -> DpResult<()>;
+    /// Persists (or with `None`, clears) the relocated thumbnail-cache
+    /// root — see [`dp_core::AppSettings::thumbs_dir`]. Pure catalog
+    /// write: `move_cache` (the Tauri command) does the actual on-disk
+    /// move first and only then calls this.
+    async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()>;
+    /// The settings-backed organize-rule defaults [`Self::get_rule`]'s
+    /// `None` branch composes into a fresh drive's rule — see
+    /// [`dp_core::OrganizeDefaults`].
+    async fn get_organize_defaults(&self) -> DpResult<OrganizeDefaults>;
+    /// Persists [`dp_core::OrganizeDefaults`] — see
+    /// [`crate::settings::set_organize_defaults`]'s doc comment for the
+    /// per-field set-or-clear semantics.
+    async fn set_organize_defaults(&self, defaults: &OrganizeDefaults) -> DpResult<()>;
 }
 
 #[async_trait]
@@ -283,6 +322,23 @@ impl Catalog for SqliteCatalog {
         read_at: DateTime<Utc>,
     ) -> DpResult<()> {
         media::update_media_metadata(&self.pool, id, m, read_at).await
+    }
+
+    async fn reconcile_missing(
+        &self,
+        drive_id: i64,
+        source_id: i64,
+        seen_rel_paths: &[String],
+    ) -> DpResult<u64> {
+        media::reconcile_missing(&self.pool, drive_id, source_id, seen_rel_paths).await
+    }
+
+    async fn count_missing(&self, drive_id: i64) -> DpResult<u64> {
+        media::count_missing(&self.pool, drive_id).await
+    }
+
+    async fn remove_missing(&self, drive_id: i64) -> DpResult<u64> {
+        media::remove_missing(&self.pool, drive_id).await
     }
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
@@ -424,6 +480,14 @@ impl Catalog for SqliteCatalog {
         tags::mark_sidecar_pending(&self.pool, media_id).await
     }
 
+    async fn list_tagged_media(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        tags::list_tagged_media(&self.pool, drive_id).await
+    }
+
+    async fn sidecar_health(&self, drive_id: i64) -> DpResult<SidecarHealth> {
+        tags::sidecar_health(&self.pool, drive_id).await
+    }
+
     async fn sync_fts(&self, media_id: i64) -> DpResult<()> {
         fts::sync_fts(&self.pool, media_id).await
     }
@@ -466,5 +530,17 @@ impl Catalog for SqliteCatalog {
 
     async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
         settings::set_preview_edge(&self.pool, edge).await
+    }
+
+    async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()> {
+        settings::set_thumbs_dir(&self.pool, dir).await
+    }
+
+    async fn get_organize_defaults(&self) -> DpResult<OrganizeDefaults> {
+        settings::get_organize_defaults(&self.pool).await
+    }
+
+    async fn set_organize_defaults(&self, defaults: &OrganizeDefaults) -> DpResult<()> {
+        settings::set_organize_defaults(&self.pool, defaults).await
     }
 }

@@ -6,6 +6,7 @@ import {
   formatDuration,
   formatExposure,
   formatIsoFocal,
+  formatMissingSince,
   formatTakenAt,
   monthKey,
   monthLabel,
@@ -136,6 +137,16 @@ describe("formatTakenAt", () => {
 
   it("returns Unknown for null", () => {
     expect(formatTakenAt(null)).toBe("Unknown");
+  });
+});
+
+describe("formatMissingSince", () => {
+  it("formats a UTC date without a time", () => {
+    expect(formatMissingSince("2026-08-30T00:00:00Z")).toBe("30 Aug 2026");
+  });
+
+  it("returns Unknown for null", () => {
+    expect(formatMissingSince(null)).toBe("Unknown");
   });
 });
 

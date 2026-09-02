@@ -4,7 +4,7 @@ use dp_core::{
     DpError, DpResult, MediaKind, MediaMetadata, MediaRow, NewMedia, ScanErrorCodeCount, ScanErrorRow,
     ScanIndexEntry,
 };
-use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteRow, Connection, Row, SqlitePool};
 
 fn kind_to_str(kind: MediaKind) -> &'static str {
     match kind {
@@ -384,6 +384,171 @@ pub(crate) async fn list_scan_errors(
     .await
     .map_err(db)?;
     rows.iter().map(row_to_scan_error).collect()
+}
+
+/// Reconciles presence for every media row on `drive_id` attributed to
+/// `source_id`, against `seen_rel_paths` — the `rel_path`s a scan's walk of
+/// that source actually found on disk this run:
+///
+/// - A row not in `seen_rel_paths` whose `missing_at` is still `NULL` gets
+///   `missing_at` stamped to now (first-detected time — a row already
+///   marked missing from an earlier scan is left alone, so its "missing
+///   since" date never moves just because a later scan still can't find
+///   it).
+/// - A row that IS in `seen_rel_paths` has `missing_at` cleared
+///   unconditionally. This is what actually fixes the Task 5a ledgered
+///   follow-up: the incremental-rescan skip path (`find_skip_match` in
+///   `dp_jobs::ScanJob`) never calls [`upsert_media`] at all for an
+///   unchanged file, so without this call a row that was marked missing,
+///   then reappeared, then got skip-matched on every scan since, would
+///   stay stamped missing forever. [`upsert_media`]'s own
+///   `missing_at=NULL` on every upsert already covers the
+///   full-reprocessing path; this call is what covers the skip path too.
+///
+/// Both updates are scoped to `drive_id`+`source_id` — a file that
+/// genuinely moved to a different source, or a different drive
+/// altogether, is that source's row to reconcile, not this one's; see the
+/// caller in `dp_jobs::ScanJob` for why a source whose walk errored, or a
+/// scan that was cancelled, never reaches this call at all.
+///
+/// One deliberate consequence of that scoping: `source_id = ?` never
+/// matches a legacy row (`source_id IS NULL`, from before sources
+/// existed) — SQL's `NULL = ?` is never true — so those rows are never
+/// marked missing here, and never cleared either. That's not an oversight:
+/// a legacy row was never attributed to any source, so there is no walk
+/// result that could correctly speak for it either way. Consistent with
+/// `DriveSummary.legacy` treating those rows as a separate bucket.
+///
+/// `seen_rel_paths` is loaded into a temp table (`INSERT OR IGNORE`,
+/// chunked at 500 rows per statement to stay well under SQLite's default
+/// bound-parameter limit) rather than inlined into a `NOT IN (...)`/`IN
+/// (...)` clause, so a source with tens of thousands of files reconciles
+/// in a handful of statements instead of one enormous one. The temp table
+/// is connection-scoped, so every statement here runs against the same
+/// acquired connection.
+///
+/// Returns the count of rows newly marked missing by this call (not the
+/// count cleared) — what `dp_jobs::ScanJob` could, in principle, surface
+/// as a per-source tally.
+pub(crate) async fn reconcile_missing(
+    pool: &SqlitePool,
+    drive_id: i64,
+    source_id: i64,
+    seen_rel_paths: &[String],
+) -> DpResult<u64> {
+    let mut conn = pool.acquire().await.map_err(db)?;
+    let mut tx = conn.begin().await.map_err(db)?;
+
+    sqlx::query("CREATE TEMP TABLE IF NOT EXISTS reconcile_seen (rel_path TEXT PRIMARY KEY)")
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query("DELETE FROM reconcile_seen")
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+
+    for chunk in seen_rel_paths.chunks(500) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = vec!["(?)"; chunk.len()].join(",");
+        let sql = format!("INSERT OR IGNORE INTO reconcile_seen (rel_path) VALUES {placeholders}");
+        let mut q = sqlx::query(&sql);
+        for p in chunk {
+            q = q.bind(p);
+        }
+        q.execute(&mut *tx).await.map_err(db)?;
+    }
+
+    let now = to_rfc3339(Some(Utc::now()));
+    let marked = sqlx::query(
+        "UPDATE media SET missing_at = ? WHERE drive_id = ? AND source_id = ? AND missing_at IS NULL \
+         AND rel_path NOT IN (SELECT rel_path FROM reconcile_seen)",
+    )
+    .bind(&now)
+    .bind(drive_id)
+    .bind(source_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+
+    sqlx::query(
+        "UPDATE media SET missing_at = NULL WHERE drive_id = ? AND source_id = ? \
+         AND missing_at IS NOT NULL AND rel_path IN (SELECT rel_path FROM reconcile_seen)",
+    )
+    .bind(drive_id)
+    .bind(source_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+
+    sqlx::query("DELETE FROM reconcile_seen")
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+
+    tx.commit().await.map_err(db)?;
+    Ok(marked.rows_affected())
+}
+
+/// How many media rows on `drive_id` are currently marked missing
+/// (`missing_at IS NOT NULL`) — backs the `DriveCard` actions dropdown's
+/// "Remove missing… (N)" item, same gating pattern as
+/// [`count_scan_errors`].
+pub(crate) async fn count_missing(pool: &SqlitePool, drive_id: i64) -> DpResult<u64> {
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE drive_id = ? AND missing_at IS NOT NULL")
+            .bind(drive_id)
+            .fetch_one(pool)
+            .await
+            .map_err(db)?;
+    Ok(count as u64)
+}
+
+/// Deletes every media row on `drive_id` currently marked missing
+/// (`missing_at IS NOT NULL`) — the "Remove missing…" danger-zone action.
+/// Catalog rows only: never touches the filesystem (thumbnails are
+/// content-addressed and possibly shared, so they're left on disk — same
+/// as `forget_drive`), and the files are already gone from disk by
+/// definition, so there is nothing to delete there anyway.
+///
+/// Reuses [`delete_media`] per row rather than one bulk statement, so the
+/// same `organize_items` guard applies here too — a missing row that's
+/// still referenced by an organize job's history is left in place rather
+/// than stranding that job's revert path, and any FTS sync failure is
+/// logged (never fails the row's removal), matching every other delete
+/// path in this module.
+///
+/// Returns how many rows were actually deleted (which can be fewer than
+/// how many were missing, if any were guarded by that `organize_items`
+/// check).
+pub(crate) async fn remove_missing(pool: &SqlitePool, drive_id: i64) -> DpResult<u64> {
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM media WHERE drive_id = ? AND missing_at IS NOT NULL")
+            .bind(drive_id)
+            .fetch_all(pool)
+            .await
+            .map_err(db)?;
+
+    let mut removed = 0u64;
+    for id in ids {
+        if delete_media(pool, id).await? {
+            removed += 1;
+        }
+    }
+
+    // Same hygiene as `forget_drive` step 7: a tag whose only uses were on
+    // the just-removed rows would otherwise linger in the tag picker
+    // forever. A tag still referenced by any surviving media (this drive's
+    // or another's) is untouched.
+    if removed > 0 {
+        sqlx::query("DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)")
+            .execute(pool)
+            .await
+            .map_err(db)?;
+    }
+    Ok(removed)
 }
 
 /// `drive_id`'s `scan_errors` rows grouped by `code`, ordered `count DESC`

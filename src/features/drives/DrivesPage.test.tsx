@@ -584,6 +584,103 @@ it("shows the backend's refusal message when a job is running on the drive", asy
   expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
 
+it("opens the Remove missing dialog with the drive's missing count from the drive-actions menu", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_missing_media") return 4;
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Remove missing… (4)" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent('Remove missing files on "Kodachrome"');
+  expect(await within(dialog).findByText(/Removes 4 catalog entries/)).toBeInTheDocument();
+});
+
+it("removes a drive's missing media with no typed confirmation and closes the dialog", async () => {
+  let removeArgs: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_missing_media") return 4;
+    if (cmd === "remove_missing_media") {
+      removeArgs = args;
+      return 4;
+    }
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Remove missing… (4)" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove missing" }));
+
+  await waitFor(() => expect(removeArgs).toEqual({ driveId: 1 }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+it("invalidates sidecar-health after removing a drive's missing media (MINOR-2)", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_missing_media") return 4;
+    if (cmd === "remove_missing_media") return 4;
+    return undefined;
+  });
+
+  const queryClient = new QueryClient();
+  const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+  render(
+    <QueryClientProvider client={queryClient}>
+      <DrivesPage />
+    </QueryClientProvider>,
+  );
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Remove missing… (4)" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove missing" }));
+
+  // Removing missing rows changes both `tagged` and `pending` for this
+  // drive — Settings' SIDECARS panel must not keep showing stale counts.
+  await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["sidecar-health"] }));
+});
+
+it("shows the backend's refusal message when a job is running on the drive for Remove missing", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "list_drives") return [onlineDrive];
+    if (cmd === "list_volumes") return [];
+    if (cmd === "list_sources") return [];
+    if (cmd === "count_missing_media") return 4;
+    if (cmd === "remove_missing_media") {
+      throw { code: "unsupported", message: "a scan job is running on this drive" };
+    }
+    return undefined;
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Remove missing… (4)" }));
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove missing" }));
+
+  expect(
+    await within(dialog).findByText("a scan job is running on this drive"),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
 const offlineDrive = {
   id: 2,
   name: "SSD Samsung T7",

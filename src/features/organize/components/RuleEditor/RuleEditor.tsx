@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { renderTemplate, templateVarsFromDate } from "@/lib/organize/renderTemplate";
-import { FOLDER_TEMPLATE_PRESETS, SAMPLE_DATE, SAMPLE_EXT, SAMPLE_STEM } from "./RuleEditor.constants";
+import { TEMPLATE_PRESETS } from "@/lib/organize/presets";
+import { SAMPLE_DATE, SAMPLE_EXT, SAMPLE_STEM } from "./RuleEditor.constants";
 import type { RuleEditorProps } from "./RuleEditor.types";
 
 export function RuleEditor({
@@ -92,7 +93,7 @@ export function RuleEditor({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              {FOLDER_TEMPLATE_PRESETS.map((preset) => (
+              {TEMPLATE_PRESETS.map((preset) => (
                 <DropdownMenuItem
                   key={preset.label}
                   onSelect={() => onChange({ ...rule, folder_tpl: preset.folder_tpl })}

@@ -4,7 +4,7 @@
 
 use crate::media::row_to_media;
 use crate::sqlite::db;
-use dp_core::{DpResult, MediaRow, Tag};
+use dp_core::{DpResult, MediaRow, SidecarHealth, Tag};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use std::collections::HashSet;
 
@@ -156,13 +156,21 @@ pub(crate) async fn list_sidecar_pending(pool: &SqlitePool, drive_id: i64) -> Dp
 /// check: the caller sweeping every drive only wants a yes/no, and
 /// materialising every pending `MediaRow` just to throw them away scales
 /// with the size of a tagging spree.
+///
+/// Excludes rows with `missing_at` set: a missing photo's sidecar can never
+/// be written (`sidecar_sync` refuses it and deliberately leaves the flag
+/// set so a later sweep retries), so counting it here would make this
+/// return `true` forever and re-spawn a guaranteed-to-fail sync on every
+/// launch — see `JobEventsBridge`, which gates that spawn on this call.
 pub(crate) async fn has_sidecar_pending(pool: &SqlitePool, drive_id: i64) -> DpResult<bool> {
-    let exists: i64 =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE drive_id = ? AND sidecar_pending = 1)")
-            .bind(drive_id)
-            .fetch_one(pool)
-            .await
-            .map_err(db)?;
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM media WHERE drive_id = ? \
+         AND sidecar_pending = 1 AND missing_at IS NULL)",
+    )
+    .bind(drive_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db)?;
     Ok(exists != 0)
 }
 
@@ -182,4 +190,60 @@ pub(crate) async fn mark_sidecar_pending(pool: &SqlitePool, media_id: i64) -> Dp
         .await
         .map_err(db)?;
     Ok(())
+}
+
+/// Every media row on `drive_id` with at least one `media_tags` link — the
+/// exact set `check_sidecar_files` stats a `.xmp` for, and whose count is
+/// [`SidecarHealth::tagged`]. `EXISTS` rather than a `JOIN` +
+/// `SELECT DISTINCT`: a row with several tags must still appear once.
+///
+/// Excludes rows with `missing_at` set: the last scan couldn't find the
+/// file, so there is no sidecar to verify. Without this filter,
+/// `check_sidecar_files` stats a `.xmp` that is *correctly* absent next to
+/// a photo that no longer exists, flags `sidecar_pending`, and — because
+/// the file is gone — nothing can ever clear that flag; see
+/// `has_sidecar_pending` and `sidecar_sync`'s existence guard.
+pub(crate) async fn list_tagged_media(pool: &SqlitePool, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+    let rows = sqlx::query(
+        "SELECT * FROM media WHERE drive_id = ? \
+         AND EXISTS (SELECT 1 FROM media_tags WHERE media_tags.media_id = media.id) \
+         AND missing_at IS NULL \
+         ORDER BY id",
+    )
+    .bind(drive_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter().map(row_to_media).collect()
+}
+
+/// `drive_id`'s sidecar coverage for Settings' SIDECARS panel — see
+/// [`SidecarHealth`]'s doc comment for what each count means. Both counts
+/// exclude rows with `missing_at` set, for the same reason as
+/// [`list_tagged_media`]: a missing photo has no sidecar to write or
+/// verify, so it should count toward neither "tagged" nor "pending".
+pub(crate) async fn sidecar_health(pool: &SqlitePool, drive_id: i64) -> DpResult<SidecarHealth> {
+    let tagged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media WHERE drive_id = ? \
+         AND EXISTS (SELECT 1 FROM media_tags WHERE media_tags.media_id = media.id) \
+         AND missing_at IS NULL",
+    )
+    .bind(drive_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db)?;
+
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media WHERE drive_id = ? \
+         AND sidecar_pending = 1 AND missing_at IS NULL",
+    )
+    .bind(drive_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db)?;
+
+    Ok(SidecarHealth {
+        tagged: tagged as u64,
+        pending: pending as u64,
+    })
 }

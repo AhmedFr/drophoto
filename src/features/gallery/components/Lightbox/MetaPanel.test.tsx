@@ -106,6 +106,21 @@ it("disables Reveal in Finder when online but there is no original_path", () => 
   expect(screen.getByRole("button", { name: /reveal in finder/i })).toBeDisabled();
 });
 
+it("shows a missing notice and disables Reveal in Finder when missing_at is set", () => {
+  renderPanel(item({ row: { ...item().row, missing_at: "2026-08-30T00:00:00Z" } }));
+
+  expect(
+    screen.getByText("File missing since 30 Aug 2026 — deleted or moved outside drophoto"),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /reveal in finder/i })).toBeDisabled();
+});
+
+it("shows no missing notice when missing_at is null", () => {
+  renderPanel(item());
+
+  expect(screen.queryByText(/File missing since/)).not.toBeInTheDocument();
+});
+
 it("shows an error message when revealing in Finder fails", async () => {
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
   vi.mocked(revealItemInDir).mockRejectedValue(new Error("no such file"));

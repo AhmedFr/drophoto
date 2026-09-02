@@ -8,10 +8,11 @@ import { buildQuery, DEFAULT_SORT, useGalleryStore } from "../store/galleryStore
 // time the user changes sort.
 export function useMediaCount(): number | undefined {
   const typeFilter = useGalleryStore((s) => s.typeFilter);
+  const missingOnly = useGalleryStore((s) => s.missingOnly);
 
   const query = useQuery({
-    queryKey: ["media-count", typeFilter],
-    queryFn: () => countMedia(buildQuery({ typeFilter, sort: DEFAULT_SORT }, 1, 0)),
+    queryKey: ["media-count", typeFilter, missingOnly],
+    queryFn: () => countMedia(buildQuery({ typeFilter, sort: DEFAULT_SORT, missingOnly }, 1, 0)),
   });
 
   return query.data;

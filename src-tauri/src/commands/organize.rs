@@ -2,7 +2,8 @@ use crate::commands::organize_plan::{plan_for_drive, DrivePlan};
 use crate::state::AppState;
 use dp_core::denylist::is_denied_name;
 use dp_core::{
-    DpError, OrganizeItemRow, OrganizeJobRow, OrganizePlan, OrganizeRule, PlanStatus, UnorganizedSummary,
+    DpError, OrganizeDefaults, OrganizeItemRow, OrganizeJobRow, OrganizePlan, OrganizeRule, PlanStatus,
+    UnorganizedSummary,
 };
 use dp_jobs::{Job, OrganizeDeps, OrganizeJob, RevertJob};
 use dp_organize::validate_template;
@@ -21,6 +22,47 @@ pub async fn save_rule(state: State<'_, AppState>, rule: OrganizeRule) -> Result
     validate_template(&rule.folder_tpl)?;
     validate_template(&rule.file_tpl)?;
     state.catalog.save_rule(&rule).await
+}
+
+/// Current settings-backed organize-rule defaults — see
+/// [`dp_core::OrganizeDefaults`].
+#[tauri::command]
+pub async fn get_organize_defaults(state: State<'_, AppState>) -> Result<OrganizeDefaults, DpError> {
+    state.catalog.get_organize_defaults().await
+}
+
+/// Persists the settings-backed organize-rule defaults — every configured
+/// (`Some`) field is validated exactly like [`save_rule`] validates a
+/// drive's own rule (same [`validate_root`]/`validate_template` reused,
+/// not duplicated), so a bad default can never later surface as an opaque
+/// failure the first time a fresh drive's rule is composed from it. An
+/// unset (`None`) field skips validation entirely — it isn't a value that
+/// needs to render, just the absence of an override.
+#[tauri::command]
+pub async fn set_organize_defaults(
+    state: State<'_, AppState>,
+    defaults: OrganizeDefaults,
+) -> Result<(), DpError> {
+    validate_organize_defaults(&defaults)?;
+    state.catalog.set_organize_defaults(&defaults).await
+}
+
+/// The validation [`set_organize_defaults`] performs, factored out so it's
+/// unit-testable without a running `AppState`/Tauri app — same pattern as
+/// [`check_revertable`]/[`validate_root`]. Every configured (`Some`)
+/// field is validated exactly like [`save_rule`] validates a drive's own
+/// rule; an unset (`None`) field is skipped entirely.
+fn validate_organize_defaults(defaults: &OrganizeDefaults) -> Result<(), DpError> {
+    if let Some(root) = &defaults.root {
+        validate_root(root)?;
+    }
+    if let Some(folder_tpl) = &defaults.folder_tpl {
+        validate_template(folder_tpl)?;
+    }
+    if let Some(file_tpl) = &defaults.file_tpl {
+        validate_template(file_tpl)?;
+    }
+    Ok(())
 }
 
 /// Validates an [`OrganizeRule::root`]: non-empty, not absolute, and free
@@ -350,9 +392,9 @@ pub async fn list_job_items(
 
 #[cfg(test)]
 mod tests {
-    use super::{adopt_existing, check_revertable, validate_root};
+    use super::{adopt_existing, check_revertable, validate_organize_defaults, validate_root};
     use chrono::Utc;
-    use dp_core::{DpError, OrganizeJobRow};
+    use dp_core::{DpError, OrganizeDefaults, OrganizeJobRow};
 
     fn job(status: &str, kind: &str, reverted_by_job_id: Option<i64>) -> OrganizeJobRow {
         OrganizeJobRow {
@@ -506,6 +548,58 @@ mod tests {
     fn rejects_a_nested_root_component_that_is_a_denied_name() {
         assert!(matches!(
             validate_root("archive/Caches"),
+            Err(DpError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_organize_defaults_accepts_every_field_unset() {
+        assert!(validate_organize_defaults(&OrganizeDefaults::default()).is_ok());
+    }
+
+    #[test]
+    fn validate_organize_defaults_accepts_valid_configured_fields() {
+        let defaults = OrganizeDefaults {
+            root: Some("archive".into()),
+            folder_tpl: Some("{{yyyy}}/{{mm}}".into()),
+            file_tpl: Some("{{stem}}".into()),
+            keep_pairs: Some(true),
+        };
+        assert!(validate_organize_defaults(&defaults).is_ok());
+    }
+
+    #[test]
+    fn validate_organize_defaults_rejects_a_bad_root() {
+        let defaults = OrganizeDefaults {
+            root: Some("/abs".into()),
+            ..OrganizeDefaults::default()
+        };
+        assert!(matches!(
+            validate_organize_defaults(&defaults),
+            Err(DpError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_organize_defaults_rejects_a_bad_folder_template() {
+        let defaults = OrganizeDefaults {
+            folder_tpl: Some("{{bogus}}".into()),
+            ..OrganizeDefaults::default()
+        };
+        assert!(matches!(
+            validate_organize_defaults(&defaults),
+            Err(DpError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_organize_defaults_rejects_a_bad_file_template() {
+        let defaults = OrganizeDefaults {
+            file_tpl: Some("{{bogus}}".into()),
+            ..OrganizeDefaults::default()
+        };
+        assert!(matches!(
+            validate_organize_defaults(&defaults),
             Err(DpError::Unsupported { .. })
         ));
     }

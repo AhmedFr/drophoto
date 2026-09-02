@@ -1,5 +1,13 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { registerDrive, listDrives, forgetDrive, countDriveMedia, relinkDrive } from "./drives";
+import {
+  registerDrive,
+  listDrives,
+  forgetDrive,
+  countDriveMedia,
+  countMissingMedia,
+  removeMissingMedia,
+  relinkDrive,
+} from "./drives";
 import { ApiError } from "./client";
 import type { Drive } from "./drives";
 
@@ -99,6 +107,30 @@ it("counts a drive's media", async () => {
     return undefined;
   });
   await expect(countDriveMedia(7)).resolves.toBe(42);
+});
+
+it("counts a drive's missing media", async () => {
+  mockIPC((cmd, args) => {
+    if (cmd === "count_missing_media") {
+      expect(args).toEqual({ driveId: 7 });
+      return 3;
+    }
+    return undefined;
+  });
+  await expect(countMissingMedia(7)).resolves.toBe(3);
+});
+
+it("removes a drive's missing media", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "remove_missing_media") {
+      received = args;
+      return 3;
+    }
+    return undefined;
+  });
+  await expect(removeMissingMedia(7)).resolves.toBe(3);
+  expect(received).toEqual({ driveId: 7 });
 });
 
 it("relinks a drive to a mounted volume", async () => {

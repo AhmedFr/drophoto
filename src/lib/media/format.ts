@@ -88,6 +88,21 @@ export function formatTakenAt(iso: string | null): string {
   return `${day} ${month} ${year} · ${hh}:${mm}`;
 }
 
+/**
+ * `row.missing_at` (an RFC3339 timestamp, or `null`) formatted for
+ * `MetaPanel`'s missing notice — just the date, since "since 30 Aug 2026 ·
+ * 14:32" reads as needlessly precise for a fact the user can't act on down
+ * to the minute.
+ */
+export function formatMissingSince(iso: string | null): string {
+  if (!iso) return "Unknown";
+  const d = new Date(iso);
+  const day = d.getUTCDate();
+  const month = MONTHS_SHORT[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  return `${day} ${month} ${year}`;
+}
+
 export function formatDims(w: number | null, h: number | null): string {
   if (w === null || h === null) return "—";
   return `${w} × ${h}`;

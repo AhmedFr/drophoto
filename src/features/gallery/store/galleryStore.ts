@@ -36,6 +36,9 @@ type GalleryState = {
   /** Shift-range select: adds `ids` to the selection without clearing it or moving the anchor. */
   selectRange: (ids: number[]) => void;
   clearSelection: () => void;
+  /** Whether the grid is currently restricted to missing media — toggled by the toolbar's "Missing (N)" chip. Not persisted: a view mode, not a durable preference. */
+  missingOnly: boolean;
+  setMissingOnly: (missingOnly: boolean) => void;
 };
 
 const DEFAULTS = {
@@ -44,6 +47,7 @@ const DEFAULTS = {
   density: "Comfortable" as Density,
   selectedIds: [] as number[],
   anchorIndex: null as number | null,
+  missingOnly: false,
 };
 
 type PersistedGalleryState = Partial<Pick<GalleryState, "typeFilter" | "sort" | "density">>;
@@ -99,6 +103,16 @@ export const useGalleryStore = create<GalleryState>()(
           return { selectedIds: [...state.selectedIds, ...toAdd] };
         }),
       clearSelection: () => set({ selectedIds: [], anchorIndex: null }),
+      // Same reasoning as `setTypeFilter`/`setSort`: switching in or out of
+      // the missing-only view changes which tiles are visible, so a
+      // still-selected id whose tile just disappeared can't stay an
+      // invisible tag-target.
+      setMissingOnly: (missingOnly) =>
+        set((state) =>
+          state.missingOnly === missingOnly
+            ? { missingOnly }
+            : { missingOnly, selectedIds: [], anchorIndex: null },
+        ),
     }),
     {
       name: "drophoto.gallery",
@@ -110,9 +124,15 @@ export const useGalleryStore = create<GalleryState>()(
 );
 
 export function buildQuery(
-  s: { typeFilter: TypeFilter; sort: SortOption },
+  s: { typeFilter: TypeFilter; sort: SortOption; missingOnly?: boolean },
   limit: number,
   offset: number,
 ): MediaQuery {
-  return { ...typeFilterToQuery(s.typeFilter), sort: SORT_TO_QUERY[s.sort], limit, offset };
+  return {
+    ...typeFilterToQuery(s.typeFilter),
+    sort: SORT_TO_QUERY[s.sort],
+    limit,
+    offset,
+    missing: s.missingOnly ?? false,
+  };
 }

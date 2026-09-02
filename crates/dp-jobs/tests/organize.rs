@@ -768,6 +768,25 @@ impl Catalog for FailingCatalog {
         self.0.update_media_metadata(id, m, read_at).await
     }
 
+    async fn reconcile_missing(
+        &self,
+        drive_id: i64,
+        source_id: i64,
+        seen_rel_paths: &[String],
+    ) -> DpResult<u64> {
+        self.0
+            .reconcile_missing(drive_id, source_id, seen_rel_paths)
+            .await
+    }
+
+    async fn count_missing(&self, drive_id: i64) -> DpResult<u64> {
+        self.0.count_missing(drive_id).await
+    }
+
+    async fn remove_missing(&self, drive_id: i64) -> DpResult<u64> {
+        self.0.remove_missing(drive_id).await
+    }
+
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         self.0.record_scan_error(drive_id, path, code, message).await
     }
@@ -916,6 +935,14 @@ impl Catalog for FailingCatalog {
         self.0.mark_sidecar_pending(media_id).await
     }
 
+    async fn list_tagged_media(&self, drive_id: i64) -> DpResult<Vec<MediaRow>> {
+        self.0.list_tagged_media(drive_id).await
+    }
+
+    async fn sidecar_health(&self, drive_id: i64) -> DpResult<dp_core::SidecarHealth> {
+        self.0.sidecar_health(drive_id).await
+    }
+
     async fn sync_fts(&self, media_id: i64) -> DpResult<()> {
         self.0.sync_fts(media_id).await
     }
@@ -958,6 +985,18 @@ impl Catalog for FailingCatalog {
 
     async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
         self.0.set_preview_edge(edge).await
+    }
+
+    async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()> {
+        self.0.set_thumbs_dir(dir).await
+    }
+
+    async fn get_organize_defaults(&self) -> DpResult<dp_core::OrganizeDefaults> {
+        self.0.get_organize_defaults().await
+    }
+
+    async fn set_organize_defaults(&self, defaults: &dp_core::OrganizeDefaults) -> DpResult<()> {
+        self.0.set_organize_defaults(defaults).await
     }
 }
 

@@ -2,6 +2,8 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import {
   getRule,
   saveRule,
+  getOrganizeDefaults,
+  saveOrganizeDefaults,
   listUnorganizedSummaries,
   planOrganize,
   startOrganize,
@@ -10,7 +12,14 @@ import {
   revertOrganize,
 } from "./organize";
 import { ApiError } from "./client";
-import type { OrganizeRule, OrganizePlan, UnorganizedSummary, OrganizeJobRow, OrganizeItemRow } from "./organize";
+import type {
+  OrganizeRule,
+  OrganizeDefaults,
+  OrganizePlan,
+  UnorganizedSummary,
+  OrganizeJobRow,
+  OrganizeItemRow,
+} from "./organize";
 
 const rule: OrganizeRule = {
   drive_id: 1,
@@ -105,6 +114,38 @@ it("wraps structured errors from save_rule", async () => {
     throw { code: "unsupported", message: "unknown template variable" };
   });
   await expect(saveRule(rule)).rejects.toBeInstanceOf(ApiError);
+});
+
+const defaults: OrganizeDefaults = {
+  root: "sorted",
+  folder_tpl: "{{yyyy}}/{{mm}}",
+  file_tpl: "{{stem}}",
+  keep_pairs: false,
+};
+
+it("gets the organize defaults", async () => {
+  mockIPC((cmd) => (cmd === "get_organize_defaults" ? defaults : undefined));
+  await expect(getOrganizeDefaults()).resolves.toEqual(defaults);
+});
+
+it("saves the organize defaults", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    if (cmd === "set_organize_defaults") {
+      received = args;
+      return null;
+    }
+    return undefined;
+  });
+  await saveOrganizeDefaults(defaults);
+  expect(received).toEqual({ defaults });
+});
+
+it("wraps structured errors from set_organize_defaults", async () => {
+  mockIPC(() => {
+    throw { code: "unsupported", message: "root must not start with '/'" };
+  });
+  await expect(saveOrganizeDefaults(defaults)).rejects.toBeInstanceOf(ApiError);
 });
 
 it("lists unorganized summaries", async () => {

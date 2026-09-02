@@ -33,7 +33,7 @@ function renderPage() {
   );
 }
 
-const settings = { preview_edge: 2000 };
+const settings = { preview_edge: 2000, thumbs_dir: null };
 const usage = {
   thumbs_400_bytes: 1_000_000,
   previews_bytes: 8_000_000,
@@ -41,6 +41,8 @@ const usage = {
   total_bytes: 9_500_000,
   file_count: 42,
 };
+
+const organizeDefaults = { root: null, folder_tpl: null, file_tpl: null, keep_pairs: null };
 
 function mockDefaults() {
   mockIPC((cmd) => {
@@ -51,6 +53,9 @@ function mockDefaults() {
         exiftool: { path: "/opt/homebrew/bin/exiftool", version: "13.10", outdated: false },
         ffmpeg: { path: null, version: null, outdated: false },
       };
+    if (cmd === "cache_status") return { thumbs_dir: "/Users/me/Library/thumbs", fallback: false };
+    if (cmd === "list_drives") return [];
+    if (cmd === "get_organize_defaults") return organizeDefaults;
     return undefined;
   });
 }
@@ -92,6 +97,13 @@ it("renders the tools section with each tool's resolved state", async () => {
   renderPage();
   expect(await screen.findByText("found at /opt/homebrew/bin/exiftool · v13.10")).toBeInTheDocument();
   expect(screen.getByText("brew install ffmpeg")).toBeInTheDocument();
+});
+
+it("renders the sidecars section after tools", async () => {
+  mockDefaults();
+  renderPage();
+  const labels = await screen.findAllByText(/^(TOOLS|SIDECARS)$/);
+  expect(labels.map((el) => el.textContent)).toEqual(["TOOLS", "SIDECARS"]);
 });
 
 it("renders the danger zone with the reset button", async () => {
@@ -185,4 +197,20 @@ it("triggers uninstall_app once the danger-zone uninstall dialog is confirmed", 
   await userEvent.click(screen.getByRole("button", { name: "Uninstall drophoto" }));
 
   expect(uninstallApp).toHaveBeenCalledTimes(1);
+});
+
+it("renders the cache-location section with the current root", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByText("CACHE LOCATION")).toBeInTheDocument();
+  expect(await screen.findByText("/Users/me/Library/thumbs")).toBeInTheDocument();
+});
+
+it("renders the organize-defaults section prefilled with the hardcoded fallback when unset", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByText("ORGANIZE DEFAULTS")).toBeInTheDocument();
+  expect(screen.getByLabelText("Default root")).toHaveValue("archive");
+  expect(screen.getByLabelText("Default folder template")).toHaveValue("{{yyyy}}/Q{{q}}");
+  expect(screen.getByLabelText("Default file template")).toHaveValue("{{yyyy}}-{{mm}}-{{dd}}_{{stem}}");
 });

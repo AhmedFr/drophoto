@@ -210,6 +210,45 @@ impl Job for ScanJob {
             report_item_error_raw(&ctx, &self.deps, self.id(), drive_id, path, "io", message).await;
         }
 
+        // Missing-file presence reconciliation: one `reconcile_missing`
+        // call per source that ran to completion, using exactly the
+        // rel_paths that source's walk actually found — independent of
+        // whether each file went on to hash/thumbnail/upsert
+        // successfully (see `SourceWalkOutcome`'s doc comment). A
+        // cancelled scan skips this entirely: `walk.per_source` only ever
+        // has entries for sources whose walk wasn't cut off, but a
+        // cancellation could still land after every source finished
+        // walking and before/during file processing, so the whole step is
+        // additionally gated on `walk.stopped_early` rather than trusting
+        // an empty leftover `per_source` alone. A source whose own walk
+        // hit an unreadable entry (`errored`) is skipped individually —
+        // its file list can't be trusted as complete, and marking absent
+        // files "missing" off an incomplete list would be exactly the
+        // false positive this feature must never produce. A failure to
+        // reconcile a given source is logged and otherwise ignored — it
+        // must never fail the scan itself, which has already indexed
+        // every file it found.
+        if !walk.stopped_early {
+            for outcome in &walk.per_source {
+                if outcome.errored {
+                    continue;
+                }
+                if let Err(e) = self
+                    .deps
+                    .catalog
+                    .reconcile_missing(drive_id, outcome.source_id, &outcome.seen_rel_paths)
+                    .await
+                {
+                    tracing::warn!(
+                        drive_id,
+                        source_id = outcome.source_id,
+                        error = %e,
+                        "failed to reconcile missing-file presence for scan source"
+                    );
+                }
+            }
+        }
+
         let total = walk.files.len() as u64;
         let skip_index = &self.skip_index;
         stream::iter(walk.files)
@@ -274,6 +313,31 @@ struct WalkResult {
     /// `(path, message)` pairs for entries walkdir couldn't read.
     errors: Vec<(String, String)>,
     stopped_early: bool,
+    /// One entry per source whose walk ran to completion (a source the
+    /// walk never reached, or was cut off mid-walk by cancellation, has no
+    /// entry here at all) — what `ScanJob::run` feeds to
+    /// `Catalog::reconcile_missing`, one call per source, after the walk.
+    per_source: Vec<SourceWalkOutcome>,
+}
+
+/// One source's contribution to a scan's walk — everything
+/// `Catalog::reconcile_missing` needs to reconcile that source's presence,
+/// independent of how (or whether) each walked file went on to be
+/// processed. See [`WalkResult::per_source`].
+struct SourceWalkOutcome {
+    source_id: i64,
+    /// `rel_path` (relative to `mount`) of every recognized media file this
+    /// source's walk found on disk — recorded here regardless of whether
+    /// that file's hash/thumbnail/upsert later succeeded, since presence
+    /// reconciliation only cares what the walk itself found, not what
+    /// `process_file` made of it.
+    seen_rel_paths: Vec<String>,
+    /// Whether walkdir reported ANY unreadable entry (e.g. a
+    /// permission-denied subdirectory) while walking this source. Such a
+    /// source's file list can't be trusted as complete, so
+    /// `ScanJob::run` skips its reconcile entirely rather than risk
+    /// marking a file "missing" that the walk simply couldn't see.
+    errored: bool,
 }
 
 /// `mount/rel_path`, or `mount` itself when `rel_path` is empty (a source
@@ -415,6 +479,7 @@ fn collect_media_files(
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut stopped_early = false;
+    let mut per_source = Vec::with_capacity(sources.len());
 
     'sources: for (source, root) in sources {
         emit_walk_progress(job_id, ctx, &format!("Scanning {}", dir_label(root, mount)));
@@ -424,6 +489,13 @@ fn collect_media_files(
             .filter_entry(|e| !is_denied_path(e.path(), mount, home));
 
         let mut entries_since_progress: u64 = 0;
+        // This source's own contribution — only folded into `per_source`
+        // once its walk (the inner loop below) runs to completion; a
+        // `break 'sources` triggered by cancellation mid-walk instead
+        // abandons it, so a cut-off source never gets a (necessarily
+        // incomplete) reconcile entry at all.
+        let mut source_seen = Vec::new();
+        let mut source_errored = false;
         for entry in walker {
             if ctx.cancel.is_cancelled() {
                 stopped_early = true;
@@ -435,6 +507,7 @@ fn collect_media_files(
                 Err(err) => {
                     let path = err.path().map(|p| p.display().to_string()).unwrap_or_default();
                     errors.push((path, err.to_string()));
+                    source_errored = true;
                     continue;
                 }
             };
@@ -460,6 +533,9 @@ fn collect_media_files(
             let Some((kind, canonical_ext)) = MediaKind::from_ext(ext) else {
                 continue;
             };
+            if let Some(rel) = rel_path(entry.path(), mount) {
+                source_seen.push(rel);
+            }
             files.push(ScannedFile {
                 path: entry.into_path(),
                 ext: canonical_ext,
@@ -467,10 +543,17 @@ fn collect_media_files(
                 source_id: source.id,
             });
         }
+
+        per_source.push(SourceWalkOutcome {
+            source_id: source.id,
+            seen_rel_paths: source_seen,
+            errored: source_errored,
+        });
     }
 
     WalkResult {
         files,
+        per_source,
         errors,
         stopped_early,
     }

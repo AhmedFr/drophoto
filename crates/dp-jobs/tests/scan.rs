@@ -2489,3 +2489,269 @@ async fn metadata_less_file_still_stamps_meta_read_at_and_converges() {
         "empty metadata must not be re-read forever"
     );
 }
+
+// Missing-file detection (Task 5d.1): `ScanJob::run` calls
+// `Catalog::reconcile_missing` once per source, right after the walk, with
+// exactly the rel_paths that source's walk found — see the doc comment on
+// `SourceWalkOutcome` in `dp_jobs::scan`.
+
+fn row_by_rel_path<'a>(rows: &'a [MediaRow], rel_path: &str) -> &'a MediaRow {
+    rows.iter()
+        .find(|r| r.rel_path == rel_path)
+        .unwrap_or_else(|| panic!("no row for {rel_path}, rows: {rows:?}"))
+}
+
+/// A file present on disk during the first scan but gone by the second
+/// must be marked missing — and a file still present must not be.
+#[tokio::test]
+async fn file_deleted_between_scans_is_marked_missing() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let png_path = drive_dir.path().join("sample.png");
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), &png_path).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Deleted File Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let (_events, terminal) = run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 2),
+        other => panic!("expected Finished, got {other:?}"),
+    }
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(row_by_rel_path(&rows, "sample.jpg").missing_at.is_none());
+    assert!(row_by_rel_path(&rows, "sample.png").missing_at.is_none());
+
+    std::fs::remove_file(&png_path).unwrap();
+
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive, vec![src], default_deps(catalog.clone(), store), index).await;
+    match terminal {
+        JobEvent::Finished { ok, .. } => assert_eq!(ok, 0, "the remaining file must be skip-matched"),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(
+        row_by_rel_path(&rows, "sample.jpg").missing_at.is_none(),
+        "the still-present file must not be marked missing"
+    );
+    assert!(
+        row_by_rel_path(&rows, "sample.png").missing_at.is_some(),
+        "the deleted file must be marked missing"
+    );
+}
+
+/// A file marked missing that reappears — and is skip-matched (unchanged
+/// size/mtime, thumbnails already on disk) rather than reprocessed — must
+/// still have `missing_at` cleared. This is the Task 5a follow-up:
+/// `upsert_media`'s own `missing_at=NULL` only fires on a fresh upsert,
+/// which the incremental-skip path never performs, so only
+/// `reconcile_missing` clears it here.
+#[tokio::test]
+async fn restored_file_that_is_skip_matched_has_missing_at_cleared() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    let png_path = drive_dir.path().join("sample.png");
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+    std::fs::copy(fx("sample.png"), &png_path).unwrap();
+    let original_mtime = std::fs::metadata(&png_path).unwrap().modified().unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Restored File Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    // Scan 1: both files indexed.
+    run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        no_index(),
+    )
+    .await;
+
+    // Scan 2: sample.png is gone — gets marked missing.
+    std::fs::remove_file(&png_path).unwrap();
+    let index = scan_index(&catalog, drive.id).await;
+    run_scan(
+        drive.clone(),
+        vec![src.clone()],
+        default_deps(catalog.clone(), store.clone()),
+        index,
+    )
+    .await;
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(row_by_rel_path(&rows, "sample.png").missing_at.is_some());
+
+    // Restore it with the exact same bytes and the exact same mtime as
+    // before it was deleted, and leave its thumbnails in `store`
+    // untouched — everything `find_skip_match` checks (size, mtime,
+    // thumbnails, source_id) still matches, so scan 3 skip-matches it
+    // rather than reprocessing it.
+    std::fs::copy(fx("sample.png"), &png_path).unwrap();
+    force_mtime_to_match(&png_path, original_mtime);
+
+    let index = scan_index(&catalog, drive.id).await;
+    let (events, terminal) = run_scan(drive, vec![src], default_deps(catalog.clone(), store), index).await;
+    let (ok, skipped) = match terminal {
+        JobEvent::Finished { ok, skipped, .. } => (ok, skipped),
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    };
+    assert_eq!(
+        (ok, skipped),
+        (0, 2),
+        "both files must be skip-matched, not reprocessed — events: {events:?}"
+    );
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(
+        row_by_rel_path(&rows, "sample.png").missing_at.is_none(),
+        "the restored, skip-matched file must have missing_at cleared"
+    );
+}
+
+/// A scan cancelled before it finishes must reconcile nothing at all —
+/// even a source whose walk fully completed before the cancellation
+/// landed is left alone, since `ScanJob::run` gates the whole reconcile
+/// step on `!walk.stopped_early`.
+#[tokio::test]
+async fn cancelled_scan_does_not_mark_anything_missing() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("sample.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Cancel Reconcile Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    // A pre-existing row for a file that doesn't exist on disk — if the
+    // cancelled scan reconciled anything, this is exactly the row that
+    // would get marked missing.
+    catalog
+        .upsert_media(NewMedia {
+            source_id: Some(src.id),
+            ..legacy_media(drive.id, "ghost.jpg", "ghost-hash")
+        })
+        .await
+        .unwrap();
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let job = ScanJob::new("scan-cancel-reconcile".into(), drive, vec![src], deps, no_index());
+
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = JobCtx::new(tx, cancel);
+
+    let outcome = job.run(ctx).await.unwrap();
+    assert!(outcome.cancelled);
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(
+        row_by_rel_path(&rows, "ghost.jpg").missing_at.is_none(),
+        "a cancelled scan must never mark anything missing"
+    );
+}
+
+/// A source whose walk hits an unreadable entry must be skipped entirely
+/// for reconciliation — its file list can't be trusted as complete, so
+/// marking anything "missing" off it would risk a false positive. A
+/// sibling source whose walk succeeded must still be reconciled normally.
+#[tokio::test]
+async fn errored_source_is_not_reconciled_but_other_sources_still_are() {
+    if !has_exiftool() {
+        eprintln!("skipping: exiftool not installed");
+        return;
+    }
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(drive_dir.path().join("Pictures")).unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("Pictures/a.jpg")).unwrap();
+    // "Missing" is never created on disk — its root can't be
+    // canonicalized, so walking it reports an `io` error for the whole
+    // source (mirrors `missing_source_root_reports_io_error_but_other_
+    // sources_still_scanned`).
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Errored Source Drive", drive_dir.path()).await;
+    let pictures = source(&catalog, drive.id, "Pictures").await;
+    let missing = source(&catalog, drive.id, "Missing").await;
+
+    // Pre-existing rows under each source that the upcoming walk will not
+    // find on disk.
+    catalog
+        .upsert_media(NewMedia {
+            source_id: Some(pictures.id),
+            ..legacy_media(drive.id, "Pictures/gone.jpg", "gone-hash")
+        })
+        .await
+        .unwrap();
+    catalog
+        .upsert_media(NewMedia {
+            source_id: Some(missing.id),
+            ..legacy_media(drive.id, "Missing/ghost.jpg", "ghost-hash")
+        })
+        .await
+        .unwrap();
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+    let deps = default_deps(catalog.clone(), store);
+
+    let (tx, mut rx) = mpsc::channel(256);
+    let runner = JobRunner::new(tx);
+    let job_id = runner.next_id("scan");
+    let job = Arc::new(ScanJob::new(
+        job_id.clone(),
+        drive,
+        vec![pictures, missing],
+        deps,
+        no_index(),
+    ));
+    runner.spawn(job_id, job);
+
+    let (events, terminal) = drain_until_terminal(&mut rx).await;
+    match terminal {
+        JobEvent::Finished { .. } => {}
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert!(
+        row_by_rel_path(&rows, "Pictures/gone.jpg").missing_at.is_some(),
+        "Pictures' walk succeeded — its stale row must be marked missing"
+    );
+    assert!(
+        row_by_rel_path(&rows, "Missing/ghost.jpg").missing_at.is_none(),
+        "Missing's walk errored — it must not be reconciled at all"
+    );
+}

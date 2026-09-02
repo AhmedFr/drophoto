@@ -72,6 +72,15 @@ export function Tile({ tile, onOpen, selected, onToggle }: TileProps) {
         </div>
       )}
 
+      {row.missing_at != null && (
+        <span
+          data-testid="missing-badge"
+          className="absolute top-1.5 right-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[9px] tracking-[1px] text-white"
+        >
+          MISSING
+        </span>
+      )}
+
       {!online && (
         <span className="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[9px] tracking-[1px] text-white/60">
           OFFLINE

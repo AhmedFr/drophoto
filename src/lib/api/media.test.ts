@@ -93,6 +93,22 @@ it("round-trips place_id in the query sent to query_media", async () => {
   expect(args).toEqual({ query: placeQuery });
 });
 
+it("round-trips missing in the query sent to query_media", async () => {
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "query_media") {
+      args = a;
+      return [];
+    }
+    return undefined;
+  });
+
+  const missingQuery: MediaQuery = { ...query, missing: true };
+  await queryMedia(missingQuery);
+
+  expect(args).toEqual({ query: missingQuery });
+});
+
 it("invokes get_media with the id and returns the item", async () => {
   let args: unknown;
   mockIPC((cmd, a) => {

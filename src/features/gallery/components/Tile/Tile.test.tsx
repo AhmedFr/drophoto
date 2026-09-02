@@ -87,6 +87,17 @@ it("does not show a video badge for photos", () => {
   expect(screen.queryByTestId("video-badge")).not.toBeInTheDocument();
 });
 
+it("shows a MISSING badge when missing_at is set", () => {
+  const t = tile({ item: item({ row: { ...item().row, missing_at: "2026-08-30T00:00:00Z" } }) });
+  render(<Tile tile={t} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+  expect(screen.getByTestId("missing-badge")).toHaveTextContent("MISSING");
+});
+
+it("does not show a MISSING badge when missing_at is null", () => {
+  render(<Tile tile={tile()} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+  expect(screen.queryByTestId("missing-badge")).not.toBeInTheDocument();
+});
+
 it("shows an OFFLINE label only when the item is offline", () => {
   const { rerender } = render(<Tile tile={tile({ item: item({ online: true }) })} onOpen={() => {}} selected={false} onToggle={() => {}} />);
   expect(screen.queryByText("OFFLINE")).not.toBeInTheDocument();

@@ -19,6 +19,19 @@ export type PreviewQuality = keyof typeof PREVIEW_EDGES;
 /** Persisted app-wide settings — mirrors `dp_core::AppSettings`. */
 export type AppSettings = {
   preview_edge: number;
+  /** Relocated thumbnail-cache root, or `null` for the default. */
+  thumbs_dir: string | null;
+};
+
+/**
+ * Where the thumbnail cache actually lives this launch — mirrors
+ * `dp_core::CacheStatus`. `fallback` is true when a configured location
+ * was unusable at startup (e.g. its drive isn't plugged in), so the app
+ * substituted the default for this launch without clearing the setting.
+ */
+export type CacheStatus = {
+  thumbs_dir: string;
+  fallback: boolean;
 };
 
 /**
@@ -77,6 +90,19 @@ export const setPreviewQuality = (edge: number) => invokeApi<void>("set_preview_
 
 /** The app's current storage breakdown — computed on call, not polled. */
 export const storageUsage = () => invokeApi<StorageUsage>("storage_usage");
+
+/** Where the thumbnail cache lives this launch — see `CacheStatus`. */
+export const cacheStatus = () => invokeApi<CacheStatus>("cache_status");
+
+/**
+ * Moves the thumbnail cache into `<newDir>/drophoto-thumbs` and persists
+ * the location; resolves with the new cache root. Refused (`ApiError`,
+ * code `"unsupported"`) while any job is running, for a destination
+ * inside a photo source folder or the current cache, or for a non-empty
+ * leftover `drophoto-thumbs` at the destination. The caller relaunches
+ * the app right after success — the running process keeps its old store.
+ */
+export const moveCache = (newDir: string) => invokeApi<string>("move_cache", { newDir });
 
 /**
  * Starts (or reuses, if one is already running) the global preview-regen
