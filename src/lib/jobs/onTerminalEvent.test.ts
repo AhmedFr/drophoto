@@ -41,6 +41,7 @@ it("is a no-op for started, progress, and item_error events", () => {
 const SCAN_INVALIDATE_KEYS = [
   "media",
   "media-count",
+  "missing-count",
   "jobs",
   "unorganized",
   "drives",

@@ -7,6 +7,7 @@ const initial = {
   density: "Comfortable" as const,
   selectedIds: [] as number[],
   anchorIndex: null as number | null,
+  missingOnly: false,
 };
 
 beforeEach(() => {
@@ -172,11 +173,59 @@ describe("buildQuery", () => {
       sort: "taken_asc",
       limit: 500,
       offset: 1000,
+      missing: false,
     });
   });
 
   it("maps NEWEST to taken_desc and ADDED to added_desc", () => {
     expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST" }, 1, 0).sort).toBe("taken_desc");
     expect(buildQuery({ typeFilter: "ALL", sort: "ADDED" }, 1, 0).sort).toBe("added_desc");
+  });
+
+  it("defaults missing to false when missingOnly is omitted", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST" }, 1, 0).missing).toBe(false);
+  });
+
+  it("passes missing: true through when missingOnly is set", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", missingOnly: true }, 1, 0).missing).toBe(
+      true,
+    );
+  });
+});
+
+describe("missingOnly", () => {
+  it("defaults to false", () => {
+    expect(useGalleryStore.getState().missingOnly).toBe(false);
+  });
+
+  it("setMissingOnly updates the flag", () => {
+    useGalleryStore.getState().setMissingOnly(true);
+    expect(useGalleryStore.getState().missingOnly).toBe(true);
+  });
+
+  it("setMissingOnly clears the selection when the flag actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setMissingOnly(true);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("setMissingOnly to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setMissingOnly(false);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("is not persisted to localStorage", () => {
+    useGalleryStore.getState().setMissingOnly(true);
+    useGalleryStore.getState().setTypeFilter("RAW");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    const persisted = JSON.parse(raw as string);
+    expect(persisted.state).not.toHaveProperty("missingOnly");
   });
 });

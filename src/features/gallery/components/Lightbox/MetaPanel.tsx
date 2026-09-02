@@ -12,6 +12,7 @@ import {
   formatDims,
   formatExposure,
   formatIsoFocal,
+  formatMissingSince,
   formatTakenAt,
 } from "@/lib/media/format";
 import type { MediaItem } from "@/lib/api/media";
@@ -31,7 +32,11 @@ export type MetaPanelProps = {
 export function MetaPanel({ item, onTagPanelOpenChange, onPlacePanelOpenChange }: MetaPanelProps) {
   const { row } = item;
   const coords = formatCoords(row.lat, row.lon);
-  const canReveal = item.online && item.original_path != null;
+  const missing = row.missing_at != null;
+  // A missing file has nothing on disk to reveal, regardless of drive
+  // online-ness or a stale `original_path` — the last scan of its
+  // drive+source already looked and didn't find it.
+  const canReveal = item.online && item.original_path != null && !missing;
   const [revealError, setRevealError] = useState<string | null>(null);
   const [tagPanelOpen, setTagPanelOpenState] = useState(false);
   const [placePanelOpen, setPlacePanelOpenState] = useState(false);
@@ -105,6 +110,13 @@ export function MetaPanel({ item, onTagPanelOpenChange, onPlacePanelOpenChange }
         <p className="mt-1 font-mono text-[10px] text-dim">
           {formatDims(row.width, row.height)} · {formatBytes(row.size)} · {row.ext.toUpperCase()}
         </p>
+
+        {missing && (
+          <p className="mt-3 font-mono text-[11px] text-red-400">
+            File missing since {formatMissingSince(row.missing_at)} — deleted or moved outside
+            drophoto
+          </p>
+        )}
 
         <MetaSection title="CAMERA">
           <MetaRow label="Body" value={row.camera ?? "—"} />

@@ -768,6 +768,25 @@ impl Catalog for FailingCatalog {
         self.0.update_media_metadata(id, m, read_at).await
     }
 
+    async fn reconcile_missing(
+        &self,
+        drive_id: i64,
+        source_id: i64,
+        seen_rel_paths: &[String],
+    ) -> DpResult<u64> {
+        self.0
+            .reconcile_missing(drive_id, source_id, seen_rel_paths)
+            .await
+    }
+
+    async fn count_missing(&self, drive_id: i64) -> DpResult<u64> {
+        self.0.count_missing(drive_id).await
+    }
+
+    async fn remove_missing(&self, drive_id: i64) -> DpResult<u64> {
+        self.0.remove_missing(drive_id).await
+    }
+
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {
         self.0.record_scan_error(drive_id, path, code, message).await
     }

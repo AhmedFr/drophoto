@@ -8,6 +8,8 @@ import {
   registerDrive,
   forgetDrive,
   countDriveMedia,
+  countMissingMedia,
+  removeMissingMedia,
   relinkDrive,
 } from "@/lib/api/drives";
 import type { Drive } from "@/lib/api/drives";
@@ -22,6 +24,7 @@ import { RegisterDriveDialog } from "./components/RegisterDriveDialog";
 import { SourcesDialog } from "./components/SourcesDialog";
 import { ForgetDriveDialog } from "./components/ForgetDriveDialog";
 import { RelinkDriveDialog } from "./components/RelinkDriveDialog";
+import { RemoveMissingDialog } from "./components/RemoveMissingDialog";
 import { ScanErrorsDialog } from "./components/ScanErrorsDialog";
 import { useJobEvents } from "./hooks/useJobEvents";
 import { useSources } from "./hooks/useSources";
@@ -63,6 +66,7 @@ export function DrivesPage() {
   const [driveToForget, setDriveToForget] = useState<Drive | null>(null);
   const [driveToRelink, setDriveToRelink] = useState<Drive | null>(null);
   const [driveForErrors, setDriveForErrors] = useState<Drive | null>(null);
+  const [driveForMissing, setDriveForMissing] = useState<Drive | null>(null);
   const jobEvents = useJobEvents();
   const driveIds = useJobsStore((s) => s.driveIds);
   const { sourcesByDrive, isLoading: sourcesLoading } = useSources(
@@ -143,6 +147,28 @@ export function DrivesPage() {
     relinkMutation.reset();
   };
 
+  const driveMissingCount = useQuery({
+    queryKey: ["missing-count", "drive", driveForMissing?.id],
+    queryFn: () => countMissingMedia(driveForMissing?.id as number),
+    enabled: driveForMissing != null,
+  });
+
+  const removeMissingMutation = useMutation({
+    mutationFn: removeMissingMedia,
+    onSuccess: (_data, removedDriveId) => {
+      queryClient.invalidateQueries({ queryKey: ["missing-count"] });
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["media-count"] });
+      queryClient.invalidateQueries({ queryKey: ["driveMediaCount", removedDriveId] });
+      setDriveForMissing(null);
+    },
+  });
+
+  const handleRemoveMissingDialogClose = () => {
+    setDriveForMissing(null);
+    removeMissingMutation.reset();
+  };
+
   const registeredMountPaths = new Set(
     (drives.data ?? []).map((d) => d.mount_path).filter((p): p is string => p != null),
   );
@@ -183,6 +209,7 @@ export function DrivesPage() {
                   onForget={() => setDriveToForget(d)}
                   onRelink={() => setDriveToRelink(d)}
                   onOpenErrors={() => setDriveForErrors(d)}
+                  onRemoveMissing={() => setDriveForMissing(d)}
                 />
               );
             })}
@@ -228,6 +255,17 @@ export function DrivesPage() {
         }
       />
       <ScanErrorsDialog drive={driveForErrors} onClose={() => setDriveForErrors(null)} />
+      <RemoveMissingDialog
+        drive={driveForMissing}
+        missingCount={driveMissingCount.data ?? null}
+        missingCountError={
+          driveMissingCount.isError ? (driveMissingCount.error as Error).message : null
+        }
+        removing={removeMissingMutation.isPending}
+        error={removeMissingMutation.isError ? (removeMissingMutation.error as Error).message : null}
+        onOpenChange={(open) => !open && handleRemoveMissingDialogClose()}
+        onConfirm={() => driveForMissing && removeMissingMutation.mutate(driveForMissing.id)}
+      />
     </div>
   );
 }

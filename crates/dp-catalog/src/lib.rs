@@ -90,6 +90,25 @@ pub trait Catalog: Send + Sync {
     /// what it touches (and doesn't) and who calls it.
     async fn update_media_metadata(&self, id: i64, m: &MediaMetadata, read_at: DateTime<Utc>)
         -> DpResult<()>;
+    /// Reconciles presence for `drive_id`+`source_id` against
+    /// `seen_rel_paths` (this scan's walked file list for that source):
+    /// stamps `missing_at` on rows not seen (first-detected time only),
+    /// clears it on rows that are seen — see
+    /// [`crate::media::reconcile_missing`]'s doc comment. Returns the
+    /// count newly marked missing.
+    async fn reconcile_missing(
+        &self,
+        drive_id: i64,
+        source_id: i64,
+        seen_rel_paths: &[String],
+    ) -> DpResult<u64>;
+    /// How many media rows on `drive_id` are currently marked missing —
+    /// see [`crate::media::count_missing`]'s doc comment.
+    async fn count_missing(&self, drive_id: i64) -> DpResult<u64>;
+    /// Deletes every media row on `drive_id` currently marked missing —
+    /// see [`crate::media::remove_missing`]'s doc comment. Catalog rows
+    /// only; never touches the filesystem.
+    async fn remove_missing(&self, drive_id: i64) -> DpResult<u64>;
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()>;
     /// How many `scan_errors` rows `drive_id` currently has — see
     /// [`crate::media::count_scan_errors`]'s doc comment.
@@ -283,6 +302,23 @@ impl Catalog for SqliteCatalog {
         read_at: DateTime<Utc>,
     ) -> DpResult<()> {
         media::update_media_metadata(&self.pool, id, m, read_at).await
+    }
+
+    async fn reconcile_missing(
+        &self,
+        drive_id: i64,
+        source_id: i64,
+        seen_rel_paths: &[String],
+    ) -> DpResult<u64> {
+        media::reconcile_missing(&self.pool, drive_id, source_id, seen_rel_paths).await
+    }
+
+    async fn count_missing(&self, drive_id: i64) -> DpResult<u64> {
+        media::count_missing(&self.pool, drive_id).await
+    }
+
+    async fn remove_missing(&self, drive_id: i64) -> DpResult<u64> {
+        media::remove_missing(&self.pool, drive_id).await
     }
 
     async fn record_scan_error(&self, drive_id: i64, path: &str, code: &str, message: &str) -> DpResult<()> {

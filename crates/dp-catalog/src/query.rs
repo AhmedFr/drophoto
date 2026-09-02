@@ -50,6 +50,13 @@ fn where_clause(q: &MediaQuery) -> (String, SqliteArguments<'static>) {
         clauses.push("m.place_id = ?".to_string());
         let _ = args.add(place_id);
     }
+    if let Some(missing) = q.missing {
+        clauses.push(if missing {
+            "m.missing_at IS NOT NULL".to_string()
+        } else {
+            "m.missing_at IS NULL".to_string()
+        });
+    }
     let sql = if clauses.is_empty() {
         String::new()
     } else {

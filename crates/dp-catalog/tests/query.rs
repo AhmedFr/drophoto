@@ -1,6 +1,8 @@
 use chrono::{TimeZone, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DriveRole, MediaKind, MediaQuery, MediaSort, NewDrive, NewMedia, NewPlace, PlaceSource};
+use dp_core::{
+    DriveRole, MediaKind, MediaQuery, MediaSort, NewDrive, NewMedia, NewPlace, NewSource, PlaceSource,
+};
 
 async fn seed() -> (SqliteCatalog, i64) {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
@@ -186,6 +188,82 @@ async fn filter_by_place_id() {
     assert_eq!(
         c.count_media_query(&MediaQuery {
             place_id: Some(place.id),
+            ..q()
+        })
+        .await
+        .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn filter_by_missing() {
+    let (c, drive_id) = seed().await;
+    let source = c
+        .upsert_source(NewSource {
+            drive_id,
+            rel_path: "".into(),
+        })
+        .await
+        .unwrap();
+    // A fifth row, attributed to `source`, so `reconcile_missing` (scoped
+    // by drive+source) has something to mark; the four seeded rows keep
+    // their `source_id: None` and are deliberately left untouched by it.
+    c.upsert_media(NewMedia {
+        drive_id,
+        rel_path: "e.jpg".into(),
+        hash: "e.jpg".into(),
+        size: 1,
+        kind: MediaKind::Photo,
+        ext: "jpg".into(),
+        width: Some(4),
+        height: Some(3),
+        duration_ms: None,
+        taken_at: Some(Utc.with_ymd_and_hms(2025, 9, 1, 12, 0, 0).unwrap()),
+        camera: None,
+        lens: None,
+        aperture: None,
+        shutter: None,
+        iso: None,
+        focal_mm: None,
+        lat: None,
+        lon: None,
+        organized_at: None,
+        mtime: None,
+        source_id: Some(source.id),
+    })
+    .await
+    .unwrap();
+
+    // Nothing seen this scan for `source` — e.jpg gets marked missing.
+    c.reconcile_missing(drive_id, source.id, &[]).await.unwrap();
+
+    let missing_only = c
+        .query_media(&MediaQuery {
+            missing: Some(true),
+            ..q()
+        })
+        .await
+        .unwrap();
+    assert_eq!(missing_only.len(), 1);
+    assert_eq!(missing_only[0].0.rel_path, "e.jpg");
+
+    let present_only = c
+        .query_media(&MediaQuery {
+            missing: Some(false),
+            ..q()
+        })
+        .await
+        .unwrap();
+    assert_eq!(present_only.len(), 4, "the 4 originally-seeded rows stay present");
+    assert!(present_only.iter().all(|(m, _)| m.rel_path != "e.jpg"));
+
+    // `missing: None` (the default) must still include every row.
+    assert_eq!(c.query_media(&q()).await.unwrap().len(), 5);
+
+    assert_eq!(
+        c.count_media_query(&MediaQuery {
+            missing: Some(true),
             ..q()
         })
         .await

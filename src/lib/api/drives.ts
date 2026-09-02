@@ -39,6 +39,20 @@ export const forgetDrive = (driveId: number) => invokeApi<void>("forget_drive", 
 export const countDriveMedia = (driveId: number) =>
   invokeApi<number>("count_drive_media", { driveId });
 
+/** How many of `driveId`'s media rows are currently marked missing (`missing_at` set) — gates the "Remove missing… (N)" item in the drive actions dropdown. */
+export const countMissingMedia = (driveId: number) =>
+  invokeApi<number>("count_missing_media", { driveId });
+
+/**
+ * Permanently deletes every catalog row on `driveId` currently marked
+ * missing — the "Remove missing…" danger-zone action. Catalog rows only:
+ * never touches the filesystem (the whole point is these files are
+ * already gone from disk), and thumbnails stay in the shared thumb store,
+ * same as `forgetDrive`. Returns how many rows were actually removed.
+ */
+export const removeMissingMedia = (driveId: number) =>
+  invokeApi<number>("remove_missing_media", { driveId });
+
 /**
  * Adopts the mounted volume at `mountPath` into `driveId`, overwriting its
  * stored identity and bringing it online — the RELINK action on an

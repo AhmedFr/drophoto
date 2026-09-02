@@ -33,5 +33,12 @@ export type DriveCardProps = {
    * this drive has any recorded `scan_errors` rows.
    */
   onOpenErrors?: () => void;
+  /**
+   * Opens the "Remove missing…" confirmation dialog for this drive.
+   * Rendered as a dropdown menu action ("Remove missing… (N)"), shown
+   * only once this drive has any media row currently marked missing
+   * (`count_missing_media`) — same gating pattern as `onOpenErrors`.
+   */
+  onRemoveMissing?: () => void;
   scanEvent?: JobEvent;
 };

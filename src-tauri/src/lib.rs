@@ -28,6 +28,8 @@ pub fn run() {
             commands::drives::forget_drive,
             commands::drives::relink_drive,
             commands::drives::count_drive_media,
+            commands::drives::count_missing_media,
+            commands::drives::remove_missing_media,
             commands::media::query_media,
             commands::media::count_media,
             commands::media::get_media,

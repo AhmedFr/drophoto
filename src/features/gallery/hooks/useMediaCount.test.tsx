@@ -28,5 +28,22 @@ it("returns the count from count_media, queried with limit 1", async () => {
   const { result } = renderHook(() => useMediaCount(), { wrapper });
 
   await waitFor(() => expect(result.current).toBe(137));
-  expect(args).toMatchObject({ query: { limit: 1, offset: 0 } });
+  expect(args).toMatchObject({ query: { limit: 1, offset: 0, missing: false } });
+});
+
+it("queries with missing: true once the store's missingOnly flag is set", async () => {
+  useGalleryStore.setState({ missingOnly: true });
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "count_media") {
+      args = a;
+      return 3;
+    }
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useMediaCount(), { wrapper });
+
+  await waitFor(() => expect(result.current).toBe(3));
+  expect(args).toMatchObject({ query: { missing: true } });
 });

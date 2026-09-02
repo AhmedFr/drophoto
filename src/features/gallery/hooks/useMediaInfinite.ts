@@ -8,10 +8,12 @@ export const PAGE_SIZE = 500;
 export function useMediaInfinite() {
   const typeFilter = useGalleryStore((s) => s.typeFilter);
   const sort = useGalleryStore((s) => s.sort);
+  const missingOnly = useGalleryStore((s) => s.missingOnly);
 
   const query = useInfiniteQuery({
-    queryKey: ["media", typeFilter, sort],
-    queryFn: ({ pageParam }) => queryMedia(buildQuery({ typeFilter, sort }, PAGE_SIZE, pageParam)),
+    queryKey: ["media", typeFilter, sort, missingOnly],
+    queryFn: ({ pageParam }) =>
+      queryMedia(buildQuery({ typeFilter, sort, missingOnly }, PAGE_SIZE, pageParam)),
     initialPageParam: 0,
     getNextPageParam: (lastPage, pages) => (lastPage.length < PAGE_SIZE ? undefined : pages.length * PAGE_SIZE),
   });

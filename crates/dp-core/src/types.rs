@@ -485,6 +485,14 @@ pub struct MediaQuery {
     pub limit: u32,
     pub offset: u32,
     pub place_id: Option<i64>,
+    /// Filters on presence: `None` includes every row regardless of
+    /// `missing_at` (every existing caller's behavior, preserved by
+    /// `#[serde(default)]` deserializing an omitted field to `None`);
+    /// `Some(false)` restricts to rows currently present (`missing_at IS
+    /// NULL`); `Some(true)` restricts to rows the last scan of their
+    /// drive+source didn't see (`missing_at IS NOT NULL`) — see
+    /// `dp_jobs::ScanJob`'s per-source `reconcile_missing` call.
+    pub missing: Option<bool>,
 }
 
 impl MediaQuery {
@@ -653,5 +661,6 @@ mod tests {
         assert_eq!(q.limit, 0);
         // `limit: 0` is only meaningful pre-`clamped()` — callers clamp before querying.
         assert_eq!(q.clone().clamped().limit, 1);
+        assert_eq!(q.missing, None);
     }
 }

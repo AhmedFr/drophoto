@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { MediaItem } from "@/lib/api/media";
+import type { MediaItem, MediaQuery } from "@/lib/api/media";
 import { useGalleryStore } from "../store/galleryStore";
 import { PAGE_SIZE, useMediaInfinite } from "./useMediaInfinite";
 
@@ -86,6 +86,39 @@ it("surfaces query errors", async () => {
 
   await waitFor(() => expect(result.current.isError).toBe(true));
   expect(result.current.error).toBeInstanceOf(Error);
+});
+
+it("queries with missing: false by default", async () => {
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "query_media") {
+      args = a;
+      return [];
+    }
+    return undefined;
+  });
+
+  renderHook(() => useMediaInfinite(), { wrapper });
+
+  await waitFor(() => expect(args).toBeDefined());
+  expect((args as { query: MediaQuery }).query.missing).toBe(false);
+});
+
+it("queries with missing: true once the store's missingOnly flag is set", async () => {
+  useGalleryStore.setState({ missingOnly: true });
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "query_media") {
+      args = a;
+      return [];
+    }
+    return undefined;
+  });
+
+  renderHook(() => useMediaInfinite(), { wrapper });
+
+  await waitFor(() => expect(args).toBeDefined());
+  expect((args as { query: MediaQuery }).query.missing).toBe(true);
 });
 
 it("keeps a referentially stable items array across rerenders when data hasn't changed", async () => {

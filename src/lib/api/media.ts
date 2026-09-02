@@ -51,6 +51,13 @@ export type MediaQuery = {
   offset: number;
   /** Restrict to media assigned to this place — see `dp_core::MediaQuery::place_id`. Omitted/`undefined` behaves the same as `null` (no restriction), since the Rust side defaults a missing field to `None`. */
   place_id?: number | null;
+  /**
+   * Filters on presence — see `dp_core::MediaQuery::missing`.
+   * Omitted/`undefined` behaves the same as `null` (include every row
+   * regardless of `missing_at`); `false` restricts to present rows,
+   * `true` to rows the last scan of their drive+source didn't see.
+   */
+  missing?: boolean | null;
 };
 
 export const queryMedia = (query: MediaQuery) => invokeApi<MediaItem[]>("query_media", { query });

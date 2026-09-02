@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { formatBytes } from "@/lib/format/bytes";
 import { countScanErrors } from "@/lib/api/scan";
+import { countMissingMedia } from "@/lib/api/drives";
 import { ScanProgress } from "../ScanProgress";
 import type { DriveCardProps } from "./DriveCard.types";
 
@@ -24,6 +25,7 @@ export function DriveCard({
   onForget,
   onRelink,
   onOpenErrors,
+  onRemoveMissing,
   scanEvent,
 }: DriveCardProps) {
   // Cheap, cached (same query key `ScanErrorsDialog` reads its own count
@@ -35,6 +37,15 @@ export function DriveCard({
     queryFn: () => countScanErrors(drive.id),
   });
   const hasScanErrors = (scanErrorCount.data ?? 0) > 0;
+
+  // Same pattern as `scanErrorCount` above — only decides whether "Remove
+  // missing… (N)" appears in the dropdown at all, so a drive with nothing
+  // missing never shows a dead-end menu item.
+  const missingCount = useQuery({
+    queryKey: ["missing-count", "drive", drive.id],
+    queryFn: () => countMissingMedia(drive.id),
+  });
+  const hasMissing = (missingCount.data ?? 0) > 0;
 
   const scanInProgress =
     scanEvent != null && scanEvent.kind !== "finished" && scanEvent.kind !== "cancelled";
@@ -95,7 +106,10 @@ export function DriveCard({
             Full
           </Button>
         )}
-        {(onForget || showRelink || (hasScanErrors && onOpenErrors)) && (
+        {(onForget ||
+          showRelink ||
+          (hasScanErrors && onOpenErrors) ||
+          (hasMissing && onRemoveMissing)) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="xs" aria-label="Drive actions">
@@ -105,6 +119,11 @@ export function DriveCard({
             <DropdownMenuContent align="end">
               {hasScanErrors && onOpenErrors && (
                 <DropdownMenuItem onClick={onOpenErrors}>Errors…</DropdownMenuItem>
+              )}
+              {hasMissing && onRemoveMissing && (
+                <DropdownMenuItem onClick={onRemoveMissing}>
+                  {`Remove missing… (${missingCount.data})`}
+                </DropdownMenuItem>
               )}
               {showRelink && <DropdownMenuItem onClick={onRelink}>Relink…</DropdownMenuItem>}
               {onForget && (

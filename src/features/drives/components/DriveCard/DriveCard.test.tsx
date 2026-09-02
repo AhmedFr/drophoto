@@ -25,6 +25,7 @@ function render(ui: ReactElement) {
 beforeEach(() => {
   mockIPC((cmd) => {
     if (cmd === "count_scan_errors") return 0;
+    if (cmd === "count_missing_media") return 0;
     return undefined;
   });
 });
@@ -338,6 +339,43 @@ it("shows the drive-actions menu for onOpenErrors alone once the drive has recor
     return undefined;
   });
   render(<DriveCard drive={baseDrive} onOpenErrors={vi.fn()} />);
+
+  expect(await screen.findByRole("button", { name: "Drive actions" })).toBeInTheDocument();
+});
+
+it("does not show Remove missing… when the drive has nothing missing, even with onRemoveMissing given", async () => {
+  render(<DriveCard drive={baseDrive} onForget={vi.fn()} onRemoveMissing={vi.fn()} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Drive actions" }));
+
+  expect(screen.queryByRole("menuitem", { name: /Remove missing/ })).not.toBeInTheDocument();
+});
+
+it("shows Remove missing… (N) once the drive has missing media, and calls onRemoveMissing when chosen", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "count_missing_media") return 5;
+    return undefined;
+  });
+  const onRemoveMissing = vi.fn();
+  render(<DriveCard drive={baseDrive} onRemoveMissing={onRemoveMissing} />);
+
+  await userEvent.click(await screen.findByRole("button", { name: "Drive actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Remove missing… (5)" }));
+
+  expect(onRemoveMissing).toHaveBeenCalledTimes(1);
+});
+
+it("does not show the drive-actions menu at all when only onRemoveMissing is given but nothing is missing", () => {
+  render(<DriveCard drive={baseDrive} onRemoveMissing={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "Drive actions" })).not.toBeInTheDocument();
+});
+
+it("shows the drive-actions menu for onRemoveMissing alone once the drive has missing media", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "count_missing_media") return 2;
+    return undefined;
+  });
+  render(<DriveCard drive={baseDrive} onRemoveMissing={vi.fn()} />);
 
   expect(await screen.findByRole("button", { name: "Drive actions" })).toBeInTheDocument();
 });

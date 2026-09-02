@@ -6,6 +6,12 @@ import type { JobEvent } from "@/lib/api/scan";
 const INVALIDATE_KEYS: readonly (readonly string[])[] = [
   ["media"],
   ["media-count"],
+  // A scan can mark rows missing or clear that mark (`reconcile_missing`),
+  // which shifts both the toolbar's global "Missing (N)" chip count and
+  // `DriveCard`'s per-drive "Remove missing…" count (`["missing-count",
+  // "drive", driveId]`, matched by this prefix) — without this, either
+  // count would only catch up on the next refocus or remount.
+  ["missing-count"],
   ["jobs"],
   ["unorganized"],
   ["drives"],

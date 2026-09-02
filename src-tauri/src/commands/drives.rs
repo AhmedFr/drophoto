@@ -184,6 +184,39 @@ pub async fn count_drive_media(state: State<'_, AppState>, drive_id: i64) -> Res
     state.catalog.count_media(Some(drive_id)).await
 }
 
+/// How many of `drive_id`'s media rows are currently marked missing
+/// (`missing_at IS NOT NULL`) — the cheap, cached query `DriveCard`'s
+/// actions dropdown checks to decide whether "Remove missing… (N)" appears
+/// at all, same gating pattern as [`super::scan::count_scan_errors`].
+#[tauri::command]
+pub async fn count_missing_media(state: State<'_, AppState>, drive_id: i64) -> Result<u64, DpError> {
+    state.catalog.count_missing(drive_id).await
+}
+
+/// Permanently deletes every catalog row on `drive_id` currently marked
+/// missing — the "Remove missing…" danger-zone action. Never touches the
+/// filesystem: the whole point is that these files are already gone from
+/// disk, and thumbnails are left in the shared thumb store, same as
+/// FORGET. Refuses while a scan/organize/sidecar job is running for this
+/// drive — same reasoning as [`forget_drive`]: such a job could still be
+/// writing (or clearing) `missing_at` for this very drive, and racing it
+/// could either resurrect a row this call just deleted or delete one the
+/// job just wrote fresh.
+#[tauri::command]
+pub async fn remove_missing_media(state: State<'_, AppState>, drive_id: i64) -> Result<u64, DpError> {
+    for kind in DRIVE_JOB_KINDS {
+        if state.active_job(kind, drive_id).is_some() {
+            return Err(DpError::Unsupported {
+                message: format!(
+                    "a {kind} job is running on this drive — wait for it to finish before removing missing files"
+                ),
+                path: None,
+            });
+        }
+    }
+    state.catalog.remove_missing(drive_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

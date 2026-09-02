@@ -3,6 +3,7 @@ import { Search } from "lucide-react";
 import type { router } from "@/app/router";
 import { DensityToggle } from "./DensityToggle";
 import type { GalleryToolbarProps } from "./GalleryToolbar.types";
+import { MissingChip } from "./MissingChip";
 import { SortMenu } from "./SortMenu";
 import { TypeChips } from "./TypeChips";
 
@@ -28,6 +29,7 @@ export function GalleryToolbar({ count }: GalleryToolbarProps) {
         <span className="border border-border-2 px-1 py-0.5 font-mono text-[9px] text-faint">⌘F</span>
       </Link>
       <TypeChips />
+      <MissingChip />
       <SortMenu />
       <DensityToggle />
       {count !== undefined && (
