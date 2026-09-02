@@ -334,3 +334,40 @@ async fn remove_missing_is_scoped_to_its_drive() {
         "drive B's missing row must be untouched"
     );
 }
+
+/// Same hygiene as `forget_drive`: a tag whose only uses were on removed
+/// missing rows must not linger in the tag picker; a tag still used by a
+/// surviving row must.
+#[tokio::test]
+async fn remove_missing_prunes_tags_orphaned_by_the_removal() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let (drive_id, source_id) = drive_with_source(&c).await;
+    let gone = c
+        .upsert_media(nm(drive_id, "img_gone.jpg", "hash-gone", Some(source_id)))
+        .await
+        .unwrap();
+    let kept = c
+        .upsert_media(nm(drive_id, "img_kept.jpg", "hash-kept", Some(source_id)))
+        .await
+        .unwrap();
+    c.tag_media(&[gone], &["only-on-missing".into()], &[])
+        .await
+        .unwrap();
+    c.tag_media(&[gone, kept], &["shared".into()], &[]).await.unwrap();
+
+    c.reconcile_missing(drive_id, source_id, &["img_kept.jpg".to_string()])
+        .await
+        .unwrap();
+    let removed = c.remove_missing(drive_id).await.unwrap();
+    assert_eq!(removed, 1);
+
+    let names: Vec<String> = c.list_tags().await.unwrap().into_iter().map(|t| t.name).collect();
+    assert!(
+        !names.iter().any(|n| n == "only-on-missing"),
+        "a tag used only on removed rows must be pruned, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "shared"),
+        "a tag still used by a surviving row must remain, got {names:?}"
+    );
+}

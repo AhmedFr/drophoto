@@ -529,6 +529,17 @@ pub(crate) async fn remove_missing(pool: &SqlitePool, drive_id: i64) -> DpResult
             removed += 1;
         }
     }
+
+    // Same hygiene as `forget_drive` step 7: a tag whose only uses were on
+    // the just-removed rows would otherwise linger in the tag picker
+    // forever. A tag still referenced by any surviving media (this drive's
+    // or another's) is untouched.
+    if removed > 0 {
+        sqlx::query("DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)")
+            .execute(pool)
+            .await
+            .map_err(db)?;
+    }
     Ok(removed)
 }
 
