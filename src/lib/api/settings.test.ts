@@ -1,6 +1,8 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import {
+  cacheStatus,
   getSettings,
+  moveCache,
   resetAppData,
   setPreviewQuality,
   startRegenPreviews,
@@ -13,7 +15,7 @@ import { ApiError } from "./client";
 import type { AppSettings, StorageUsage } from "./settings";
 
 it("gets current settings with no arguments", async () => {
-  const settings: AppSettings = { preview_edge: PREVIEW_EDGES.max };
+  const settings: AppSettings = { preview_edge: PREVIEW_EDGES.max, thumbs_dir: null };
   let received: unknown;
   mockIPC((cmd, args) => {
     if (cmd === "get_settings") {
@@ -154,4 +156,26 @@ it("wraps structured errors from uninstall_app", async () => {
     throw { code: "unsupported", message: "not running from an installed .app bundle" };
   });
   await expect(uninstallApp()).rejects.toBeInstanceOf(ApiError);
+});
+
+it("cacheStatus round-trips the cache_status payload", async () => {
+  const status = { thumbs_dir: "/Users/me/Library/thumbs", fallback: false };
+  mockIPC((cmd) => {
+    if (cmd === "cache_status") return status;
+    return undefined;
+  });
+  await expect(cacheStatus()).resolves.toEqual(status);
+});
+
+it("moveCache passes the picked folder and resolves the new root", async () => {
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "move_cache") {
+      args = a;
+      return "/Volumes/Fast/drophoto-thumbs";
+    }
+    return undefined;
+  });
+  await expect(moveCache("/Volumes/Fast")).resolves.toBe("/Volumes/Fast/drophoto-thumbs");
+  expect(args).toEqual({ newDir: "/Volumes/Fast" });
 });

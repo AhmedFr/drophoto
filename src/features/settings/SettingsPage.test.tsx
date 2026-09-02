@@ -33,7 +33,7 @@ function renderPage() {
   );
 }
 
-const settings = { preview_edge: 2000 };
+const settings = { preview_edge: 2000, thumbs_dir: null };
 const usage = {
   thumbs_400_bytes: 1_000_000,
   previews_bytes: 8_000_000,
@@ -47,6 +47,7 @@ function mockDefaults() {
     if (cmd === "get_settings") return settings;
     if (cmd === "storage_usage") return usage;
     if (cmd === "tool_health") return { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+    if (cmd === "cache_status") return { thumbs_dir: "/Users/me/Library/thumbs", fallback: false };
     if (cmd === "list_drives") return [];
     return undefined;
   });
@@ -189,4 +190,11 @@ it("triggers uninstall_app once the danger-zone uninstall dialog is confirmed", 
   await userEvent.click(screen.getByRole("button", { name: "Uninstall drophoto" }));
 
   expect(uninstallApp).toHaveBeenCalledTimes(1);
+});
+
+it("renders the cache-location section with the current root", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByText("CACHE LOCATION")).toBeInTheDocument();
+  expect(await screen.findByText("/Users/me/Library/thumbs")).toBeInTheDocument();
 });

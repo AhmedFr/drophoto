@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use dp_core::{
-    AppSettings, DpError, DpResult, StorageUsage, ToolHealth, PREVIEW_EDGE_BALANCED, PREVIEW_EDGE_COMPACT,
-    PREVIEW_EDGE_MAX,
+    AppSettings, CacheStatus, DpError, DpResult, StorageUsage, ToolHealth, PREVIEW_EDGE_BALANCED,
+    PREVIEW_EDGE_COMPACT, PREVIEW_EDGE_MAX,
 };
 use dp_jobs::{Job, RegenDeps, RegenJob};
 use std::path::{Path, PathBuf};
@@ -116,7 +116,7 @@ pub async fn start_regen_previews(state: State<'_, AppState>) -> Result<String, 
 /// (in its documented `thumbs/`-then-`catalog.db*` order) has succeeded.
 #[tauri::command]
 pub async fn reset_app_data(state: State<'_, AppState>) -> Result<(), DpError> {
-    reset_app_data_at(&state.app_data_dir)?;
+    reset_app_data_at(&state.app_data_dir, state.store.root())?;
     std::process::exit(0);
 }
 
@@ -136,8 +136,12 @@ pub async fn reset_app_data(state: State<'_, AppState>) -> Result<(), DpError> {
 /// — so the worst case is "thumbs partially cleared, catalog.db untouched,
 /// app keeps running and the dialog shows the error", not "catalog.db is
 /// gone out from under a still-running app with no visible error".
-fn reset_app_data_at(dir: &Path) -> DpResult<()> {
-    let thumbs = dir.join("thumbs");
+/// `thumbs_root` is passed separately from `dir` because the cache may
+/// have been relocated (Settings → Cache location): the active store root
+/// — wherever it lives — is what gets deleted, not a possibly-empty
+/// default `thumbs/` under the app-data dir.
+fn reset_app_data_at(dir: &Path, thumbs_root: &Path) -> DpResult<()> {
+    let thumbs = thumbs_root.to_path_buf();
     if thumbs.exists() {
         std::fs::remove_dir_all(&thumbs).map_err(|e| DpError::io(&e, thumbs.display().to_string()))?;
     }
@@ -189,7 +193,7 @@ pub async fn uninstall_app(state: State<'_, AppState>) -> Result<(), DpError> {
         path: Some(bundle_path.display().to_string()),
     })?;
 
-    if let Err(data_err) = reset_app_data_at(&state.app_data_dir) {
+    if let Err(data_err) = reset_app_data_at(&state.app_data_dir, state.store.root()) {
         return Err(DpError::Io {
             message: partial_uninstall_message(&state.app_data_dir, &data_err),
             path: Some(state.app_data_dir.display().to_string()),
@@ -358,6 +362,196 @@ fn compute_storage_usage(thumbs_root: &Path, catalog_path: &Path) -> DpResult<St
     })
 }
 
+/// Where the thumbnail cache actually lives this launch, and whether that
+/// is a fallback from an unusable configured location — see
+/// [`dp_core::CacheStatus`]. Snapshot from `AppState::init`, same pattern
+/// as `tool_health`.
+#[tauri::command]
+pub async fn cache_status(state: State<'_, AppState>) -> Result<CacheStatus, DpError> {
+    Ok(state.cache_status.clone())
+}
+
+/// Moves the thumbnail cache into `<new_dir>/drophoto-thumbs` and persists
+/// the new location; the frontend relaunches the app right after, so the
+/// still-running process's stale `ThumbStore` is never used again beyond
+/// read misses. Touches ONLY the app's own cache tree: the single delete
+/// in the whole flow is [`move_tree`]'s removal of the OLD store root
+/// (and, on a failed copy, of the partial destination it itself created).
+///
+/// Refuses while any job is running (a scan/regen writing thumbnails
+/// mid-move would strand files in a tree about to be deleted), refuses a
+/// destination inside any drive's enabled photo-source folder (cache must
+/// never mingle with photos), and refuses a destination inside the
+/// current cache (a cycle). The setting is written strictly AFTER the
+/// on-disk move fully succeeded — a failed move leaves the old tree
+/// authoritative and the setting untouched.
+#[tauri::command]
+pub async fn move_cache(state: State<'_, AppState>, new_dir: String) -> Result<String, DpError> {
+    if state.any_job_running() {
+        return Err(DpError::Unsupported {
+            message: "a job is running — wait for it to finish before moving the cache".into(),
+            path: None,
+        });
+    }
+
+    let mut source_roots = Vec::new();
+    for drive in state.catalog.list_drives().await? {
+        let Some(mount) = drive.mount_path else { continue };
+        for source in state.catalog.list_enabled_sources(drive.id).await? {
+            source_roots.push(PathBuf::from(&mount).join(&source.rel_path));
+        }
+    }
+
+    let current_root = state.store.root().to_path_buf();
+    let dest = tokio::task::spawn_blocking(move || -> DpResult<PathBuf> {
+        let dest = plan_cache_destination(Path::new(&new_dir), &current_root, &source_roots)?;
+        move_tree(&current_root, &dest)?;
+        Ok(dest)
+    })
+    .await
+    .map_err(|e| DpError::Io {
+        message: format!("cache move task failed: {e}"),
+        path: None,
+    })??;
+
+    let dest_str = dest.display().to_string();
+    state.catalog.set_thumbs_dir(Some(&dest_str)).await?;
+    Ok(dest_str)
+}
+
+/// Validates `new_dir` and returns the destination root
+/// (`<new_dir>/drophoto-thumbs`) the cache will move into. Pure planning —
+/// creates nothing, deletes nothing — so every refusal happens before any
+/// filesystem mutation. Works on canonicalized paths throughout, so a
+/// symlinked destination can't dodge the containment checks.
+fn plan_cache_destination(
+    new_dir: &Path,
+    current_root: &Path,
+    source_roots: &[PathBuf],
+) -> DpResult<PathBuf> {
+    let new_dir = new_dir.canonicalize().map_err(|e| DpError::Io {
+        message: format!("destination folder is not usable: {e}"),
+        path: Some(new_dir.display().to_string()),
+    })?;
+    if !new_dir.is_dir() {
+        return Err(DpError::Unsupported {
+            message: "destination is not a folder".into(),
+            path: Some(new_dir.display().to_string()),
+        });
+    }
+    let current_root = current_root.canonicalize().map_err(|e| DpError::Io {
+        message: format!("current cache root is not readable: {e}"),
+        path: Some(current_root.display().to_string()),
+    })?;
+
+    let dest = new_dir.join("drophoto-thumbs");
+
+    // A cycle in either direction — the destination inside the current
+    // cache, or the current cache inside the destination — would make the
+    // move eat its own source.
+    if dest.starts_with(&current_root) || current_root.starts_with(&dest) {
+        return Err(DpError::Unsupported {
+            message: "destination is inside the current cache location".into(),
+            path: Some(dest.display().to_string()),
+        });
+    }
+
+    // Photos and cache never mingle: refuse a destination inside any
+    // drive's enabled photo-source folder. Canonicalize each source root
+    // where possible (an offline/renamed source that can't be resolved
+    // can't contain the — resolvable — destination, so it's skipped).
+    for source_root in source_roots {
+        if let Ok(source_root) = source_root.canonicalize() {
+            if dest.starts_with(&source_root) {
+                return Err(DpError::Unsupported {
+                    message: "destination is inside a photo source folder — pick a folder outside your photo library".into(),
+                    path: Some(dest.display().to_string()),
+                });
+            }
+        }
+    }
+
+    // A leftover `drophoto-thumbs` with contents at the destination is
+    // ambiguous (another install's cache? a half-finished move?) — refuse
+    // rather than merging into or clobbering it. An empty one is fine.
+    if dest.exists() {
+        let mut entries =
+            std::fs::read_dir(&dest).map_err(|e| DpError::io(&e, dest.display().to_string()))?;
+        if entries.next().is_some() {
+            return Err(DpError::Unsupported {
+                message: "destination already contains a non-empty drophoto-thumbs folder".into(),
+                path: Some(dest.display().to_string()),
+            });
+        }
+    }
+
+    Ok(dest)
+}
+
+/// Moves the cache tree at `src` to `dest`: a plain `fs::rename` when the
+/// two share a volume (instant, atomic), else a per-file copy (each file
+/// fsynced and size-verified) followed by deleting `src` — the ONLY
+/// delete of pre-existing data in the whole cache-move flow, and it runs
+/// strictly after every file has been copied and verified. Any copy
+/// failure removes the partial destination tree (which this function
+/// itself created) and leaves `src` untouched.
+fn move_tree(src: &Path, dest: &Path) -> DpResult<()> {
+    // An empty pre-existing dest dir (allowed by planning) would make
+    // rename fail on some platforms — clear it first; it's empty.
+    if dest.exists() {
+        std::fs::remove_dir(dest).map_err(|e| DpError::io(&e, dest.display().to_string()))?;
+    }
+
+    if std::fs::rename(src, dest).is_ok() {
+        return Ok(());
+    }
+
+    // Cross-volume (or otherwise rename-refusing) fallback.
+    if let Err(e) = copy_tree_verified(src, dest) {
+        let _ = std::fs::remove_dir_all(dest);
+        return Err(e);
+    }
+    std::fs::remove_dir_all(src).map_err(|e| DpError::io(&e, src.display().to_string()))?;
+    Ok(())
+}
+
+/// Recursively copies `src` into `dest` (created fresh), fsyncing each
+/// copied file and verifying its size — thumbnails are cheap to re-render,
+/// but a silently truncated copy followed by source deletion is still a
+/// loss this two-line check rules out.
+fn copy_tree_verified(src: &Path, dest: &Path) -> DpResult<()> {
+    std::fs::create_dir_all(dest).map_err(|e| DpError::io(&e, dest.display().to_string()))?;
+    for entry in std::fs::read_dir(src).map_err(|e| DpError::io(&e, src.display().to_string()))? {
+        let entry = entry.map_err(|e| DpError::io(&e, src.display().to_string()))?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|e| DpError::io(&e, from.display().to_string()))?;
+        if file_type.is_dir() {
+            copy_tree_verified(&from, &to)?;
+        } else if file_type.is_file() {
+            let written = std::fs::copy(&from, &to).map_err(|e| DpError::io(&e, to.display().to_string()))?;
+            let src_len = entry
+                .metadata()
+                .map_err(|e| DpError::io(&e, from.display().to_string()))?
+                .len();
+            if written != src_len {
+                return Err(DpError::Io {
+                    message: format!("short copy: {written} of {src_len} bytes"),
+                    path: Some(to.display().to_string()),
+                });
+            }
+            let f = std::fs::File::open(&to).map_err(|e| DpError::io(&e, to.display().to_string()))?;
+            f.sync_all()
+                .map_err(|e| DpError::io(&e, to.display().to_string()))?;
+        }
+        // Symlinks and other special files are skipped: the store never
+        // creates them, so anything of the kind isn't ours to move.
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,7 +620,7 @@ mod tests {
         write(dir.path(), "unrelated.txt", b"leave me alone");
         write(dir.path(), "logs/app.log", b"log line");
 
-        reset_app_data_at(dir.path()).unwrap();
+        reset_app_data_at(dir.path(), &dir.path().join("thumbs")).unwrap();
 
         assert!(!dir.path().join("catalog.db").exists());
         assert!(!dir.path().join("catalog.db-wal").exists());
@@ -439,7 +633,7 @@ mod tests {
     #[test]
     fn reset_app_data_at_is_a_no_op_on_an_already_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(reset_app_data_at(dir.path()).is_ok());
+        assert!(reset_app_data_at(dir.path(), &dir.path().join("thumbs")).is_ok());
     }
 
     // Review finding 4: `thumbs/` must be deleted before `catalog.db*`, and
@@ -460,7 +654,7 @@ mod tests {
         // it can't be unlinked — `remove_dir_all` fails partway through.
         std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-        let result = reset_app_data_at(dir.path());
+        let result = reset_app_data_at(dir.path(), &dir.path().join("thumbs"));
 
         // Restore permissions so the tempdir can clean itself up.
         std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -558,6 +752,121 @@ mod tests {
         assert!(
             msg.contains("/Users/x/Library/Application Support/drophoto"),
             "message was: {msg}"
+        );
+    }
+
+    fn write_file(path: &std::path::Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn plan_cache_destination_appends_drophoto_thumbs_under_the_picked_folder() {
+        let current = tempfile::tempdir().unwrap();
+        let picked = tempfile::tempdir().unwrap();
+        let dest = plan_cache_destination(picked.path(), current.path(), &[]).unwrap();
+        assert_eq!(
+            dest,
+            picked.path().canonicalize().unwrap().join("drophoto-thumbs")
+        );
+    }
+
+    #[test]
+    fn plan_cache_destination_refuses_a_destination_inside_the_current_cache() {
+        let current = tempfile::tempdir().unwrap();
+        let inside = current.path().join("sub");
+        std::fs::create_dir_all(&inside).unwrap();
+        assert!(plan_cache_destination(&inside, current.path(), &[]).is_err());
+    }
+
+    #[test]
+    fn plan_cache_destination_refuses_a_destination_inside_a_source_folder() {
+        let current = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let picked = source.path().join("nested");
+        std::fs::create_dir_all(&picked).unwrap();
+        let result = plan_cache_destination(&picked, current.path(), &[source.path().to_path_buf()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn plan_cache_destination_refuses_a_nonempty_leftover_destination() {
+        let current = tempfile::tempdir().unwrap();
+        let picked = tempfile::tempdir().unwrap();
+        write_file(&picked.path().join("drophoto-thumbs/stale.webp"), b"x");
+        assert!(plan_cache_destination(picked.path(), current.path(), &[]).is_err());
+    }
+
+    #[test]
+    fn plan_cache_destination_accepts_an_empty_leftover_destination() {
+        let current = tempfile::tempdir().unwrap();
+        let picked = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(picked.path().join("drophoto-thumbs")).unwrap();
+        assert!(plan_cache_destination(picked.path(), current.path(), &[]).is_ok());
+    }
+
+    #[test]
+    fn plan_cache_destination_refuses_a_missing_destination_folder() {
+        let current = tempfile::tempdir().unwrap();
+        assert!(
+            plan_cache_destination(std::path::Path::new("/nonexistent/nowhere"), current.path(), &[])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn move_tree_moves_the_whole_tree_same_volume() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("old-thumbs");
+        let dest = root.path().join("picked/drophoto-thumbs");
+        std::fs::create_dir_all(root.path().join("picked")).unwrap();
+        write_file(&src.join("ab/400.webp"), b"thumb");
+        write_file(&src.join("ab/2000.webp"), b"preview");
+
+        move_tree(&src, &dest).unwrap();
+
+        assert!(!src.exists(), "source tree must be gone after the move");
+        assert_eq!(std::fs::read(dest.join("ab/400.webp")).unwrap(), b"thumb");
+        assert_eq!(std::fs::read(dest.join("ab/2000.webp")).unwrap(), b"preview");
+    }
+
+    #[test]
+    fn copy_tree_verified_replicates_nested_files() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        let dest = root.path().join("dest");
+        write_file(&src.join("a/b/2000.webp"), b"deep");
+
+        copy_tree_verified(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read(dest.join("a/b/2000.webp")).unwrap(), b"deep");
+        assert!(
+            src.join("a/b/2000.webp").exists(),
+            "copy never deletes the source"
+        );
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_the_source_intact() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        write_file(&src.join("ab/400.webp"), b"thumb");
+        // An unwritable destination parent forces the copy to fail.
+        let ro_parent = root.path().join("ro");
+        std::fs::create_dir_all(&ro_parent).unwrap();
+        let mut perms = std::fs::metadata(&ro_parent).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&ro_parent, perms.clone()).unwrap();
+
+        let result = move_tree(&src, &ro_parent.join("drophoto-thumbs"));
+
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&ro_parent, perms).unwrap();
+        assert!(result.is_err());
+        assert!(
+            src.join("ab/400.webp").exists(),
+            "source must survive a failed move"
         );
     }
 }

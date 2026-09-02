@@ -217,6 +217,11 @@ pub trait Catalog: Send + Sync {
     /// [`dp_core::AppSettings::preview_edge`]. Does not itself trigger a
     /// regen; that's the caller's job (see `start_regen_previews`).
     async fn set_preview_edge(&self, edge: u32) -> DpResult<()>;
+    /// Persists (or with `None`, clears) the relocated thumbnail-cache
+    /// root — see [`dp_core::AppSettings::thumbs_dir`]. Pure catalog
+    /// write: `move_cache` (the Tauri command) does the actual on-disk
+    /// move first and only then calls this.
+    async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()>;
 }
 
 #[async_trait]
@@ -516,5 +521,9 @@ impl Catalog for SqliteCatalog {
 
     async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
         settings::set_preview_edge(&self.pool, edge).await
+    }
+
+    async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()> {
+        settings::set_thumbs_dir(&self.pool, dir).await
     }
 }

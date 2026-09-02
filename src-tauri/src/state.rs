@@ -1,5 +1,5 @@
 use dp_catalog::{Catalog, SqliteCatalog};
-use dp_core::{DpError, DpResult, ToolHealth};
+use dp_core::{CacheStatus, DpError, DpResult, ToolHealth};
 use dp_hash::{Blake3Hasher, Hasher};
 use dp_jobs::{Job, JobRunner};
 use dp_metadata::{ExiftoolProvider, ExiftoolSidecars, MetadataProvider, Sidecars};
@@ -54,6 +54,12 @@ pub struct AppState {
     /// so the `tool_health` command can show it in Settings without
     /// re-probing the filesystem on every call.
     pub tool_health: ToolHealth,
+    /// The thumbnail-cache root actually in use this launch, plus whether
+    /// it's a fallback from an unusable configured location (e.g. a cache
+    /// on an external drive that isn't plugged in) — resolved once here
+    /// and served verbatim by the `cache_status` command. `store` above
+    /// was built from this same resolution, so the two can never disagree.
+    pub cache_status: CacheStatus,
 }
 
 impl AppState {
@@ -66,9 +72,34 @@ impl AppState {
         let db_path = dir.join("catalog.db");
         let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open(&db_path).await?);
 
-        let thumbs_root = dir.join("thumbs");
+        // The cache may have been relocated (Settings → Cache location).
+        // A configured dir that's missing or unreadable — most likely a
+        // cache on an external drive that isn't plugged in right now —
+        // falls back to the default for this launch WITHOUT clearing the
+        // setting, so plugging the drive back in and relaunching restores
+        // it. `fallback` tells Settings to warn about the substitution.
+        let default_thumbs = dir.join("thumbs");
+        let configured = catalog.get_settings().await?.thumbs_dir;
+        let (thumbs_root, fallback) = match configured {
+            Some(configured) => {
+                let p = PathBuf::from(&configured);
+                if p.is_dir() {
+                    (p, false)
+                } else {
+                    tracing::warn!(
+                        "configured thumbs dir {configured} is unavailable; using the default for this launch"
+                    );
+                    (default_thumbs, true)
+                }
+            }
+            None => (default_thumbs, false),
+        };
         std::fs::create_dir_all(&thumbs_root)
             .map_err(|e| DpError::io(&e, thumbs_root.display().to_string()))?;
+        let cache_status = CacheStatus {
+            thumbs_dir: thumbs_root.display().to_string(),
+            fallback,
+        };
 
         let (tx, mut rx) = mpsc::channel(JOB_EVENT_CHANNEL_CAPACITY);
         let runner = JobRunner::new(tx).with_recorder(catalog.clone());
@@ -114,7 +145,17 @@ impl AppState {
             active_jobs: Mutex::new(HashMap::new()),
             app_data_dir: dir,
             tool_health,
+            cache_status,
         })
+    }
+
+    /// Whether ANY tracked job — per-drive or global sweep — is still
+    /// actually running. `move_cache` refuses while this is true: a scan
+    /// or regen writing thumbnails mid-move would land files in a tree
+    /// that's about to be deleted.
+    pub fn any_job_running(&self) -> bool {
+        let jobs = lock_active_jobs(&self.active_jobs);
+        jobs.values().any(|job_id| self.runner.is_running(job_id))
     }
 
     /// Starts a scan for `drive_id`, unless a job is already running for

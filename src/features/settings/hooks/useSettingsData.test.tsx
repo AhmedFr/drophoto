@@ -29,7 +29,7 @@ function render() {
 
 it("loads settings and storage usage on mount", async () => {
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 1, previews_bytes: 2, catalog_bytes: 3, total_bytes: 6, file_count: 1 };
     }
@@ -40,13 +40,13 @@ it("loads settings and storage usage on mount", async () => {
   expect(result.current.settingsLoading).toBe(true);
   expect(result.current.storageLoading).toBe(true);
 
-  await waitFor(() => expect(result.current.settings).toEqual({ preview_edge: 2000 }));
+  await waitFor(() => expect(result.current.settings).toEqual({ preview_edge: 2000, thumbs_dir: null }));
   await waitFor(() => expect(result.current.storage?.total_bytes).toBe(6));
 });
 
 it("exposes the tool-health snapshot once its query resolves", async () => {
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -77,7 +77,7 @@ it("surfaces a settings query error message", async () => {
 it("refreshStorage refetches storage_usage without touching settings", async () => {
   let calls = 0;
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       calls += 1;
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
@@ -95,7 +95,7 @@ it("refreshStorage refetches storage_usage without touching settings", async () 
 
 it("regenApplicable is derived from the persisted setting, not the mutation response", async () => {
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -106,7 +106,7 @@ it("regenApplicable is derived from the persisted setting, not the mutation resp
   });
 
   const { result } = render();
-  await waitFor(() => expect(result.current.settings).toEqual({ preview_edge: 2000 }));
+  await waitFor(() => expect(result.current.settings).toEqual({ preview_edge: 2000, thumbs_dir: null }));
   expect(result.current.regenApplicable).toBe(false);
 
   act(() => result.current.applyQuality(800));
@@ -156,7 +156,7 @@ it("regenApplicable stays true after a regen sweep finishes — there's no durab
 
 it("reports regenRunning from the global jobs store", async () => {
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -179,7 +179,7 @@ it("reports regenRunning from the global jobs store", async () => {
 it("startRegen calls start_regen_previews", async () => {
   const startRegenSpy = vi.fn().mockReturnValue("regen-0");
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -200,7 +200,7 @@ it("startRegen calls start_regen_previews", async () => {
 // never flips — so the failure must be toasted rather than swallowed.
 it("toasts start_regen_previews' rejection message", async () => {
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -222,7 +222,7 @@ it("toasts start_regen_previews' rejection message", async () => {
 
 it("confirmResetAppData surfaces reset_app_data's rejection message via resetError", async () => {
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -247,7 +247,7 @@ it("confirmResetAppData calls reset_app_data and reports resetting while in flig
     resolveReset = resolve;
   });
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -267,7 +267,7 @@ it("confirmResetAppData calls reset_app_data and reports resetting while in flig
 
 it("confirmUninstall surfaces uninstall_app's rejection message via uninstallError", async () => {
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }
@@ -292,7 +292,7 @@ it("confirmUninstall calls uninstall_app and reports uninstalling while in fligh
     resolveUninstall = resolve;
   });
   mockIPC((cmd) => {
-    if (cmd === "get_settings") return { preview_edge: 2000 };
+    if (cmd === "get_settings") return { preview_edge: 2000, thumbs_dir: null };
     if (cmd === "storage_usage") {
       return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
     }

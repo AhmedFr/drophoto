@@ -67,6 +67,8 @@ pub fn run() {
             commands::settings::set_preview_quality,
             commands::settings::storage_usage,
             commands::settings::tool_health,
+            commands::settings::cache_status,
+            commands::settings::move_cache,
             commands::settings::start_regen_previews,
             commands::settings::reset_app_data,
             commands::settings::uninstall_app,

@@ -567,17 +567,45 @@ pub const PREVIEW_EDGE_MAX: u32 = 2000;
 /// written — see `dp_catalog::Catalog::get_settings`.
 pub const DEFAULT_PREVIEW_EDGE: u32 = PREVIEW_EDGE_MAX;
 
-/// Persisted app-wide settings — currently just the preview quality, but
-/// the shape `Catalog::get_settings`/`get_settings` (the Tauri command)
-/// hands the frontend, so more keys can be added here without changing
-/// either signature.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+/// Persisted app-wide settings — the preview quality plus the configured
+/// thumbnail-cache location, but the shape `Catalog::get_settings`/
+/// `get_settings` (the Tauri command) hands the frontend, so more keys
+/// can be added here without changing either signature.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AppSettings {
     /// The longest edge (px) the "preview" (`2000.webp`) thumbnail slot is
     /// rendered/regenerated at — one of [`PREVIEW_EDGE_COMPACT`],
     /// [`PREVIEW_EDGE_BALANCED`], or [`PREVIEW_EDGE_MAX`] in the current
     /// UI, though nothing enforces that at this layer.
     pub preview_edge: u32,
+    /// The user-relocated thumbnail-cache root (an absolute path, always
+    /// ending in `drophoto-thumbs` — see `move_cache`'s doc comment),
+    /// or `None` for the default `<app-data>/thumbs`. Never trusted blindly
+    /// at startup: `AppState::init` falls back to the default (and flags
+    /// [`CacheStatus::fallback`]) if this path doesn't exist or can't be
+    /// read, e.g. an external drive that isn't currently plugged in.
+    pub thumbs_dir: Option<String>,
+}
+
+/// Where thumbnails/previews are currently cached, and whether that's
+/// really the configured location — the `cache_status` Tauri command's
+/// response, read by Settings' `StorageSection` (the "Cache location"
+/// row and its fallback warning). Deliberately a separate command/type
+/// from [`AppSettings`]/`get_settings` rather than folding `fallback`
+/// into `AppSettings` itself: `fallback` is a point-in-time fact about
+/// *this* launch's resolution (computed once in `AppState::init`, from
+/// filesystem state that can change independently of the setting), not
+/// part of the persisted setting itself.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CacheStatus {
+    /// The thumbnail-cache root actually in use this launch — always the
+    /// real, existing directory (never the raw, possibly-stale
+    /// `AppSettings::thumbs_dir` string), so the UI can show it directly.
+    pub thumbs_dir: String,
+    /// `true` when a configured [`AppSettings::thumbs_dir`] was set but
+    /// unusable (missing/unreadable) at startup, so the app fell back to
+    /// its own default instead — Settings shows a warning in this case.
+    pub fallback: bool,
 }
 
 /// A breakdown of on-disk space the app itself is responsible for —

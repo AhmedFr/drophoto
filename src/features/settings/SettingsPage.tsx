@@ -4,6 +4,7 @@ import { UpdatesSection } from "./components/UpdatesSection";
 import { StorageSection } from "./components/StorageSection";
 import { ToolsSection } from "./components/ToolsSection";
 import { SidecarsSection } from "./components/SidecarsSection";
+import { CacheLocationSection } from "./components/CacheLocationSection";
 import { QualityPicker } from "./components/QualityPicker";
 import { DangerZone } from "./components/DangerZone";
 import { useSettingsData } from "./hooks/useSettingsData";
@@ -49,6 +50,8 @@ export function SettingsPage() {
           refreshing={storageRefreshing}
           onRefresh={refreshStorage}
         />
+
+        <CacheLocationSection />
 
         <ToolsSection tools={tools} loading={toolsLoading} error={toolsError} />
 

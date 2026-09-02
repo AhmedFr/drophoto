@@ -986,6 +986,10 @@ impl Catalog for FailingCatalog {
     async fn set_preview_edge(&self, edge: u32) -> DpResult<()> {
         self.0.set_preview_edge(edge).await
     }
+
+    async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()> {
+        self.0.set_thumbs_dir(dir).await
+    }
 }
 
 #[tokio::test]
