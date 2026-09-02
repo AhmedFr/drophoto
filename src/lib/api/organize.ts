@@ -8,6 +8,32 @@ export type OrganizeRule = {
   keep_pairs: boolean;
 };
 
+/**
+ * Settings-backed defaults for a fresh drive's organize rule — mirrors
+ * `dp_core::OrganizeDefaults`. Each field independently `null` means
+ * "never configured"; `get_rule`'s fallback composes each unset field
+ * from `ORGANIZE_RULE_FALLBACK` instead.
+ */
+export type OrganizeDefaults = {
+  root: string | null;
+  folder_tpl: string | null;
+  file_tpl: string | null;
+  keep_pairs: boolean | null;
+};
+
+/**
+ * The hardcoded organize-rule fallback for a drive with no saved rule and
+ * no settings-backed default — mirrors `dp_core::OrganizeRule::default_for`.
+ * Used to prefill Settings' `OrganizeDefaultsSection` inputs for any field
+ * `get_organize_defaults` reports as unset.
+ */
+export const ORGANIZE_RULE_FALLBACK = {
+  root: "archive",
+  folder_tpl: "{{yyyy}}/Q{{q}}",
+  file_tpl: "{{yyyy}}-{{mm}}-{{dd}}_{{stem}}",
+  keep_pairs: true,
+} as const;
+
 export type PlanStatus = "planned" | "moved" | "skipped_dup" | "skipped_collision" | "failed";
 
 export type OrganizePlanItem = {
@@ -93,6 +119,18 @@ export type OrganizeItemRow = {
 export const getRule = (driveId: number) => invokeApi<OrganizeRule>("get_rule", { driveId });
 
 export const saveRule = (rule: OrganizeRule) => invokeApi<void>("save_rule", { rule });
+
+/** Current settings-backed organize-rule defaults. */
+export const getOrganizeDefaults = () => invokeApi<OrganizeDefaults>("get_organize_defaults");
+
+/**
+ * Persists the settings-backed organize-rule defaults. Every configured
+ * (non-`null`) field is validated the same way `saveRule` validates a
+ * drive's own rule — rejected (`ApiError`, code `"unsupported"`) for a
+ * bad root or an unknown/malformed template variable.
+ */
+export const saveOrganizeDefaults = (defaults: OrganizeDefaults) =>
+  invokeApi<void>("set_organize_defaults", { defaults });
 
 export const listUnorganizedSummaries = () =>
   invokeApi<UnorganizedSummary[]>("list_unorganized_summaries");

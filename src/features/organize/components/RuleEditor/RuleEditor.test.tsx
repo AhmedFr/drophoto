@@ -90,20 +90,28 @@ it("shows an inline error message when present", () => {
   expect(screen.getByText("root must not start with '/'")).toBeInTheDocument();
 });
 
-it("choosing the By quarter preset sets the folder template", async () => {
+it("choosing the Year / Month preset sets the folder template", async () => {
   const user = userEvent.setup();
   const { onChange } = renderEditor();
   await user.click(screen.getByRole("button", { name: "PRESETS" }));
-  await user.click(await screen.findByRole("menuitem", { name: "By quarter" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Year / Month" }));
+  expect(onChange).toHaveBeenCalledWith({ ...rule(), folder_tpl: "{{yyyy}}/{{mm}}" });
+});
+
+it("choosing the Year / Quarter preset sets the folder template", async () => {
+  const user = userEvent.setup();
+  const { onChange } = renderEditor();
+  await user.click(screen.getByRole("button", { name: "PRESETS" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Year / Quarter" }));
   expect(onChange).toHaveBeenCalledWith({ ...rule(), folder_tpl: "{{yyyy}}/Q{{q}}" });
 });
 
-it("choosing the By day preset sets the folder template", async () => {
+it("choosing the Flat by date preset sets the folder template", async () => {
   const user = userEvent.setup();
   const { onChange } = renderEditor();
   await user.click(screen.getByRole("button", { name: "PRESETS" }));
-  await user.click(await screen.findByRole("menuitem", { name: "By day" }));
-  expect(onChange).toHaveBeenCalledWith({ ...rule(), folder_tpl: "{{yyyy}}/{{yyyy}}-{{mm}}-{{dd}}" });
+  await user.click(await screen.findByRole("menuitem", { name: "Flat by date" }));
+  expect(onChange).toHaveBeenCalledWith({ ...rule(), folder_tpl: "{{yyyy}}-{{mm}}-{{dd}}" });
 });
 
 it("renders the FORMAT/FOLDERS example rendered from the sample date", () => {

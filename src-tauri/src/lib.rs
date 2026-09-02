@@ -52,6 +52,8 @@ pub fn run() {
             commands::tags::tag_media,
             commands::organize::get_rule,
             commands::organize::save_rule,
+            commands::organize::get_organize_defaults,
+            commands::organize::set_organize_defaults,
             commands::organize::list_unorganized_summaries,
             commands::organize::plan_organize,
             commands::organize::start_organize,

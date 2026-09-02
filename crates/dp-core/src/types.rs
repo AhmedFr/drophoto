@@ -328,6 +328,24 @@ impl OrganizeRule {
     }
 }
 
+/// Settings-backed defaults for a fresh drive's organize rule — what
+/// `Catalog::get_rule`'s `None` branch (no `organize_rules` row for the
+/// drive yet) composes into an [`OrganizeRule`], field by field: each
+/// `Some` here overrides [`OrganizeRule::default_for`]'s hardcoded value;
+/// each `None` (the never-configured default) falls back to it. Written
+/// via `Catalog::set_organize_defaults`, read via
+/// `Catalog::get_organize_defaults` — see `dp_catalog::settings` for the
+/// underlying `default_root`/`default_folder_tpl`/`default_file_tpl`/
+/// `default_keep_pairs` keys, which follow the same unset-means-`None`
+/// convention as the rest of that module.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct OrganizeDefaults {
+    pub root: Option<String>,
+    pub folder_tpl: Option<String>,
+    pub file_tpl: Option<String>,
+    pub keep_pairs: Option<bool>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanStatus {

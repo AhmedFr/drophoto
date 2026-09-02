@@ -990,6 +990,14 @@ impl Catalog for FailingCatalog {
     async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()> {
         self.0.set_thumbs_dir(dir).await
     }
+
+    async fn get_organize_defaults(&self) -> DpResult<dp_core::OrganizeDefaults> {
+        self.0.get_organize_defaults().await
+    }
+
+    async fn set_organize_defaults(&self, defaults: &dp_core::OrganizeDefaults) -> DpResult<()> {
+        self.0.set_organize_defaults(defaults).await
+    }
 }
 
 #[tokio::test]

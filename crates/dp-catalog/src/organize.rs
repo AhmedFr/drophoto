@@ -21,6 +21,12 @@ fn row_to_rule(row: &SqliteRow) -> DpResult<OrganizeRule> {
     })
 }
 
+/// Returns `drive_id`'s saved rule, or — when it has none yet — a rule
+/// composed from the settings-backed [`dp_core::OrganizeDefaults`]
+/// (`crate::settings::get_organize_defaults`), falling back field-by-field
+/// to [`OrganizeRule::default_for`]'s hardcoded values for anything never
+/// configured. So a fresh drive sees the user's saved defaults where set,
+/// and the original hardcoded behavior everywhere else.
 pub(crate) async fn get_rule(pool: &SqlitePool, drive_id: i64) -> DpResult<OrganizeRule> {
     let row = sqlx::query("SELECT * FROM organize_rules WHERE drive_id = ?")
         .bind(drive_id)
@@ -29,7 +35,17 @@ pub(crate) async fn get_rule(pool: &SqlitePool, drive_id: i64) -> DpResult<Organ
         .map_err(db)?;
     match row {
         Some(r) => row_to_rule(&r),
-        None => Ok(OrganizeRule::default_for(drive_id)),
+        None => {
+            let defaults = crate::settings::get_organize_defaults(pool).await?;
+            let fallback = OrganizeRule::default_for(drive_id);
+            Ok(OrganizeRule {
+                drive_id,
+                root: defaults.root.unwrap_or(fallback.root),
+                folder_tpl: defaults.folder_tpl.unwrap_or(fallback.folder_tpl),
+                file_tpl: defaults.file_tpl.unwrap_or(fallback.file_tpl),
+                keep_pairs: defaults.keep_pairs.unwrap_or(fallback.keep_pairs),
+            })
+        }
     }
 }
 

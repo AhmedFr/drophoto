@@ -42,6 +42,8 @@ const usage = {
   file_count: 42,
 };
 
+const organizeDefaults = { root: null, folder_tpl: null, file_tpl: null, keep_pairs: null };
+
 function mockDefaults() {
   mockIPC((cmd) => {
     if (cmd === "get_settings") return settings;
@@ -49,6 +51,7 @@ function mockDefaults() {
     if (cmd === "tool_health") return { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
     if (cmd === "cache_status") return { thumbs_dir: "/Users/me/Library/thumbs", fallback: false };
     if (cmd === "list_drives") return [];
+    if (cmd === "get_organize_defaults") return organizeDefaults;
     return undefined;
   });
 }
@@ -197,4 +200,13 @@ it("renders the cache-location section with the current root", async () => {
   renderPage();
   expect(await screen.findByText("CACHE LOCATION")).toBeInTheDocument();
   expect(await screen.findByText("/Users/me/Library/thumbs")).toBeInTheDocument();
+});
+
+it("renders the organize-defaults section prefilled with the hardcoded fallback when unset", async () => {
+  mockDefaults();
+  renderPage();
+  expect(await screen.findByText("ORGANIZE DEFAULTS")).toBeInTheDocument();
+  expect(screen.getByLabelText("Default root")).toHaveValue("archive");
+  expect(screen.getByLabelText("Default folder template")).toHaveValue("{{yyyy}}/Q{{q}}");
+  expect(screen.getByLabelText("Default file template")).toHaveValue("{{yyyy}}-{{mm}}-{{dd}}_{{stem}}");
 });

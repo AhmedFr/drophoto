@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{
-    DriveRole, MediaKind, NewDrive, NewMedia, NewSource, OrganizeItemRow, OrganizeRule, PlanStatus,
+    DriveRole, MediaKind, NewDrive, NewMedia, NewSource, OrganizeDefaults, OrganizeItemRow, OrganizeRule,
+    PlanStatus,
 };
 
 fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
@@ -86,6 +87,69 @@ async fn get_rule_returns_default_then_saved() {
     c.save_rule(&custom).await.unwrap();
     let saved = c.get_rule(drive_id).await.unwrap();
     assert_eq!(saved, custom);
+}
+
+/// A drive with no saved rule composes the settings-backed
+/// [`OrganizeDefaults`] into the returned rule, field by field, falling
+/// back to [`OrganizeRule::default_for`]'s hardcoded value for any field
+/// left unset — see `dp_catalog::organize::get_rule`'s doc comment.
+#[tokio::test]
+async fn get_rule_fallback_composes_saved_defaults_over_the_hardcoded_default() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    // Only root and keep_pairs are configured — folder/file templates
+    // must still fall back to the hardcoded default.
+    c.set_organize_defaults(&OrganizeDefaults {
+        root: Some("sorted".into()),
+        folder_tpl: None,
+        file_tpl: None,
+        keep_pairs: Some(false),
+    })
+    .await
+    .unwrap();
+
+    let rule = c.get_rule(drive_id).await.unwrap();
+    let hardcoded = OrganizeRule::default_for(drive_id);
+    assert_eq!(
+        rule,
+        OrganizeRule {
+            drive_id,
+            root: "sorted".into(),
+            folder_tpl: hardcoded.folder_tpl,
+            file_tpl: hardcoded.file_tpl,
+            keep_pairs: false,
+        }
+    );
+}
+
+/// A drive with an explicitly saved rule ignores the settings-backed
+/// defaults entirely — they only ever apply to the `None` (no
+/// `organize_rules` row) branch.
+#[tokio::test]
+async fn get_rule_ignores_saved_defaults_once_a_rule_is_saved() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+
+    c.set_organize_defaults(&OrganizeDefaults {
+        root: Some("sorted".into()),
+        folder_tpl: Some("{{yyyy}}".into()),
+        file_tpl: Some("{{stem}}".into()),
+        keep_pairs: Some(false),
+    })
+    .await
+    .unwrap();
+
+    let custom = OrganizeRule {
+        drive_id,
+        root: "elsewhere".into(),
+        folder_tpl: "{{yyyy}}/{{mm}}".into(),
+        file_tpl: "{{yyyy}}-{{dd}}_{{stem}}".into(),
+        keep_pairs: true,
+    };
+    c.save_rule(&custom).await.unwrap();
+
+    assert_eq!(c.get_rule(drive_id).await.unwrap(), custom);
 }
 
 #[tokio::test]

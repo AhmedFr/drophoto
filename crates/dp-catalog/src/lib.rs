@@ -16,8 +16,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dp_core::{
     AppSettings, DpResult, Drive, JobRunRow, MediaMetadata, MediaQuery, MediaRow, NewDrive, NewJobRun,
-    NewMedia, NewPlace, NewSource, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place, PlaceCount,
-    ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source, Tag, UnorganizedSummary,
+    NewMedia, NewPlace, NewSource, OrganizeDefaults, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place,
+    PlaceCount, ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source, Tag,
+    UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -222,6 +223,14 @@ pub trait Catalog: Send + Sync {
     /// write: `move_cache` (the Tauri command) does the actual on-disk
     /// move first and only then calls this.
     async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()>;
+    /// The settings-backed organize-rule defaults [`Self::get_rule`]'s
+    /// `None` branch composes into a fresh drive's rule — see
+    /// [`dp_core::OrganizeDefaults`].
+    async fn get_organize_defaults(&self) -> DpResult<OrganizeDefaults>;
+    /// Persists [`dp_core::OrganizeDefaults`] — see
+    /// [`crate::settings::set_organize_defaults`]'s doc comment for the
+    /// per-field set-or-clear semantics.
+    async fn set_organize_defaults(&self, defaults: &OrganizeDefaults) -> DpResult<()>;
 }
 
 #[async_trait]
@@ -525,5 +534,13 @@ impl Catalog for SqliteCatalog {
 
     async fn set_thumbs_dir(&self, dir: Option<&str>) -> DpResult<()> {
         settings::set_thumbs_dir(&self.pool, dir).await
+    }
+
+    async fn get_organize_defaults(&self) -> DpResult<OrganizeDefaults> {
+        settings::get_organize_defaults(&self.pool).await
+    }
+
+    async fn set_organize_defaults(&self, defaults: &OrganizeDefaults) -> DpResult<()> {
+        settings::set_organize_defaults(&self.pool, defaults).await
     }
 }
