@@ -212,15 +212,19 @@ pub async fn uninstall_app(state: State<'_, AppState>) -> Result<(), DpError> {
         .map_err(|e| DpError::io(&e, None))?;
     let bundle_path = plan_uninstall(&exe_path)?;
 
-    trash_bundle(&bundle_path).map_err(|e| DpError::Io {
-        message: append_volumes_hint(e.to_string(), &bundle_path),
-        path: Some(bundle_path.display().to_string()),
-    })?;
-
+    // Read the configured cache location BEFORE trashing the bundle — a
+    // failing read here (locked/corrupt DB) then aborts with nothing
+    // touched, instead of surfacing a raw DB error after the bundle is
+    // already in the Trash outside `partial_uninstall_message`'s framing.
     let roots = cache_roots_to_delete(
         state.store.root(),
         &state.catalog.get_settings().await?.thumbs_dir,
     );
+
+    trash_bundle(&bundle_path).map_err(|e| DpError::Io {
+        message: append_volumes_hint(e.to_string(), &bundle_path),
+        path: Some(bundle_path.display().to_string()),
+    })?;
     if let Err(data_err) = reset_app_data_at(&state.app_data_dir, &roots) {
         return Err(DpError::Io {
             message: partial_uninstall_message(&state.app_data_dir, &data_err),
