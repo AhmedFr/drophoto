@@ -44,7 +44,12 @@ impl PresenceMatch {
 ///
 /// Resolution runs in four **global** passes, strongest evidence first —
 /// every drive gets a chance to match at a tier before any drive is
-/// allowed to match at the next, weaker one:
+/// allowed to match at the next, weaker one. A drive whose row already
+/// holds a `volume_uuid` participates in tier 1 **only**: label and mount
+/// path are renamable/coincidental, so falling through would let a
+/// look-alike volume be silently adopted as the trusted drive (issue
+/// #30); such a drive is reported unplugged instead when its uuid isn't
+/// mounted. The weaker tiers exist for legacy rows with no recorded uuid:
 /// 1. `drive.volume_uuid == volume.uuid` (both `Some`) — the strongest
 ///    signal, since a volume's Apple `VolumeUUID` survives both a rename
 ///    and a remount at a different path.
@@ -80,19 +85,42 @@ pub fn resolve_presence(drives: &[Drive], volumes: &[Volume]) -> Vec<PresenceMat
 
     resolve_tier(drives, volumes, &mut claimed, &mut resolved, find_by_uuid);
     resolve_tier(drives, volumes, &mut claimed, &mut resolved, |d, vs, c| {
-        find_by_name(d.volume_label.as_deref(), vs, c)
+        // Tiers 2-4 are all gated on the drive having NO stored
+        // `volume_uuid` (issue #30): once a uuid is recorded, it is the
+        // drive's identity, and a same-label volume carrying a different
+        // (or unreadable) uuid is an impostor — adopting it would let
+        // scans ingest its files under the trusted drive's identity and
+        // let organize jobs move originals onto it. A uuid-holding drive
+        // whose volume's uuid is momentarily unreadable shows unplugged
+        // for that tick instead, which is the fail-safe direction.
+        if d.volume_uuid.is_some() {
+            None
+        } else {
+            find_by_name(d.volume_label.as_deref(), vs, c)
+        }
     });
     resolve_tier(drives, volumes, &mut claimed, &mut resolved, |d, vs, c| {
         // Gated on `volume_label` being unset — see tier 3's doc comment
         // above. A drive with a known label must never fall back to
-        // matching an unrelated same-named volume.
-        if d.volume_label.is_some() {
+        // matching an unrelated same-named volume. The uuid gate is
+        // stated explicitly rather than relying on "a stored uuid comes
+        // with a stored label" — registration can record a uuid with an
+        // empty/absent label, so the invariant is not guaranteed.
+        if d.volume_uuid.is_some() || d.volume_label.is_some() {
             None
         } else {
             find_by_name(Some(d.name.as_str()), vs, c)
         }
     });
-    resolve_tier(drives, volumes, &mut claimed, &mut resolved, find_by_mount_path);
+    resolve_tier(drives, volumes, &mut claimed, &mut resolved, |d, vs, c| {
+        // Same uuid gate as tier 2 — an unrelated volume mounted at the
+        // drive's old `/Volumes/<name>` path is not the drive.
+        if d.volume_uuid.is_some() {
+            None
+        } else {
+            find_by_mount_path(d, vs, c)
+        }
+    });
 
     drives
         .iter()
@@ -366,6 +394,66 @@ mod tests {
         let got = resolve_presence(&[d], &volumes);
 
         assert_eq!(got[0].mount_path, Some("/Volumes/Kodachrome".to_string()));
+    }
+
+    /// Security (issue #30): a drive whose row holds a `volume_uuid` must
+    /// never be adopted by a look-alike volume via the label tier — a
+    /// physically attached volume sharing the label but carrying a
+    /// different uuid is an impostor, not the drive.
+    #[test]
+    fn a_uuid_holding_drive_never_matches_a_same_label_volume_with_a_different_uuid() {
+        let mut d = drive(1, "Kodachrome", None);
+        d.volume_uuid = Some("uuid-real".to_string());
+        d.volume_label = Some("Kodachrome".to_string());
+        let volumes = vec![volume_with_uuid(
+            "Kodachrome",
+            "/Volumes/Kodachrome",
+            1,
+            "uuid-impostor",
+        )];
+
+        let got = resolve_presence(&[d], &volumes);
+
+        assert_eq!(
+            got[0].mount_path, None,
+            "must stay unplugged, not adopt the impostor volume"
+        );
+    }
+
+    /// Security (issue #30): same as above but the look-alike volume has
+    /// no readable uuid at all (exFAT/FAT32, or a transient `diskutil`
+    /// failure) — still not enough to claim a drive whose true identity
+    /// is a recorded uuid.
+    #[test]
+    fn a_uuid_holding_drive_never_matches_a_same_label_volume_with_no_uuid() {
+        let mut d = drive(1, "Kodachrome", None);
+        d.volume_uuid = Some("uuid-real".to_string());
+        d.volume_label = Some("Kodachrome".to_string());
+        let volumes = vec![volume("Kodachrome", "/Volumes/Kodachrome", 1)];
+
+        let got = resolve_presence(&[d], &volumes);
+
+        assert_eq!(got[0].mount_path, None);
+    }
+
+    /// Security (issue #30): the mount-path tier is gated the same way —
+    /// a different volume mounted at the drive's old `/Volumes/<name>`
+    /// path must not be adopted just for landing on that path.
+    #[test]
+    fn a_uuid_holding_drive_never_matches_by_its_old_mount_path() {
+        let mut d = drive(1, "Kodachrome", Some("/Volumes/Kodachrome"));
+        d.volume_uuid = Some("uuid-real".to_string());
+        d.volume_label = Some("Kodachrome".to_string());
+        let volumes = vec![volume_with_uuid(
+            "Other Label",
+            "/Volumes/Kodachrome",
+            1,
+            "uuid-impostor",
+        )];
+
+        let got = resolve_presence(&[d], &volumes);
+
+        assert_eq!(got[0].mount_path, None);
     }
 
     /// Review finding 3 — the "steal" scenario: drive "Aaa" only has a

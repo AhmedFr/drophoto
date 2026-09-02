@@ -148,9 +148,27 @@ impl AppState {
         // Resolved once: a Finder-launched bundle's PATH has no
         // /opt/homebrew/bin, so the bare command names the providers used
         // to spawn failed on every call in the installed app (Task 5b.3).
+        // Each tool's version is probed once here too (a single fast
+        // `-ver`/`-version` spawn) and compared against its security
+        // floor — these binaries parse untrusted media off attached
+        // drives, and outdated builds have known RCEs from crafted files
+        // (issue #29). Settings shows the resulting `outdated` flag and
+        // `ToolHealthNotifier` toasts it once at launch.
+        let exiftool_path = dp_metadata::resolve_tool("exiftool");
+        let ffmpeg_path = dp_metadata::resolve_tool("ffmpeg");
         let tool_health = ToolHealth {
-            exiftool: dp_metadata::resolve_tool("exiftool"),
-            ffmpeg: dp_metadata::resolve_tool("ffmpeg"),
+            exiftool: dp_metadata::status_from(
+                exiftool_path.clone(),
+                exiftool_path
+                    .as_deref()
+                    .and_then(dp_metadata::probe_exiftool_version),
+                dp_metadata::MIN_EXIFTOOL,
+            ),
+            ffmpeg: dp_metadata::status_from(
+                ffmpeg_path.clone(),
+                ffmpeg_path.as_deref().and_then(dp_metadata::probe_ffmpeg_version),
+                dp_metadata::MIN_FFMPEG,
+            ),
         };
 
         Ok(Self {

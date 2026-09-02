@@ -83,7 +83,10 @@ it("gets storage usage with no arguments", async () => {
 });
 
 it("round-trips tool_health", async () => {
-  const health = { exiftool: "/opt/homebrew/bin/exiftool", ffmpeg: null };
+  const health = {
+    exiftool: { path: "/opt/homebrew/bin/exiftool", version: "13.10", outdated: false },
+    ffmpeg: { path: null, version: null, outdated: false },
+  };
   mockIPC((cmd) => {
     if (cmd === "tool_health") return health;
     return undefined;

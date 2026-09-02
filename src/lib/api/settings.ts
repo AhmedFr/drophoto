@@ -47,15 +47,29 @@ export type StorageUsage = {
 };
 
 /**
- * Where `exiftool`/`ffmpeg` were found at app startup — mirrors
- * `dp_core::ToolHealth`. `null` means the tool couldn't be found anywhere
- * (every `$PATH` directory plus the Homebrew/MacPorts fallback dirs), so
- * metadata reads (exiftool) or video thumbnails/durations (ffmpeg) will
- * keep failing until it's installed. A snapshot from launch, not live.
+ * One external tool's startup snapshot — mirrors `dp_core::ToolStatus`.
+ * `path: null` means the tool couldn't be found anywhere (every `$PATH`
+ * directory plus the Homebrew/MacPorts fallback dirs), so metadata reads
+ * (exiftool) or video thumbnails/durations (ffmpeg) will keep failing
+ * until it's installed. `outdated: true` means a version WAS parsed and
+ * sits below the tool's security floor (these tools parse untrusted media
+ * and old builds have known RCEs from crafted files — issue #29); an
+ * unparsable version is `version: null` with `outdated: false`.
+ */
+export type ToolStatus = {
+  path: string | null;
+  version: string | null;
+  outdated: boolean;
+};
+
+/**
+ * Where `exiftool`/`ffmpeg` were found at app startup and how their
+ * versions compare to the security floors — mirrors `dp_core::ToolHealth`.
+ * A snapshot from launch, not live.
  */
 export type ToolHealth = {
-  exiftool: string | null;
-  ffmpeg: string | null;
+  exiftool: ToolStatus;
+  ffmpeg: ToolStatus;
 };
 
 /** Current app-wide settings. */
