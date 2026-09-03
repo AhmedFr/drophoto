@@ -225,6 +225,38 @@ async fn filter_by_place_id() {
     );
 }
 
+/// A row carrying BOTH requested tags must come back exactly ONCE — the
+/// filter is an `IN (SELECT ...)` subquery rather than a join, so it can't
+/// fan out, but nothing else in the suite proves that positively.
+#[tokio::test]
+async fn a_row_matching_several_requested_tags_is_returned_once() {
+    let (c, _) = seed().await;
+    let all = c.query_media(&q()).await.unwrap();
+    let target = all.iter().find(|(m, _)| m.rel_path == "a.jpg").unwrap().0.id;
+
+    c.tag_media(&[target], &["Trip".into(), "Family".into()], &[])
+        .await
+        .unwrap();
+    let tag_ids: Vec<i64> = c.list_tags().await.unwrap().into_iter().map(|t| t.id).collect();
+    assert_eq!(tag_ids.len(), 2, "both tags should exist");
+
+    let r = c
+        .query_media(&MediaQuery {
+            tag_ids: tag_ids.clone(),
+            ..q()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.len(), 1, "the doubly-tagged row must not be duplicated");
+    assert_eq!(r[0].0.id, target);
+
+    assert_eq!(
+        c.count_media_query(&MediaQuery { tag_ids, ..q() }).await.unwrap(),
+        1,
+        "the count must agree with the row list"
+    );
+}
+
 #[tokio::test]
 async fn filter_by_tag_ids() {
     let (c, _) = seed().await;
