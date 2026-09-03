@@ -43,6 +43,7 @@ beforeEach(() => {
     density: "Comfortable",
     selectedIds: [],
     anchorIndex: null,
+    query: "",
   });
   useGalleryStore.persist.clearStorage();
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
@@ -126,6 +127,22 @@ it("shows an empty state with a link to /drives when there is no media", async (
   renderPage();
   expect(await screen.findByText(/No media yet/i)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: /drive/i })).toHaveAttribute("href", "/drives");
+});
+
+// A query that matches nothing must say so, rather than showing the
+// "No media yet — register and scan a drive" onboarding copy, which
+// would read as though the whole library had vanished.
+it("shows a query-specific empty state when a search matches nothing", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [];
+    if (cmd === "count_media") return 0;
+    return undefined;
+  });
+  useGalleryStore.setState({ query: "nonexistent" });
+  renderPage();
+
+  expect(await screen.findByText('No photos match "nonexistent"')).toBeInTheDocument();
+  expect(screen.queryByText(/No media yet/i)).not.toBeInTheDocument();
 });
 
 it("renders a tile once media loads", async () => {

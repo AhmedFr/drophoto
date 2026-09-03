@@ -191,6 +191,15 @@ pub trait Catalog: Send + Sync {
     async fn rebuild_fts(&self) -> DpResult<()>;
     /// FTS search: every whitespace token AND-ed, the last one prefix-matched
     /// (`tok*`), ranked by bm25, joined back to media+drives like query_media.
+    ///
+    /// No longer on any production path — the app's search folded into
+    /// `query_media`'s `MediaQuery::query` (Phase 6), which composes with
+    /// the kind/place/missing filters, the caller's sort, and paging that
+    /// this bm25-ranked, unpaged call never had. It stays because it is
+    /// the catalog's only direct read of the FTS index, and ~40
+    /// assertions across the test suites use it to prove index state
+    /// (that a delete/rename/retag actually synced `media_fts`) — a fact
+    /// `query_media` can only show indirectly, through its own filters.
     async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>>;
     /// Find-or-create by (name, admin, country, source) — geocoder places dedupe.
     async fn upsert_place(&self, p: NewPlace) -> DpResult<Place>;

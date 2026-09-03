@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useGalleryStore } from "../../store/galleryStore";
@@ -15,53 +15,54 @@ describe("SearchBox", () => {
     expect(screen.getByPlaceholderText("Search photos")).toBeInTheDocument();
   });
 
-  it("does not commit to the store on every keystroke", async () => {
+  // These three drive the input with `fireEvent.change` rather than
+  // `userEvent.type`: user-event's async pointer/keyboard machinery
+  // deadlocks against `vi.useFakeTimers()` in this setup (its internal
+  // waits never resolve because nothing advances the clock between
+  // keystrokes), which hung the suite for 5s per test. `fireEvent` is
+  // synchronous and dispatches exactly the `change` event the debounce
+  // listens to, so the timing under test stays the real subject.
+  it("does not commit to the store on every keystroke", () => {
     vi.useFakeTimers();
-    const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
     render(<SearchBox />);
 
-    await user.type(screen.getByPlaceholderText("Search photos"), "beach");
-    expect(useGalleryStore.getState().query).toBe("");
+    fireEvent.change(screen.getByPlaceholderText("Search photos"), { target: { value: "beach" } });
 
-    vi.useRealTimers();
+    expect(useGalleryStore.getState().query).toBe("");
   });
 
-  it("debounces typing into the store's query after 200ms", async () => {
+  it("debounces typing into the store's query after 200ms", () => {
     vi.useFakeTimers();
-    const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
     render(<SearchBox />);
 
-    await user.type(screen.getByPlaceholderText("Search photos"), "beach");
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
+    fireEvent.change(screen.getByPlaceholderText("Search photos"), { target: { value: "beach" } });
+    act(() => {
+      vi.advanceTimersByTime(200);
     });
 
     expect(useGalleryStore.getState().query).toBe("beach");
-    vi.useRealTimers();
   });
 
-  it("does not refire the debounce on rapid keystrokes within the window", async () => {
+  it("does not refire the debounce on rapid keystrokes within the window", () => {
     vi.useFakeTimers();
-    const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
     render(<SearchBox />);
 
     const input = screen.getByPlaceholderText("Search photos");
-    await user.type(input, "b");
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(100);
+    fireEvent.change(input, { target: { value: "b" } });
+    act(() => {
+      vi.advanceTimersByTime(100);
     });
-    await user.type(input, "e");
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(100);
+    fireEvent.change(input, { target: { value: "be" } });
+    act(() => {
+      vi.advanceTimersByTime(100);
     });
     // Still within 200ms of the last keystroke — not committed yet.
     expect(useGalleryStore.getState().query).toBe("");
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
+    act(() => {
+      vi.advanceTimersByTime(200);
     });
     expect(useGalleryStore.getState().query).toBe("be");
-    vi.useRealTimers();
   });
 
   it("shows no clear button while empty", () => {

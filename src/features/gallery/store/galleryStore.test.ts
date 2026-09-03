@@ -230,3 +230,51 @@ describe("missingOnly", () => {
     expect(persisted.state).not.toHaveProperty("missingOnly");
   });
 });
+
+describe("query", () => {
+  it("defaults to an empty string", () => {
+    expect(useGalleryStore.getState().query).toBe("");
+  });
+
+  it("setQuery updates the query", () => {
+    useGalleryStore.getState().setQuery("beach");
+    expect(useGalleryStore.getState().query).toBe("beach");
+  });
+
+  // Same contract as setTypeFilter/setSort/setMissingOnly: a query change
+  // can drop ids out of the visible list, and a still-selected id whose
+  // tile disappeared would be an invisible tag-target.
+  it("setQuery clears the selection when the query actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setQuery("beach");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("setQuery to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setQuery("");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("is not persisted to localStorage — a live view filter, not a preference", () => {
+    useGalleryStore.getState().setQuery("beach");
+    useGalleryStore.getState().setTypeFilter("RAW");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string).state).not.toHaveProperty("query");
+  });
+
+  it("buildQuery omits an empty or whitespace-only query", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST" }, 1, 0).query).toBeUndefined();
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", query: "   " }, 1, 0).query).toBeUndefined();
+  });
+
+  it("buildQuery passes a trimmed query through", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", query: "  beach " }, 1, 0).query).toBe("beach");
+  });
+});
