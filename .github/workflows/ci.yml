@@ -1,14 +1,12 @@
 name: ci
 
-# Runs on pushes to `main` only. PRs are gated locally: `pnpm check` runs the
-# same suite (scripts/check.sh) and `pnpm install` wires it into a pre-push
-# hook. GitHub bills macOS minutes at 10x, so the JS half runs on ubuntu and
-# only the Rust/Tauri half pays the macOS rate. `workflow_dispatch` is there
-# for a manual run when one is genuinely needed.
+# DEACTIVATED (2026-09-03): manual `workflow_dispatch` only, nothing runs
+# automatically. All checks are done locally — `pnpm check` (scripts/check.sh)
+# is the merge gate and `pnpm install` wires it into a pre-push hook. GitHub
+# bills macOS minutes at 10x and the free quota was exhausted. To re-enable,
+# add `push: { branches: [main] }` back to `on:`. The JS half is on ubuntu so
+# only the Rust/Tauri half would pay the macOS rate.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
 permissions:

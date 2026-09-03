@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Local merge gate. CI only runs on `main` (macOS runners bill at 10x), so
+# THE merge gate. GitHub Actions is deactivated (manual dispatch only), so
 # this is what every branch must pass before it is pushed or merged.
 #
-#   pnpm check         full suite, identical to the `main` workflow
+#   pnpm check         full suite (what CI used to run)
 #   pnpm check:fast    everything except the Tauri build (the pre-push hook)
 #
 # Bypass the hook for an emergency push with: SKIP_CHECKS=1 git push
