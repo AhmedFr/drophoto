@@ -9,7 +9,7 @@ export function UninstallDialog({ open, onOpenChange, onConfirm, uninstalling, e
   const [typed, setTyped] = useState("");
   // A previous attempt's error must not resurface just because the dialog
   // is closed and reopened — `error` is the mutation's own state (kept in
-  // `useSettingsData`, untouched here); this is purely a display concern.
+  // `useDangerZoneActions`, untouched here); this is purely a display concern.
   // Cleared on close (alongside `typed`) and re-armed only when a fresh
   // attempt actually starts, via `handleConfirm`.
   const [showError, setShowError] = useState(true);

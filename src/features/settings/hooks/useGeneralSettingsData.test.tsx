@@ -168,3 +168,29 @@ it("toasts start_regen_previews' rejection message", async () => {
 
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith("a geocode sweep is already running"));
 });
+
+// Ported from the deleted `useSettingsData` suite: `regenApplicable` is
+// derived from the persisted `preview_edge`, so a finished regen sweep
+// must NOT retract the affordance — there's no durable signal that
+// reclaiming is done, and previews can still be larger than the setting.
+it("regenApplicable stays true after a regen sweep finishes", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") return { preview_edge: 800, thumbs_dir: null };
+    if (cmd === "storage_usage") {
+      return { thumbs_400_bytes: 0, previews_bytes: 0, catalog_bytes: 0, total_bytes: 0, file_count: 0 };
+    }
+    return undefined;
+  });
+
+  const { result } = render();
+  await waitFor(() => expect(result.current.regenApplicable).toBe(true));
+
+  act(() => useJobsStore.getState().applyEvent({ kind: "started", job_id: "regen-0" }));
+  await waitFor(() => expect(result.current.regenRunning).toBe(true));
+
+  act(() =>
+    useJobsStore.getState().applyEvent({ kind: "finished", job_id: "regen-0", ok: 3, failed: 0, skipped: 0 }),
+  );
+  await waitFor(() => expect(result.current.regenRunning).toBe(false));
+  expect(result.current.regenApplicable).toBe(true);
+});

@@ -83,7 +83,7 @@ export const toolHealth = () => invokeApi<ToolHealth>("tool_health");
  * values; the command rejects (`ApiError`, code `"unsupported"`) any
  * other `u32`. Persists the setting only; it doesn't itself trigger a
  * regen or a rescan. Whether a regen is worth offering is derived on the
- * frontend from the persisted `preview_edge` (see `useSettingsData`),
+ * frontend from the persisted `preview_edge` (see `useGeneralSettingsData`),
  * not from this call's response.
  */
 export const setPreviewQuality = (edge: number) => invokeApi<void>("set_preview_quality", { edge });
