@@ -3,6 +3,7 @@ import type { GalleryToolbarProps } from "./GalleryToolbar.types";
 import { MissingChip } from "./MissingChip";
 import { SearchBox } from "./SearchBox";
 import { SortMenu } from "./SortMenu";
+import { TagFilterChip } from "./TagFilterChip";
 import { TypeChips } from "./TypeChips";
 
 export function GalleryToolbar({ count }: GalleryToolbarProps) {
@@ -11,6 +12,7 @@ export function GalleryToolbar({ count }: GalleryToolbarProps) {
       <SearchBox />
       <TypeChips />
       <MissingChip />
+      <TagFilterChip />
       <SortMenu />
       <DensityToggle />
       {count !== undefined && (

@@ -4,7 +4,7 @@
 
 use crate::media::row_to_media;
 use crate::sqlite::db;
-use dp_core::{DpResult, MediaRow, SidecarHealth, Tag};
+use dp_core::{DpResult, MediaRow, SidecarHealth, Tag, TagWithCount};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use std::collections::HashSet;
 
@@ -21,6 +21,29 @@ pub(crate) async fn list_tags(pool: &SqlitePool) -> DpResult<Vec<Tag>> {
         .await
         .map_err(db)?;
     rows.iter().map(row_to_tag).collect()
+}
+
+/// Every tag with its linked-media count, for the Tags page — see
+/// [`TagWithCount`]'s doc comment. `LEFT JOIN` (not an inner join) so a
+/// tag with zero links still appears, with `count = 0`.
+pub(crate) async fn list_tags_with_counts(pool: &SqlitePool) -> DpResult<Vec<TagWithCount>> {
+    let rows = sqlx::query(
+        "SELECT t.id AS id, t.name AS name, COUNT(mt.media_id) AS count \
+         FROM tags t LEFT JOIN media_tags mt ON mt.tag_id = t.id \
+         GROUP BY t.id ORDER BY t.name COLLATE NOCASE",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
+    rows.iter()
+        .map(|r| {
+            let count: i64 = r.try_get("count").map_err(db)?;
+            Ok(TagWithCount {
+                tag: row_to_tag(r)?,
+                count: count as u64,
+            })
+        })
+        .collect()
 }
 
 /// `(media_id, tag)` pairs for every id in `ids`, tags ordered by name.
@@ -139,6 +162,183 @@ pub(crate) async fn tag_media(
         }
     }
 
+    Ok(())
+}
+
+/// Renames tag `id` to `new_name` — expected already trimmed/validated by
+/// the caller (see [`crate::tags`]'s module docs and, on the command side,
+/// `src-tauri/src/commands/tags.rs::normalize_tag_names`, the same
+/// validator `tag_media`'s `add` entries go through; this function doesn't
+/// duplicate that check).
+///
+/// If `new_name` collides case-insensitively with a *different* existing
+/// tag, this is treated as a **merge into that tag** rather than an error:
+/// `id`'s media links move onto the colliding tag and `id` itself is
+/// deleted (see [`merge_tags`]) — the rename the user asked for still
+/// results in every affected photo carrying the target name, it just does
+/// so by joining the two tags instead of ending up with two tags sharing
+/// one name. A `new_name` identical to `id`'s current name (byte-for-byte)
+/// is a no-op that touches nothing, not even a redundant `UPDATE`.
+pub(crate) async fn rename_tag(pool: &SqlitePool, id: i64, new_name: &str) -> DpResult<()> {
+    let current_name: Option<String> = sqlx::query_scalar("SELECT name FROM tags WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db)?;
+    let Some(current_name) = current_name else {
+        // Tag no longer exists — nothing to rename, same tolerant
+        // no-op-on-missing-id style as `delete_source`/`set_source_enabled`.
+        return Ok(());
+    };
+    if current_name == new_name {
+        return Ok(());
+    }
+
+    let existing: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM tags WHERE name = ? COLLATE NOCASE AND id != ?")
+            .bind(new_name)
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(db)?;
+    if let Some(into_id) = existing {
+        return merge_tags(pool, &[id], into_id).await;
+    }
+
+    // Plain retitle: every media row currently linked to `id` has its
+    // displayed tag name change, so every one of them is "affected" here —
+    // unlike `tag_media`'s per-row `rows_affected` check, there's no way
+    // for a subset to be unaffected by the tag they're linked to changing
+    // name.
+    let mut tx = pool.begin().await.map_err(db)?;
+    sqlx::query("UPDATE tags SET name = ? WHERE id = ?")
+        .bind(new_name)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    let media_ids: Vec<i64> = sqlx::query_scalar("SELECT media_id FROM media_tags WHERE tag_id = ?")
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+    for &media_id in &media_ids {
+        sqlx::query("UPDATE media SET sidecar_pending = 1 WHERE id = ?")
+            .bind(media_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+    }
+    tx.commit().await.map_err(db)?;
+
+    for media_id in media_ids {
+        if let Err(e) = crate::fts::sync_fts(pool, media_id).await {
+            tracing::warn!(media_id, error = %e, "failed to sync FTS index after rename_tag");
+        }
+    }
+    Ok(())
+}
+
+/// Merges every tag in `from_ids` into `into_id`: every media row linked to
+/// any of `from_ids` gets linked to `into_id` instead (`INSERT OR IGNORE`,
+/// so a row already linked to both doesn't end up with a duplicate), then
+/// each emptied `from_ids` tag is deleted (its now-superseded
+/// `media_tags` rows are cleaned up by the `ON DELETE CASCADE` FK, whether
+/// or not they were already explicitly relinked above). Any id in
+/// `from_ids` equal to `into_id` is dropped first — merging a tag into
+/// itself is a no-op for that id.
+///
+/// Every media row that was linked to any of `from_ids` is "affected":
+/// even one already also linked to `into_id` loses a distinct tag name
+/// from its sidecar-visible tag list (the two tags can't share a name —
+/// `tags.name` is `UNIQUE COLLATE NOCASE`), so `sidecar_pending` is set
+/// and FTS resynced for the whole set, computed once up front rather than
+/// via `tag_media`'s per-link `rows_affected` check.
+pub(crate) async fn merge_tags(pool: &SqlitePool, from_ids: &[i64], into_id: i64) -> DpResult<()> {
+    let from_ids: Vec<i64> = from_ids.iter().copied().filter(|&id| id != into_id).collect();
+    if from_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await.map_err(db)?;
+
+    let placeholders = vec!["?"; from_ids.len()].join(",");
+    let select_sql = format!("SELECT DISTINCT media_id FROM media_tags WHERE tag_id IN ({placeholders})");
+    let mut select_q = sqlx::query_scalar(&select_sql);
+    for id in &from_ids {
+        select_q = select_q.bind(id);
+    }
+    let affected: Vec<i64> = select_q.fetch_all(&mut *tx).await.map_err(db)?;
+
+    for &media_id in &affected {
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag_id) VALUES (?, ?)")
+            .bind(media_id)
+            .bind(into_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+    }
+
+    let delete_sql = format!("DELETE FROM tags WHERE id IN ({placeholders})");
+    let mut delete_q = sqlx::query(&delete_sql);
+    for id in &from_ids {
+        delete_q = delete_q.bind(id);
+    }
+    delete_q.execute(&mut *tx).await.map_err(db)?;
+
+    for &media_id in &affected {
+        sqlx::query("UPDATE media SET sidecar_pending = 1 WHERE id = ?")
+            .bind(media_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+    }
+
+    tx.commit().await.map_err(db)?;
+
+    for media_id in affected {
+        if let Err(e) = crate::fts::sync_fts(pool, media_id).await {
+            tracing::warn!(media_id, error = %e, "failed to sync FTS index after merge_tags");
+        }
+    }
+    Ok(())
+}
+
+/// Deletes tag `id` and every one of its `media_tags` links (the FK's `ON
+/// DELETE CASCADE` handles the links; `id` not existing is a tolerant
+/// no-op). Every media row that was linked to `id` is affected — it loses
+/// a tag name from its sidecar-visible list — so `sidecar_pending` is set
+/// and FTS resynced for each, in the same transaction as the delete.
+pub(crate) async fn delete_tag(pool: &SqlitePool, id: i64) -> DpResult<()> {
+    let mut tx = pool.begin().await.map_err(db)?;
+
+    let media_ids: Vec<i64> = sqlx::query_scalar("SELECT media_id FROM media_tags WHERE tag_id = ?")
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+
+    sqlx::query("DELETE FROM tags WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+
+    for &media_id in &media_ids {
+        sqlx::query("UPDATE media SET sidecar_pending = 1 WHERE id = ?")
+            .bind(media_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+    }
+
+    tx.commit().await.map_err(db)?;
+
+    for media_id in media_ids {
+        if let Err(e) = crate::fts::sync_fts(pool, media_id).await {
+            tracing::warn!(media_id, error = %e, "failed to sync FTS index after delete_tag");
+        }
+    }
     Ok(())
 }
 

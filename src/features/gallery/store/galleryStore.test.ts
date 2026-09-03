@@ -9,6 +9,7 @@ const initial = {
   anchorIndex: null as number | null,
   missingOnly: false,
   query: "",
+  tagId: null as number | null,
 };
 
 beforeEach(() => {
@@ -276,5 +277,58 @@ describe("query", () => {
 
   it("buildQuery passes a trimmed query through", () => {
     expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", query: "  beach " }, 1, 0).query).toBe("beach");
+  });
+});
+
+describe("tagId", () => {
+  it("defaults to null", () => {
+    expect(useGalleryStore.getState().tagId).toBeNull();
+  });
+
+  it("setTagId updates the tag filter", () => {
+    useGalleryStore.getState().setTagId(7);
+    expect(useGalleryStore.getState().tagId).toBe(7);
+  });
+
+  it("setTagId(null) clears the tag filter", () => {
+    useGalleryStore.getState().setTagId(7);
+    useGalleryStore.getState().setTagId(null);
+    expect(useGalleryStore.getState().tagId).toBeNull();
+  });
+
+  // Same contract as setTypeFilter/setSort/setMissingOnly/setQuery: a tag
+  // filter change can drop ids out of the visible list.
+  it("setTagId clears the selection when the tag actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTagId(7);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("setTagId to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTagId(null);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("is not persisted to localStorage — a live view filter, not a preference", () => {
+    useGalleryStore.getState().setTagId(7);
+    useGalleryStore.getState().setTypeFilter("RAW");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string).state).not.toHaveProperty("tagId");
+  });
+
+  it("buildQuery omits tag_ids when tagId is null or unset", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST" }, 1, 0).tag_ids).toBeUndefined();
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", tagId: null }, 1, 0).tag_ids).toBeUndefined();
+  });
+
+  it("buildQuery wraps a set tagId into a single-element tag_ids array", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", tagId: 7 }, 1, 0).tag_ids).toEqual([7]);
   });
 });

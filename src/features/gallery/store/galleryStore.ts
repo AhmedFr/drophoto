@@ -42,6 +42,15 @@ type GalleryState = {
   /** The toolbar search box's raw (untrimmed) text. Not persisted — a live view filter, not a durable preference, same reasoning as `missingOnly`. */
   query: string;
   setQuery: (query: string) => void;
+  /**
+   * The active tag filter, set by the Tags page's "navigate to this tag's
+   * photos" action (a store setter, chosen over route state as the
+   * simpler of the two options the brief allows — see `TagsPage`). Not
+   * persisted: a live view filter, not a durable preference, same
+   * reasoning as `missingOnly`/`query`.
+   */
+  tagId: number | null;
+  setTagId: (tagId: number | null) => void;
 };
 
 const DEFAULTS = {
@@ -52,6 +61,7 @@ const DEFAULTS = {
   anchorIndex: null as number | null,
   missingOnly: false,
   query: "",
+  tagId: null as number | null,
 };
 
 type PersistedGalleryState = Partial<Pick<GalleryState, "typeFilter" | "sort" | "density">>;
@@ -123,6 +133,13 @@ export const useGalleryStore = create<GalleryState>()(
         set((state) =>
           state.query === query ? { query } : { query, selectedIds: [], anchorIndex: null },
         ),
+      // Same reasoning as `setTypeFilter`/`setSort`/`setMissingOnly`/
+      // `setQuery`: switching (or clearing) the tag filter changes which
+      // tiles are visible.
+      setTagId: (tagId) =>
+        set((state) =>
+          state.tagId === tagId ? { tagId } : { tagId, selectedIds: [], anchorIndex: null },
+        ),
     }),
     {
       name: "drophoto.gallery",
@@ -134,7 +151,13 @@ export const useGalleryStore = create<GalleryState>()(
 );
 
 export function buildQuery(
-  s: { typeFilter: TypeFilter; sort: SortOption; missingOnly?: boolean; query?: string },
+  s: {
+    typeFilter: TypeFilter;
+    sort: SortOption;
+    missingOnly?: boolean;
+    query?: string;
+    tagId?: number | null;
+  },
   limit: number,
   offset: number,
 ): MediaQuery {
@@ -145,5 +168,6 @@ export function buildQuery(
     offset,
     missing: s.missingOnly ?? false,
     query: s.query?.trim() || undefined,
+    tag_ids: s.tagId != null ? [s.tagId] : undefined,
   };
 }

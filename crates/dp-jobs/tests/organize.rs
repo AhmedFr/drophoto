@@ -907,12 +907,28 @@ impl Catalog for FailingCatalog {
         self.0.list_tags().await
     }
 
+    async fn list_tags_with_counts(&self) -> DpResult<Vec<dp_core::TagWithCount>> {
+        self.0.list_tags_with_counts().await
+    }
+
     async fn tags_for_media(&self, ids: &[i64]) -> DpResult<Vec<(i64, dp_core::Tag)>> {
         self.0.tags_for_media(ids).await
     }
 
     async fn tag_media(&self, ids: &[i64], add: &[String], remove: &[i64]) -> DpResult<()> {
         self.0.tag_media(ids, add, remove).await
+    }
+
+    async fn rename_tag(&self, id: i64, new_name: &str) -> DpResult<()> {
+        self.0.rename_tag(id, new_name).await
+    }
+
+    async fn merge_tags(&self, from_ids: &[i64], into_id: i64) -> DpResult<()> {
+        self.0.merge_tags(from_ids, into_id).await
+    }
+
+    async fn delete_tag(&self, id: i64) -> DpResult<()> {
+        self.0.delete_tag(id).await
     }
 
     async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>> {

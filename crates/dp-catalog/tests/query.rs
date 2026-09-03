@@ -226,6 +226,54 @@ async fn filter_by_place_id() {
 }
 
 #[tokio::test]
+async fn filter_by_tag_ids() {
+    let (c, _) = seed().await;
+    let all = c.query_media(&q()).await.unwrap();
+    let target = all.iter().find(|(m, _)| m.rel_path == "a.jpg").unwrap().0.id;
+    let other = all.iter().find(|(m, _)| m.rel_path == "b.raf").unwrap().0.id;
+
+    c.tag_media(&[target], &["Trip".into()], &[]).await.unwrap();
+    let tag_id = c.list_tags().await.unwrap()[0].id;
+
+    let r = c
+        .query_media(&MediaQuery {
+            tag_ids: vec![tag_id],
+            ..q()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].0.id, target);
+
+    assert_eq!(
+        c.count_media_query(&MediaQuery {
+            tag_ids: vec![tag_id],
+            ..q()
+        })
+        .await
+        .unwrap(),
+        1
+    );
+
+    // Composes with another filter (kind), narrowing further rather than
+    // ORing.
+    c.tag_media(&[other], &["Trip".into()], &[]).await.unwrap();
+    let r = c
+        .query_media(&MediaQuery {
+            tag_ids: vec![tag_id],
+            kinds: vec![MediaKind::Photo],
+            ..q()
+        })
+        .await
+        .unwrap();
+    let mut ids: Vec<i64> = r.iter().map(|(m, _)| m.id).collect();
+    ids.sort();
+    let mut expected = vec![target, other];
+    expected.sort();
+    assert_eq!(ids, expected);
+}
+
+#[tokio::test]
 async fn filter_by_missing() {
     let (c, drive_id) = seed().await;
     let source = c

@@ -47,3 +47,20 @@ it("queries with missing: true once the store's missingOnly flag is set", async 
   await waitFor(() => expect(result.current).toBe(3));
   expect(args).toMatchObject({ query: { missing: true } });
 });
+
+it("queries with tag_ids once the store's tagId is set", async () => {
+  useGalleryStore.setState({ tagId: 7 });
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "count_media") {
+      args = a;
+      return 5;
+    }
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useMediaCount(), { wrapper });
+
+  await waitFor(() => expect(result.current).toBe(5));
+  expect(args).toMatchObject({ query: { tag_ids: [7] } });
+});

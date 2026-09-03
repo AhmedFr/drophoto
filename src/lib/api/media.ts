@@ -64,6 +64,13 @@ export type MediaQuery = {
    * an empty/whitespace-only string) behaves as no search filter.
    */
   query?: string;
+  /**
+   * Restrict to media linked to any of these tag ids — see
+   * `dp_core::MediaQuery::tag_ids`. Omitted/`undefined` behaves the same
+   * as an empty array (no restriction). The UI only ever sends at most one
+   * id (the Tags page's tag filter chip).
+   */
+  tag_ids?: number[];
 };
 
 export const queryMedia = (query: MediaQuery) => invokeApi<MediaItem[]>("query_media", { query });

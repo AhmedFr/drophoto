@@ -121,6 +121,23 @@ it("queries with missing: true once the store's missingOnly flag is set", async 
   expect((args as { query: MediaQuery }).query.missing).toBe(true);
 });
 
+it("queries with tag_ids once the store's tagId is set", async () => {
+  useGalleryStore.setState({ tagId: 7 });
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "query_media") {
+      args = a;
+      return [];
+    }
+    return undefined;
+  });
+
+  renderHook(() => useMediaInfinite(), { wrapper });
+
+  await waitFor(() => expect(args).toBeDefined());
+  expect((args as { query: MediaQuery }).query.tag_ids).toEqual([7]);
+});
+
 it("keeps a referentially stable items array across rerenders when data hasn't changed", async () => {
   mockIPC((cmd) => {
     if (cmd === "query_media") return [item(1), item(2)];

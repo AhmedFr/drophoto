@@ -22,7 +22,13 @@ function render(ui: ReactElement) {
 }
 
 beforeEach(() => {
-  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable", query: "" });
+  useGalleryStore.setState({
+    typeFilter: "ALL",
+    sort: "NEWEST",
+    density: "Comfortable",
+    query: "",
+    tagId: null,
+  });
   useGalleryStore.persist.clearStorage();
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   // Default: nothing missing, so the pre-existing tests below (none of
@@ -83,5 +89,22 @@ describe("GalleryToolbar", () => {
     mockIPC((cmd) => (cmd === "count_media" ? 3 : undefined));
     render(<GalleryToolbar count={0} />);
     expect(await screen.findByRole("button", { name: "Missing (3)" })).toBeInTheDocument();
+  });
+
+  it("hides the tag filter chip while no tag filter is active", async () => {
+    render(<GalleryToolbar count={0} />);
+    await screen.findByPlaceholderText("Search photos");
+    expect(screen.queryByText(/^Tag:/)).not.toBeInTheDocument();
+  });
+
+  it("shows the tag filter chip once the store's tagId is set", async () => {
+    useGalleryStore.setState({ tagId: 2 });
+    mockIPC((cmd) => {
+      if (cmd === "count_media") return 0;
+      if (cmd === "list_tags") return [{ id: 2, name: "Trip" }];
+      return undefined;
+    });
+    render(<GalleryToolbar count={0} />);
+    expect(await screen.findByText("Tag: Trip")).toBeInTheDocument();
   });
 });

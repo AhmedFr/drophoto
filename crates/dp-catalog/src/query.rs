@@ -51,6 +51,17 @@ fn where_clause(q: &MediaQuery) -> (String, SqliteArguments<'static>) {
         clauses.push("m.place_id = ?".to_string());
         let _ = args.add(place_id);
     }
+    if !q.tag_ids.is_empty() {
+        // `IN (SELECT ...)` rather than a `JOIN media_tags` — a row linked
+        // to more than one of `tag_ids` must still appear once.
+        clauses.push(format!(
+            "m.id IN (SELECT media_id FROM media_tags WHERE tag_id IN ({}))",
+            vec!["?"; q.tag_ids.len()].join(",")
+        ));
+        for tag_id in &q.tag_ids {
+            let _ = args.add(*tag_id);
+        }
+    }
     if let Some(missing) = q.missing {
         clauses.push(if missing {
             "m.missing_at IS NOT NULL".to_string()
