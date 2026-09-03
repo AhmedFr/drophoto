@@ -152,8 +152,58 @@ it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {
       onToggle={onToggle}
     />,
   );
-  const tiles = screen.getAllByRole("button");
+  const tiles = screen.getAllByRole("button", { name: /photos\// });
   fireEvent.click(tiles[1], { metaKey: true });
   expect(onToggle).toHaveBeenCalledWith(1, false);
   expect(onOpen).not.toHaveBeenCalled();
+});
+
+it("marks the tile at focusIndex as keyboard-focused", () => {
+  const items = [item(1), item(2)];
+  render(
+    <VirtualGrid
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      focusIndex={1}
+    />,
+  );
+  const tiles = screen.getAllByRole("button", { name: /photos\// });
+  expect(tiles[0]).toHaveAttribute("data-focused", "false");
+  expect(tiles[1]).toHaveAttribute("data-focused", "true");
+});
+
+it("reports the row grouping via onRowsChange, omitting the month header", () => {
+  const items = [item(1), item(2)];
+  const onRowsChange = vi.fn();
+  render(
+    <VirtualGrid
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onRowsChange={onRowsChange}
+    />,
+  );
+  expect(onRowsChange).toHaveBeenCalledWith([[0, 1]]);
+});
+
+it("clicking a month header's select action calls onSelectMonth with that month's ids", () => {
+  const items = [item(1), item(2)];
+  const onSelectMonth = vi.fn();
+  render(
+    <VirtualGrid
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onSelectMonth={onSelectMonth}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /select all/i }));
+  expect(onSelectMonth).toHaveBeenCalledWith([1, 2], false);
 });

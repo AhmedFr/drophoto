@@ -4,7 +4,7 @@ import { formatDuration } from "@/lib/media/format";
 import { thumbUrl } from "@/lib/media/thumbUrl";
 import type { TileProps } from "./Tile.types";
 
-export function Tile({ tile, onOpen, selected, onToggle }: TileProps) {
+export function Tile({ tile, onOpen, selected, onToggle, focused = false }: TileProps) {
   const { item, width, height, index } = tile;
   const { row, thumb_path, drive_name, online, has_thumb } = item;
 
@@ -13,9 +13,12 @@ export function Tile({ tile, onOpen, selected, onToggle }: TileProps) {
       role="button"
       tabIndex={0}
       aria-label={row.rel_path}
+      aria-selected={selected}
+      data-focused={focused ? "true" : "false"}
       className={cn(
         "group relative shrink-0 cursor-pointer overflow-hidden bg-surface-2 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         selected && "ring-2 ring-foreground ring-inset",
+        focused && "outline-2 outline-offset-[-2px] outline-ring",
       )}
       style={{ width, height }}
       onClick={(e) => {
@@ -29,7 +32,7 @@ export function Tile({ tile, onOpen, selected, onToggle }: TileProps) {
           onOpen(index);
         } else if (e.key === " ") {
           e.preventDefault();
-          onOpen(index);
+          onToggle(index, false);
         }
       }}
     >

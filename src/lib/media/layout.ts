@@ -4,7 +4,7 @@ import { monthKey, monthLabel } from "./format";
 export type Tile = { item: MediaItem; width: number; height: number; index: number };
 
 export type LayoutItem =
-  | { kind: "header"; key: string; label: string; count: number; height: number }
+  | { kind: "header"; key: string; label: string; count: number; ids: number[]; height: number }
   | { kind: "row"; key: string; tiles: Tile[]; height: number };
 
 export const HEADER_HEIGHT = 52;
@@ -88,6 +88,11 @@ export function buildLayout(
       key: `h:${groupKey}`,
       label,
       count: group.length,
+      // The group's media ids, in the same order as the group itself — used
+      // by `MonthHeader`'s "select all in this section" action. Kept
+      // separate from `Tile.index` (a position in the flat `items` array)
+      // since ids are what the selection store actually tracks.
+      ids: group.map((it) => it.row.id),
       height: HEADER_HEIGHT,
     });
     layout.push(...packGroup(group, i, groupKey, containerWidth, targetRowHeight));

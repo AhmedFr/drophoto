@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { buildLayout, GAP } from "@/lib/media/layout";
+import { buildLayout, GAP, type LayoutItem } from "@/lib/media/layout";
 import { JustifiedRow } from "./JustifiedRow";
 import { MonthHeader } from "./MonthHeader";
 import { useContainerWidth } from "./useContainerWidth";
@@ -13,6 +13,9 @@ function VirtualGridImpl({
   onNearEnd,
   selectedIds,
   onToggle,
+  focusIndex = null,
+  onRowsChange,
+  onSelectMonth,
 }: VirtualGridProps) {
   // `useContainerWidth` measures `contentRect.width`, which already excludes
   // the scroll element's `p-4` padding — no further subtraction needed here.
@@ -38,6 +41,21 @@ function VirtualGridImpl({
   useEffect(() => {
     virtualizer.measure();
   }, [virtualizer, layout]);
+
+  // Row grouping (each row as its tiles' `items`-array indices, in column
+  // order, omitting headers) for GalleryPage's keyboard Up/Down handling —
+  // see `onRowsChange`'s docs. Recomputed only when `layout` itself changes.
+  const rows = useMemo(
+    () =>
+      layout
+        .filter((l): l is Extract<LayoutItem, { kind: "row" }> => l.kind === "row")
+        .map((row) => row.tiles.map((t) => t.index)),
+    [layout],
+  );
+
+  useEffect(() => {
+    onRowsChange?.(rows);
+  }, [rows, onRowsChange]);
 
   const virtualItems = virtualizer.getVirtualItems();
   const maxIndex = virtualItems.reduce((max, v) => Math.max(max, v.index), -1);
@@ -78,13 +96,19 @@ function VirtualGridImpl({
               }}
             >
               {row.kind === "header" ? (
-                <MonthHeader label={row.label} count={row.count} />
+                <MonthHeader
+                  label={row.label}
+                  count={row.count}
+                  ids={row.ids}
+                  onSelect={(ids, additive) => onSelectMonth?.(ids, additive)}
+                />
               ) : (
                 <JustifiedRow
                   tiles={row.tiles}
                   onOpen={onOpen}
                   selectedIds={selectedIds}
                   onToggle={onToggle}
+                  focusIndex={focusIndex}
                 />
               )}
             </div>

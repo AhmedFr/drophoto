@@ -114,6 +114,18 @@ describe("buildLayout", () => {
     expect(headers[1]).toMatchObject({ label: "August 2025", count: 1, height: HEADER_HEIGHT });
   });
 
+  it("includes every group member's media id, in group order, on the header", () => {
+    const items = [
+      makeItem(100, 100, "2025-09-01T00:00:00Z"),
+      makeItem(100, 100, "2025-09-15T00:00:00Z"),
+      makeItem(100, 100, "2025-08-01T00:00:00Z"),
+    ];
+    const layout = buildLayout(items, 1000, 240);
+    const headers = headersOf(layout);
+    expect(headers[0].ids).toEqual([items[0].row.id, items[1].row.id]);
+    expect(headers[1].ids).toEqual([items[2].row.id]);
+  });
+
   it("labels an undated group as Undated", () => {
     const items = [makeItem(100, 100, null), makeItem(100, 100, null)];
     const layout = buildLayout(items, 1000, 240);
