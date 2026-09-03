@@ -1,7 +1,38 @@
 name: ci
-on: { pull_request: {}, push: { branches: [main] } }
+
+# DEACTIVATED (2026-09-03): manual `workflow_dispatch` only, nothing runs
+# automatically. All checks are done locally — `pnpm check` (scripts/check.sh)
+# is the merge gate and `pnpm install` wires it into a pre-push hook. GitHub
+# bills macOS minutes at 10x and the free quota was exhausted. To re-enable,
+# add `push: { branches: [main] }` back to `on:`. The JS half is on ubuntu so
+# only the Rust/Tauri half would pay the macOS rate.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  web:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:coverage
+
+  native:
+    name: Rust + Tauri build
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -14,9 +45,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: brew install exiftool ffmpeg
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test:coverage
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
