@@ -15,6 +15,7 @@ import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
 export function GalleryPage() {
   const media = useMediaInfinite();
   const count = useMediaCount();
+  const searchQuery = useGalleryStore((s) => s.query);
   const density = useGalleryStore((s) => s.density);
   const selectedIds = useGalleryStore((s) => s.selectedIds);
   const anchorIndex = useGalleryStore((s) => s.anchorIndex);
@@ -148,21 +149,27 @@ export function GalleryPage() {
         )}
         {media.isSuccess && items.length === 0 ? (
           <div className="p-5 font-mono text-[11px] text-faint">
-            No media yet — register and scan a{" "}
-            {/*
-              The feature registry (`src/app/registry.ts`) types each
-              module's route `path` as a plain `string`, so the router's
-              generated route tree loses literal path types and can't
-              type-check `to` against the app's real routes (the same
-              reason `Sidebar` navigates with a plain `<a>` + `onNavigate`
-              instead of `Link`). Widening the generics here keeps this a
-              real `Link` — with active-state and prefetch support — while
-              avoiding an unchecked `to` string.
-            */}
-            <Link<typeof router, string, string> to="/drives" className="underline">
-              drive
-            </Link>
-            .
+            {searchQuery.trim() ? (
+              `No photos match "${searchQuery.trim()}"`
+            ) : (
+              <>
+                No media yet — register and scan a{" "}
+                {/*
+                  The feature registry (`src/app/registry.ts`) types each
+                  module's route `path` as a plain `string`, so the router's
+                  generated route tree loses literal path types and can't
+                  type-check `to` against the app's real routes (the same
+                  reason `Sidebar` navigates with a plain `<a>` + `onNavigate`
+                  instead of `Link`). Widening the generics here keeps this a
+                  real `Link` — with active-state and prefetch support — while
+                  avoiding an unchecked `to` string.
+                */}
+                <Link<typeof router, string, string> to="/drives" className="underline">
+                  drive
+                </Link>
+                .
+              </>
+            )}
           </div>
         ) : (
           <VirtualGrid

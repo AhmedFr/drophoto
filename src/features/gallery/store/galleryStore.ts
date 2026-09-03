@@ -39,6 +39,9 @@ type GalleryState = {
   /** Whether the grid is currently restricted to missing media — toggled by the toolbar's "Missing (N)" chip. Not persisted: a view mode, not a durable preference. */
   missingOnly: boolean;
   setMissingOnly: (missingOnly: boolean) => void;
+  /** The toolbar search box's raw (untrimmed) text. Not persisted — a live view filter, not a durable preference, same reasoning as `missingOnly`. */
+  query: string;
+  setQuery: (query: string) => void;
 };
 
 const DEFAULTS = {
@@ -48,6 +51,7 @@ const DEFAULTS = {
   selectedIds: [] as number[],
   anchorIndex: null as number | null,
   missingOnly: false,
+  query: "",
 };
 
 type PersistedGalleryState = Partial<Pick<GalleryState, "typeFilter" | "sort" | "density">>;
@@ -113,6 +117,12 @@ export const useGalleryStore = create<GalleryState>()(
             ? { missingOnly }
             : { missingOnly, selectedIds: [], anchorIndex: null },
         ),
+      // Same reasoning as `setTypeFilter`/`setSort`/`setMissingOnly`: a
+      // query change can drop ids out of the visible list.
+      setQuery: (query) =>
+        set((state) =>
+          state.query === query ? { query } : { query, selectedIds: [], anchorIndex: null },
+        ),
     }),
     {
       name: "drophoto.gallery",
@@ -124,7 +134,7 @@ export const useGalleryStore = create<GalleryState>()(
 );
 
 export function buildQuery(
-  s: { typeFilter: TypeFilter; sort: SortOption; missingOnly?: boolean },
+  s: { typeFilter: TypeFilter; sort: SortOption; missingOnly?: boolean; query?: string },
   limit: number,
   offset: number,
 ): MediaQuery {
@@ -134,5 +144,6 @@ export function buildQuery(
     limit,
     offset,
     missing: s.missingOnly ?? false,
+    query: s.query?.trim() || undefined,
   };
 }

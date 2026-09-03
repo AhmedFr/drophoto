@@ -511,6 +511,14 @@ pub struct MediaQuery {
     /// drive+source didn't see (`missing_at IS NOT NULL`) — see
     /// `dp_jobs::ScanJob`'s per-source `reconcile_missing` call.
     pub missing: Option<bool>,
+    /// Full-text search over `media_fts` (stem, tags, place, camera) — see
+    /// `dp_catalog::fts::build_match_query`. Trimmed before use; empty or
+    /// whitespace-only behaves the same as `None` (no restriction).
+    /// `#[serde(default)]` deserializes an omitted field to `None`, same
+    /// as every other filter here, so older callers/persisted requests
+    /// that predate this field keep behaving exactly as before.
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 impl MediaQuery {

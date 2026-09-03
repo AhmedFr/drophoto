@@ -22,7 +22,7 @@ function render(ui: ReactElement) {
 }
 
 beforeEach(() => {
-  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable" });
+  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable", query: "" });
   useGalleryStore.persist.clearStorage();
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   // Default: nothing missing, so the pre-existing tests below (none of
@@ -36,9 +36,9 @@ beforeEach(() => {
 });
 
 describe("GalleryToolbar", () => {
-  it("links the search affordance to /search", async () => {
+  it("renders a search box with the Search photos placeholder", async () => {
     render(<GalleryToolbar count={12} />);
-    expect(await screen.findByRole("link")).toHaveAttribute("href", "/search");
+    expect(await screen.findByPlaceholderText("Search photos")).toBeInTheDocument();
   });
 
   it("shows the item count", async () => {
@@ -62,7 +62,7 @@ describe("GalleryToolbar", () => {
 
   it("renders no count while undefined", async () => {
     render(<GalleryToolbar count={undefined} />);
-    await screen.findByRole("link");
+    await screen.findByPlaceholderText("Search photos");
     expect(screen.queryByText(/items/)).not.toBeInTheDocument();
   });
 
@@ -75,7 +75,7 @@ describe("GalleryToolbar", () => {
 
   it("hides the Missing chip when nothing is missing", async () => {
     render(<GalleryToolbar count={0} />);
-    await screen.findByRole("link");
+    await screen.findByPlaceholderText("Search photos");
     expect(screen.queryByRole("button", { name: /Missing/ })).not.toBeInTheDocument();
   });
 

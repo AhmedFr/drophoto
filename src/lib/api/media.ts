@@ -58,6 +58,12 @@ export type MediaQuery = {
    * `true` to rows the last scan of their drive+source didn't see.
    */
   missing?: boolean | null;
+  /**
+   * Full-text search over file stems, tags, place, and camera — see
+   * `dp_core::MediaQuery::query`. Omitted/`undefined` (and, server-side,
+   * an empty/whitespace-only string) behaves as no search filter.
+   */
+  query?: string;
 };
 
 export const queryMedia = (query: MediaQuery) => invokeApi<MediaItem[]>("query_media", { query });

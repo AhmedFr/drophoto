@@ -8,6 +8,7 @@ const initial = {
   selectedIds: [] as number[],
   anchorIndex: null as number | null,
   missingOnly: false,
+  query: "",
 };
 
 beforeEach(() => {

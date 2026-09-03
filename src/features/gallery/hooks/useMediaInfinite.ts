@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { queryMedia } from "@/lib/api/media";
 import { buildQuery, useGalleryStore } from "../store/galleryStore";
 
@@ -9,13 +9,21 @@ export function useMediaInfinite() {
   const typeFilter = useGalleryStore((s) => s.typeFilter);
   const sort = useGalleryStore((s) => s.sort);
   const missingOnly = useGalleryStore((s) => s.missingOnly);
+  const searchQuery = useGalleryStore((s) => s.query);
 
   const query = useInfiniteQuery({
-    queryKey: ["media", typeFilter, sort, missingOnly],
+    queryKey: ["media", typeFilter, sort, missingOnly, searchQuery],
     queryFn: ({ pageParam }) =>
-      queryMedia(buildQuery({ typeFilter, sort, missingOnly }, PAGE_SIZE, pageParam)),
+      queryMedia(
+        buildQuery({ typeFilter, sort, missingOnly, query: searchQuery }, PAGE_SIZE, pageParam),
+      ),
     initialPageParam: 0,
     getNextPageParam: (lastPage, pages) => (lastPage.length < PAGE_SIZE ? undefined : pages.length * PAGE_SIZE),
+    // Carries the prior query key's pages forward as `data` while a new
+    // (differently-keyed, e.g. a settled search query) fetch is in flight,
+    // so the grid doesn't flash empty mid-search — same reasoning as the
+    // deleted Search page's `useSearch` hook.
+    placeholderData: keepPreviousData,
   });
 
   // Keeps a stable array reference across renders where `query.data` hasn't

@@ -1,4 +1,5 @@
 use crate::drives::row_to_drive_prefixed;
+use crate::fts::build_match_query;
 use crate::media::row_to_media;
 use crate::sqlite::db;
 use dp_core::{DpError, DpResult, Drive, MediaKind, MediaQuery, MediaRow, MediaSort};
@@ -56,6 +57,25 @@ fn where_clause(q: &MediaQuery) -> (String, SqliteArguments<'static>) {
         } else {
             "m.missing_at IS NULL".to_string()
         });
+    }
+    // Trimmed empty/whitespace-only behaves as no filter at all (see
+    // `MediaQuery::query`'s doc comment) — a caller that sends `Some("  ")`
+    // gets the same untouched result set as one that sends `None`. A
+    // trimmed-non-empty query that the sanitizer still reduces to nothing
+    // (e.g. all-punctuation input) is different: the caller *did* ask to
+    // filter, so it must match zero rows rather than silently falling back
+    // to "everything" — `"0"` (SQLite's false) does that without needing a
+    // bindable placeholder. Sort stays whatever the caller's `MediaSort`
+    // says: a photo library is browsed by date, not FTS relevance rank, so
+    // unlike `fts::search_media` this never switches to `ORDER BY bm25(...)`.
+    if let Some(trimmed) = q.query.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        match build_match_query(trimmed) {
+            Some(match_expr) => {
+                clauses.push("m.id IN (SELECT rowid FROM media_fts WHERE media_fts MATCH ?)".to_string());
+                let _ = args.add(match_expr);
+            }
+            None => clauses.push("0".to_string()),
+        }
     }
     let sql = if clauses.is_empty() {
         String::new()
