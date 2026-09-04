@@ -577,3 +577,110 @@ it("clears the selection on unmount", async () => {
 
   expect(useGalleryStore.getState().selectedIds).toEqual([]);
 });
+
+// ---------------------------------------------------------------------
+// Grid keyboard handling (Phase 6.3). The handler lives on `document`, so
+// these dispatch to `document.body` unless a specific target matters.
+// ---------------------------------------------------------------------
+
+function mockThreeItems() {
+  mockIPC((cmd) => {
+    if (cmd === "query_media") return [item(1), item(2), item(3)];
+    if (cmd === "count_media") return 3;
+    return undefined;
+  });
+}
+
+it("selects every loaded item on ⌘A", async () => {
+  mockThreeItems();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.keyDown(document.body, { key: "a", metaKey: true });
+
+  expect(useGalleryStore.getState().selectedIds).toHaveLength(3);
+  expect(await screen.findByText("3 SELECTED")).toBeInTheDocument();
+});
+
+// The whole point of the guard: the toolbar's search box is a real input,
+// and typing "a" in it must never select the entire library.
+it("does not select all when ⌘A is pressed inside the search box", async () => {
+  mockThreeItems();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+  const search = screen.getByPlaceholderText("Search photos");
+
+  fireEvent.keyDown(search, { key: "a", metaKey: true });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+});
+
+it("does not toggle selection when Space is pressed inside the search box", async () => {
+  mockThreeItems();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+  const search = screen.getByPlaceholderText("Search photos");
+
+  fireEvent.keyDown(search, { key: " " });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+});
+
+it("does not move grid focus when an arrow key is pressed inside the search box", async () => {
+  mockThreeItems();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+  const search = screen.getByPlaceholderText("Search photos");
+
+  fireEvent.keyDown(search, { key: "ArrowRight" });
+
+  expect(useGalleryStore.getState().focusIndex).toBeNull();
+});
+
+it("moves focus with ArrowRight and toggles the focused tile with Space", async () => {
+  mockThreeItems();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  // The first arrow just establishes focus at item 0, the second advances.
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(useGalleryStore.getState().focusIndex).toBe(0);
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(useGalleryStore.getState().focusIndex).toBe(1);
+
+  fireEvent.keyDown(document.body, { key: " " });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([2]);
+});
+
+it("grows and then shrinks the selection as Shift+Arrow reverses direction", async () => {
+  mockThreeItems();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus 0, anchor 0
+  fireEvent.keyDown(document.body, { key: "ArrowRight", shiftKey: true }); // 0..1
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2]);
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight", shiftKey: true }); // 0..2
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+
+  // Retreating toward the anchor must SHRINK the range, not keep growing.
+  fireEvent.keyDown(document.body, { key: "ArrowLeft", shiftKey: true }); // back to 0..1
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2]);
+});
+
+// Escape's existing contract (clear the selection) must survive the new
+// keyboard handler being registered alongside it.
+it("still clears the selection on Escape after keyboard selection", async () => {
+  mockThreeItems();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.keyDown(document.body, { key: "a", metaKey: true });
+  expect(useGalleryStore.getState().selectedIds).toHaveLength(3);
+
+  fireEvent.keyDown(document.body, { key: "Escape" });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+});

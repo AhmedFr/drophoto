@@ -227,9 +227,14 @@ export function GalleryPage() {
           const oldRange = new Set(idsInRange(anchor, current));
           const newRangeIds = idsInRange(anchor, next);
           const newRange = new Set(newRangeIds);
-          const toAdd = newRangeIds.filter((id) => !oldRange.has(id));
+          // The WHOLE new range is offered to `selectRange` (which ignores
+          // ids already selected) rather than just the ids the range gained.
+          // A plain Arrow sets the anchor without selecting it, so on the
+          // first Shift+Arrow the anchor's own id is still unselected — a
+          // difference-only add would silently skip it and start the range
+          // one item short.
           const toRemove = [...oldRange].filter((id) => !newRange.has(id));
-          if (toAdd.length > 0) selectRange(toAdd);
+          selectRange(newRangeIds);
           if (toRemove.length > 0) deselectRange(toRemove);
         } else {
           // A plain Arrow re-anchors at the new focus, same as a plain click
