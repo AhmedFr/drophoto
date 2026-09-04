@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use dp_core::{
     AppSettings, DpResult, Drive, JobRunRow, MediaMetadata, MediaQuery, MediaRow, NewDrive, NewJobRun,
     NewMedia, NewPlace, NewSource, OrganizeDefaults, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place,
-    PlaceCount, ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source, Tag,
+    PlaceCount, ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source, Tag, TagWithCount,
     UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
@@ -160,12 +160,24 @@ pub trait Catalog: Send + Sync {
     /// `dp_core::UnorganizedSummary::legacy`.
     async fn count_legacy_unorganized(&self, drive_id: i64, root: &str) -> DpResult<u64>;
     async fn list_tags(&self) -> DpResult<Vec<Tag>>;
+    /// Every tag with its linked-media count — see [`dp_core::TagWithCount`].
+    async fn list_tags_with_counts(&self) -> DpResult<Vec<TagWithCount>>;
     /// (media_id, tag) pairs for every id in `ids`, tags ordered by name.
     async fn tags_for_media(&self, ids: &[i64]) -> DpResult<Vec<(i64, Tag)>>;
     /// Creates any missing tags in `add` (name-insensitive), links them to every id,
     /// unlinks every tag id in `remove`, and sets `sidecar_pending = 1` on every id
     /// whose tag set actually changed. Whole call in one transaction.
     async fn tag_media(&self, ids: &[i64], add: &[String], remove: &[i64]) -> DpResult<()>;
+    /// Renames tag `id` to `new_name` — see [`crate::tags::rename_tag`]'s
+    /// doc comment for the collision-becomes-a-merge semantics and the
+    /// caller-side validation this expects.
+    async fn rename_tag(&self, id: i64, new_name: &str) -> DpResult<()>;
+    /// Merges every tag in `from_ids` into `into_id` — see
+    /// [`crate::tags::merge_tags`]'s doc comment.
+    async fn merge_tags(&self, from_ids: &[i64], into_id: i64) -> DpResult<()>;
+    /// Deletes tag `id` and its links — see [`crate::tags::delete_tag`]'s
+    /// doc comment.
+    async fn delete_tag(&self, id: i64) -> DpResult<()>;
     /// Tag names for one media row, ordered by name (for sidecar writing).
     async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>>;
     async fn list_sidecar_pending(&self, drive_id: i64) -> DpResult<Vec<MediaRow>>;
@@ -191,6 +203,19 @@ pub trait Catalog: Send + Sync {
     async fn rebuild_fts(&self) -> DpResult<()>;
     /// FTS search: every whitespace token AND-ed, the last one prefix-matched
     /// (`tok*`), ranked by bm25, joined back to media+drives like query_media.
+    ///
+    /// No longer on any production path — the app's search folded into
+    /// `query_media`'s `MediaQuery::query` (Phase 6), which composes with
+    /// the kind/place/missing filters, the caller's sort, and paging that
+    /// this bm25-ranked, unpaged call never had. It stays because it is
+    /// the narrowest read of the FTS index available: ~40 assertions
+    /// across the test suites use it to prove index state (that a
+    /// delete/rename/retag actually synced `media_fts`) with nothing else
+    /// in the way. `query_media` runs the same `media_fts MATCH` subquery
+    /// through the same sanitizer, so it *could* serve those assertions —
+    /// but only with its own kind/place/missing/sort/paging logic layered
+    /// on top, which is exactly what a test isolating FTS sync does not
+    /// want to depend on.
     async fn search_media(&self, query: &str, limit: u32) -> DpResult<Vec<(MediaRow, Drive)>>;
     /// Find-or-create by (name, admin, country, source) — geocoder places dedupe.
     async fn upsert_place(&self, p: NewPlace) -> DpResult<Place>;
@@ -452,12 +477,28 @@ impl Catalog for SqliteCatalog {
         tags::list_tags(&self.pool).await
     }
 
+    async fn list_tags_with_counts(&self) -> DpResult<Vec<TagWithCount>> {
+        tags::list_tags_with_counts(&self.pool).await
+    }
+
     async fn tags_for_media(&self, ids: &[i64]) -> DpResult<Vec<(i64, Tag)>> {
         tags::tags_for_media(&self.pool, ids).await
     }
 
     async fn tag_media(&self, ids: &[i64], add: &[String], remove: &[i64]) -> DpResult<()> {
         tags::tag_media(&self.pool, ids, add, remove).await
+    }
+
+    async fn rename_tag(&self, id: i64, new_name: &str) -> DpResult<()> {
+        tags::rename_tag(&self.pool, id, new_name).await
+    }
+
+    async fn merge_tags(&self, from_ids: &[i64], into_id: i64) -> DpResult<()> {
+        tags::merge_tags(&self.pool, from_ids, into_id).await
+    }
+
+    async fn delete_tag(&self, id: i64) -> DpResult<()> {
+        tags::delete_tag(&self.pool, id).await
     }
 
     async fn tag_names_for_media(&self, media_id: i64) -> DpResult<Vec<String>> {

@@ -11,7 +11,17 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 beforeEach(() => {
-  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable" });
+  // Every view-state field is reset, not just the persisted three: each
+  // test below sets one of missingOnly/tagId/query, and without this they
+  // leak into the tests that follow.
+  useGalleryStore.setState({
+    typeFilter: "ALL",
+    sort: "NEWEST",
+    density: "Comfortable",
+    missingOnly: false,
+    tagId: null,
+    query: "",
+  });
   useGalleryStore.persist.clearStorage();
 });
 
@@ -46,4 +56,40 @@ it("queries with missing: true once the store's missingOnly flag is set", async 
 
   await waitFor(() => expect(result.current).toBe(3));
   expect(args).toMatchObject({ query: { missing: true } });
+});
+
+it("queries with tag_ids once the store's tagId is set", async () => {
+  useGalleryStore.setState({ tagId: 7 });
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "count_media") {
+      args = a;
+      return 5;
+    }
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useMediaCount(), { wrapper });
+
+  await waitFor(() => expect(result.current).toBe(5));
+  expect(args).toMatchObject({ query: { tag_ids: [7] } });
+});
+
+// The toolbar count must narrow with the search box; otherwise it keeps
+// reporting the whole library while the grid shows a handful of matches.
+it("queries with the search text once the store's query is set", async () => {
+  useGalleryStore.setState({ query: "beach" });
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "count_media") {
+      args = a;
+      return 2;
+    }
+    return undefined;
+  });
+
+  const { result } = renderHook(() => useMediaCount(), { wrapper });
+
+  await waitFor(() => expect(result.current).toBe(2));
+  expect(args).toMatchObject({ query: { query: "beach" } });
 });

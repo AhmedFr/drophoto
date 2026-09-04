@@ -397,6 +397,291 @@ async fn sidecar_health_excludes_rows_marked_missing() {
     assert_eq!(health.pending, 1, "the missing row must drop out of pending");
 }
 
+#[tokio::test]
+async fn list_tags_with_counts_orders_by_name_and_counts_links() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let b = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+
+    c.tag_media(&[a, b], &["Trip".into()], &[]).await.unwrap();
+    c.tag_media(&[a], &["beach".into()], &[]).await.unwrap();
+    // An unlinked tag still shows up, with a zero count.
+    c.tag_media(&[a], &["Unused".into()], &[]).await.unwrap();
+    c.tag_media(
+        &[a],
+        &[],
+        &[c.list_tags()
+            .await
+            .unwrap()
+            .iter()
+            .find(|t| t.name == "Unused")
+            .unwrap()
+            .id],
+    )
+    .await
+    .unwrap();
+
+    let with_counts = c.list_tags_with_counts().await.unwrap();
+    let names: Vec<&str> = with_counts.iter().map(|t| t.tag.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["beach", "Trip", "Unused"],
+        "ordered by name, case-insensitively"
+    );
+
+    let counts: std::collections::HashMap<&str, u64> = with_counts
+        .iter()
+        .map(|t| (t.tag.name.as_str(), t.count))
+        .collect();
+    assert_eq!(counts["Trip"], 2);
+    assert_eq!(counts["beach"], 1);
+    assert_eq!(counts["Unused"], 0);
+}
+
+#[tokio::test]
+async fn rename_tag_retitles_and_marks_every_linked_row_pending() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let b = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    let other = c
+        .upsert_media(nm(drive_id, "other.jpg", "h-other"))
+        .await
+        .unwrap();
+
+    c.tag_media(&[a, b], &["Trip".into()], &[]).await.unwrap();
+    c.tag_media(&[other], &["Other".into()], &[]).await.unwrap();
+    let trip_id = c
+        .list_tags()
+        .await
+        .unwrap()
+        .iter()
+        .find(|t| t.name == "Trip")
+        .unwrap()
+        .id;
+    c.clear_sidecar_pending(a).await.unwrap();
+    c.clear_sidecar_pending(b).await.unwrap();
+    c.clear_sidecar_pending(other).await.unwrap();
+
+    c.rename_tag(trip_id, "Vacation").await.unwrap();
+
+    let names: Vec<String> = c.list_tags().await.unwrap().into_iter().map(|t| t.name).collect();
+    assert!(names.contains(&"Vacation".to_string()));
+    assert!(!names.contains(&"Trip".to_string()));
+
+    let pending = c.list_sidecar_pending(drive_id).await.unwrap();
+    let mut pending_ids: Vec<i64> = pending.iter().map(|r| r.id).collect();
+    pending_ids.sort();
+    assert_eq!(
+        pending_ids,
+        vec![a, b],
+        "only rows linked to the renamed tag are affected"
+    );
+}
+
+#[tokio::test]
+async fn rename_tag_to_its_own_current_name_is_a_no_op() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    c.tag_media(&[a], &["Trip".into()], &[]).await.unwrap();
+    let trip_id = c.list_tags().await.unwrap()[0].id;
+    c.clear_sidecar_pending(a).await.unwrap();
+
+    c.rename_tag(trip_id, "Trip").await.unwrap();
+
+    assert!(c.list_sidecar_pending(drive_id).await.unwrap().is_empty());
+}
+
+/// Renaming a tag to a name that collides (case-insensitively) with a
+/// *different* existing tag merges the renamed tag into that one instead
+/// of erroring — see `rename_tag`'s doc comment.
+#[tokio::test]
+async fn rename_tag_colliding_with_another_tag_merges_into_it() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let b = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+
+    c.tag_media(&[a], &["Trip".into()], &[]).await.unwrap();
+    c.tag_media(&[b], &["Vacation".into()], &[]).await.unwrap();
+    let trip_id = c
+        .list_tags()
+        .await
+        .unwrap()
+        .iter()
+        .find(|t| t.name == "Trip")
+        .unwrap()
+        .id;
+    c.clear_sidecar_pending(a).await.unwrap();
+    c.clear_sidecar_pending(b).await.unwrap();
+
+    // Case-insensitive collision: renaming "Trip" to "vacation" (different
+    // case) still merges into the existing "Vacation" tag.
+    c.rename_tag(trip_id, "vacation").await.unwrap();
+
+    let tags = c.list_tags().await.unwrap();
+    assert_eq!(tags.len(), 1, "the two tags merged into one");
+    assert_eq!(
+        tags[0].name, "Vacation",
+        "the surviving name is the collided-with tag's, not the rename target's casing"
+    );
+
+    let for_a = c.tags_for_media(&[a]).await.unwrap();
+    assert_eq!(for_a.len(), 1);
+    assert_eq!(for_a[0].1.name, "Vacation");
+
+    let pending = c.list_sidecar_pending(drive_id).await.unwrap();
+    let mut pending_ids: Vec<i64> = pending.iter().map(|r| r.id).collect();
+    pending_ids.sort();
+    assert_eq!(pending_ids, vec![a]);
+}
+
+#[tokio::test]
+async fn rename_tag_missing_id_is_a_no_op() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    c.rename_tag(999_999, "whatever").await.unwrap();
+}
+
+#[tokio::test]
+async fn merge_tags_relinks_media_and_drops_emptied_tags() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let b = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    // `both` already carries the merge target, to prove no duplicate link
+    // (and no crash) results.
+    let both = c.upsert_media(nm(drive_id, "both.jpg", "h-both")).await.unwrap();
+    let untouched = c
+        .upsert_media(nm(drive_id, "untouched.jpg", "h-untouched"))
+        .await
+        .unwrap();
+
+    c.tag_media(&[a], &["Beach".into()], &[]).await.unwrap();
+    c.tag_media(&[b], &["Sand".into()], &[]).await.unwrap();
+    c.tag_media(&[both], &["Beach".into(), "Sand".into()], &[])
+        .await
+        .unwrap();
+    c.tag_media(&[untouched], &["Other".into()], &[]).await.unwrap();
+
+    let tags = c.list_tags().await.unwrap();
+    let beach_id = tags.iter().find(|t| t.name == "Beach").unwrap().id;
+    let sand_id = tags.iter().find(|t| t.name == "Sand").unwrap().id;
+
+    c.clear_sidecar_pending(a).await.unwrap();
+    c.clear_sidecar_pending(b).await.unwrap();
+    c.clear_sidecar_pending(both).await.unwrap();
+    c.clear_sidecar_pending(untouched).await.unwrap();
+
+    c.merge_tags(&[sand_id], beach_id).await.unwrap();
+
+    let remaining_names: Vec<String> = c.list_tags().await.unwrap().into_iter().map(|t| t.name).collect();
+    assert!(remaining_names.contains(&"Beach".to_string()));
+    assert!(
+        !remaining_names.contains(&"Sand".to_string()),
+        "the merged-from tag is dropped"
+    );
+
+    for id in [a, b, both] {
+        let names: Vec<String> = c
+            .tags_for_media(&[id])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, t)| t.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Beach".to_string()],
+            "media {id} should carry only Beach after the merge"
+        );
+    }
+
+    let pending = c.list_sidecar_pending(drive_id).await.unwrap();
+    let mut pending_ids: Vec<i64> = pending.iter().map(|r| r.id).collect();
+    pending_ids.sort();
+    // `a` was only ever linked to Beach (the merge target), never Sand, so
+    // merging Sand into Beach never touches it — only rows that were
+    // actually linked to the merged-from tag are affected.
+    let mut expected = vec![b, both];
+    expected.sort();
+    assert_eq!(
+        pending_ids, expected,
+        "untouched (and a, never linked to Sand) must not be marked pending"
+    );
+}
+
+#[tokio::test]
+async fn merge_tags_ignores_a_from_id_equal_to_into_id() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    c.tag_media(&[a], &["Trip".into()], &[]).await.unwrap();
+    let trip_id = c.list_tags().await.unwrap()[0].id;
+    c.clear_sidecar_pending(a).await.unwrap();
+
+    c.merge_tags(&[trip_id], trip_id).await.unwrap();
+
+    assert_eq!(c.list_tags().await.unwrap().len(), 1);
+    assert!(c.list_sidecar_pending(drive_id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn merge_tags_empty_from_ids_is_a_no_op() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    c.merge_tags(&[], 1).await.unwrap();
+}
+
+#[tokio::test]
+async fn delete_tag_removes_the_tag_and_its_links() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    let b = c.upsert_media(nm(drive_id, "b.jpg", "h-b")).await.unwrap();
+    let untouched = c
+        .upsert_media(nm(drive_id, "untouched.jpg", "h-untouched"))
+        .await
+        .unwrap();
+
+    c.tag_media(&[a, b], &["Trip".into()], &[]).await.unwrap();
+    c.tag_media(&[untouched], &["Other".into()], &[]).await.unwrap();
+    let trip_id = c
+        .list_tags()
+        .await
+        .unwrap()
+        .iter()
+        .find(|t| t.name == "Trip")
+        .unwrap()
+        .id;
+    c.clear_sidecar_pending(a).await.unwrap();
+    c.clear_sidecar_pending(b).await.unwrap();
+    c.clear_sidecar_pending(untouched).await.unwrap();
+
+    c.delete_tag(trip_id).await.unwrap();
+
+    let names: Vec<String> = c.list_tags().await.unwrap().into_iter().map(|t| t.name).collect();
+    assert!(!names.contains(&"Trip".to_string()));
+    assert!(c.tags_for_media(&[a]).await.unwrap().is_empty());
+    assert!(c.tags_for_media(&[b]).await.unwrap().is_empty());
+    assert_eq!(
+        c.tags_for_media(&[untouched]).await.unwrap().len(),
+        1,
+        "untouched keeps its own tag"
+    );
+
+    let pending = c.list_sidecar_pending(drive_id).await.unwrap();
+    let mut pending_ids: Vec<i64> = pending.iter().map(|r| r.id).collect();
+    pending_ids.sort();
+    assert_eq!(pending_ids, vec![a, b]);
+}
+
+#[tokio::test]
+async fn delete_tag_missing_id_is_a_no_op() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    c.delete_tag(999_999).await.unwrap();
+}
+
 /// `has_sidecar_pending` gates `start_sidecar_sync_all` (fired on every app
 /// launch and after every tag edit) — if it stayed `true` for a row whose
 /// file is gone, that sweep would spawn a guaranteed-to-fail job forever.

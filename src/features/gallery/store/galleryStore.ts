@@ -31,14 +31,64 @@ type GalleryState = {
   selectedIds: number[];
   /** Index (in the loaded items array) of the last plainly-toggled tile, used as the shift-range anchor. Not persisted. */
   anchorIndex: number | null;
+  /**
+   * Roving keyboard focus: the index (in the loaded items array) of the
+   * tile GalleryPage's grid-level Left/Right/Up/Down/Space/Enter handling
+   * currently targets. Distinct from real DOM focus/`anchorIndex` — a tile
+   * can be keyboard-"focused" without being selected or anchoring a range.
+   * Not persisted: an ephemeral navigation cursor, not a preference.
+   */
+  focusIndex: number | null;
+  setFocusIndex: (index: number | null) => void;
+  /**
+   * Sets the shift-range anchor without toggling any item's membership.
+   * `toggleSelected` already moves the anchor as a side effect of a plain
+   * click, but keyboard Shift+Arrow needs to (re-)establish an anchor on
+   * the path where focus moved via a plain Arrow key — no click ever
+   * happened, so nothing already set one.
+   */
+  setAnchorIndex: (index: number | null) => void;
   /** Plain (cmd/ctrl-click) toggle: flips `id`'s membership and sets it as the new anchor. */
   toggleSelected: (id: number, index: number) => void;
   /** Shift-range select: adds `ids` to the selection without clearing it or moving the anchor. */
   selectRange: (ids: number[]) => void;
+  /**
+   * Removes `ids` from the selection, leaving everything else (and the
+   * anchor) untouched — the inverse of `selectRange`, used by keyboard
+   * Shift+Arrow to shrink a range back toward the anchor as focus retreats.
+   */
+  deselectRange: (ids: number[]) => void;
+  /**
+   * Replaces the selection outright with `ids` (deduped) — used by ⌘A
+   * ("select all loaded") and a plain (non-additive) month-header click
+   * ("select just this section"). Clears the anchor: `ids` isn't
+   * necessarily a single contiguous run in the loaded-items array (e.g.
+   * under an ADDED sort a month's ids can be non-consecutive), so there's
+   * no one meaningful shift-range start to keep.
+   */
+  selectAll: (ids: number[]) => void;
+  /**
+   * Replaces the selection with its complement within `allIds` (the
+   * currently loaded items) — SelectionBar's INVERT action. Clears the
+   * anchor, same reasoning as `selectAll`.
+   */
+  invertSelection: (allIds: number[]) => void;
   clearSelection: () => void;
   /** Whether the grid is currently restricted to missing media — toggled by the toolbar's "Missing (N)" chip. Not persisted: a view mode, not a durable preference. */
   missingOnly: boolean;
   setMissingOnly: (missingOnly: boolean) => void;
+  /** The toolbar search box's raw (untrimmed) text. Not persisted — a live view filter, not a durable preference, same reasoning as `missingOnly`. */
+  query: string;
+  setQuery: (query: string) => void;
+  /**
+   * The active tag filter, set by the Tags page's "navigate to this tag's
+   * photos" action (a store setter, chosen over route state as the
+   * simpler of the two options the brief allows — see `TagsPage`). Not
+   * persisted: a live view filter, not a durable preference, same
+   * reasoning as `missingOnly`/`query`.
+   */
+  tagId: number | null;
+  setTagId: (tagId: number | null) => void;
 };
 
 const DEFAULTS = {
@@ -47,7 +97,10 @@ const DEFAULTS = {
   density: "Comfortable" as Density,
   selectedIds: [] as number[],
   anchorIndex: null as number | null,
+  focusIndex: null as number | null,
   missingOnly: false,
+  query: "",
+  tagId: null as number | null,
 };
 
 type PersistedGalleryState = Partial<Pick<GalleryState, "typeFilter" | "sort" | "density">>;
@@ -82,13 +135,17 @@ export const useGalleryStore = create<GalleryState>()(
         set((state) =>
           state.typeFilter === typeFilter
             ? { typeFilter }
-            : { typeFilter, selectedIds: [], anchorIndex: null },
+            : { typeFilter, selectedIds: [], anchorIndex: null, focusIndex: null },
         ),
       setSort: (sort) =>
         set((state) =>
-          state.sort === sort ? { sort } : { sort, selectedIds: [], anchorIndex: null },
+          state.sort === sort
+            ? { sort }
+            : { sort, selectedIds: [], anchorIndex: null, focusIndex: null },
         ),
       setDensity: (density) => set({ density }),
+      setFocusIndex: (focusIndex) => set({ focusIndex }),
+      setAnchorIndex: (anchorIndex) => set({ anchorIndex }),
       toggleSelected: (id, index) =>
         set((state) => ({
           selectedIds: state.selectedIds.includes(id)
@@ -102,6 +159,17 @@ export const useGalleryStore = create<GalleryState>()(
           const toAdd = ids.filter((id) => !existing.has(id));
           return { selectedIds: [...state.selectedIds, ...toAdd] };
         }),
+      deselectRange: (ids) =>
+        set((state) => {
+          const toRemove = new Set(ids);
+          return { selectedIds: state.selectedIds.filter((id) => !toRemove.has(id)) };
+        }),
+      selectAll: (ids) => set({ selectedIds: Array.from(new Set(ids)), anchorIndex: null }),
+      invertSelection: (allIds) =>
+        set((state) => {
+          const selected = new Set(state.selectedIds);
+          return { selectedIds: allIds.filter((id) => !selected.has(id)), anchorIndex: null };
+        }),
       clearSelection: () => set({ selectedIds: [], anchorIndex: null }),
       // Same reasoning as `setTypeFilter`/`setSort`: switching in or out of
       // the missing-only view changes which tiles are visible, so a
@@ -111,7 +179,24 @@ export const useGalleryStore = create<GalleryState>()(
         set((state) =>
           state.missingOnly === missingOnly
             ? { missingOnly }
-            : { missingOnly, selectedIds: [], anchorIndex: null },
+            : { missingOnly, selectedIds: [], anchorIndex: null, focusIndex: null },
+        ),
+      // Same reasoning as `setTypeFilter`/`setSort`/`setMissingOnly`: a
+      // query change can drop ids out of the visible list.
+      setQuery: (query) =>
+        set((state) =>
+          state.query === query
+            ? { query }
+            : { query, selectedIds: [], anchorIndex: null, focusIndex: null },
+        ),
+      // Same reasoning as `setTypeFilter`/`setSort`/`setMissingOnly`/
+      // `setQuery`: switching (or clearing) the tag filter changes which
+      // tiles are visible.
+      setTagId: (tagId) =>
+        set((state) =>
+          state.tagId === tagId
+            ? { tagId }
+            : { tagId, selectedIds: [], anchorIndex: null, focusIndex: null },
         ),
     }),
     {
@@ -124,7 +209,13 @@ export const useGalleryStore = create<GalleryState>()(
 );
 
 export function buildQuery(
-  s: { typeFilter: TypeFilter; sort: SortOption; missingOnly?: boolean },
+  s: {
+    typeFilter: TypeFilter;
+    sort: SortOption;
+    missingOnly?: boolean;
+    query?: string;
+    tagId?: number | null;
+  },
   limit: number,
   offset: number,
 ): MediaQuery {
@@ -134,5 +225,7 @@ export function buildQuery(
     limit,
     offset,
     missing: s.missingOnly ?? false,
+    query: s.query?.trim() || undefined,
+    tag_ids: s.tagId != null ? [s.tagId] : undefined,
   };
 }

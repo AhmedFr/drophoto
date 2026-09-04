@@ -123,6 +123,18 @@ pub struct Tag {
     pub name: String,
 }
 
+/// A [`Tag`] paired with how many media rows currently reference it — the
+/// shape the Tags page's list needs. `Catalog::list_tags_with_counts`
+/// includes every tag, even ones with `count == 0` (unlike
+/// [`PlaceCount`]/`Catalog::list_place_counts`, which only ever returns
+/// places with at least one row): an unused tag is still something the
+/// user might want to rename or delete from the list.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TagWithCount {
+    pub tag: Tag,
+    pub count: u64,
+}
+
 /// Where a [`Place`] came from: `Geocoder` rows are found-or-created by
 /// `Catalog::upsert_place` (deduped by name/admin/country) as the reverse
 /// geocode job resolves GPS coordinates; `Manual` rows are the user's own
@@ -511,6 +523,23 @@ pub struct MediaQuery {
     /// drive+source didn't see (`missing_at IS NOT NULL`) — see
     /// `dp_jobs::ScanJob`'s per-source `reconcile_missing` call.
     pub missing: Option<bool>,
+    /// Full-text search over `media_fts` (stem, tags, place, camera) — see
+    /// `dp_catalog::fts::build_match_query`. Trimmed before use; empty or
+    /// whitespace-only behaves the same as `None` (no restriction).
+    /// `#[serde(default)]` deserializes an omitted field to `None`, same
+    /// as every other filter here, so older callers/persisted requests
+    /// that predate this field keep behaving exactly as before.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Restricts to media linked to any of these tags, via `media_tags`.
+    /// Empty (the default — `#[serde(default)]` deserializes an omitted
+    /// field the same way) applies no restriction. `AND` semantics across
+    /// multiple ids were judged not worth the join complexity for a single
+    /// tag filter chip; a `Vec` is used instead of `Option<i64>` so the
+    /// query shape doesn't need to change if that's ever wanted, but today
+    /// the UI (the Tags page's tag chip) only ever sends at most one id.
+    #[serde(default)]
+    pub tag_ids: Vec<i64>,
 }
 
 impl MediaQuery {
@@ -739,5 +768,6 @@ mod tests {
         // `limit: 0` is only meaningful pre-`clamped()` — callers clamp before querying.
         assert_eq!(q.clone().clamped().limit, 1);
         assert_eq!(q.missing, None);
+        assert_eq!(q.tag_ids, Vec::<i64>::new());
     }
 }

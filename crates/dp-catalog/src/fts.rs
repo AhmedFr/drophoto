@@ -136,7 +136,11 @@ pub(crate) async fn rebuild_fts(pool: &SqlitePool) -> DpResult<()> {
 /// surviving piece, ANDs them together, and prefix-matches only the last
 /// one — `"tok1" AND "tok2"*` (the `*` sits outside the closing quote,
 /// which is the syntax FTS5 requires for a quoted prefix match).
-fn build_match_query(query: &str) -> Option<String> {
+///
+/// `pub(crate)` rather than private: [`crate::query::where_clause`] reuses
+/// this exact sanitizer for `MediaQuery::query` rather than duplicating
+/// the splitting/escaping logic.
+pub(crate) fn build_match_query(query: &str) -> Option<String> {
     let tokens: Vec<String> = query
         .split_whitespace()
         .flat_map(|tok| {

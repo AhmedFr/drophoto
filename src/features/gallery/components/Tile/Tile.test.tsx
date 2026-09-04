@@ -69,11 +69,13 @@ it("calls onOpen with the tile index on Enter", () => {
   expect(onOpen).toHaveBeenCalledWith(7);
 });
 
-it("calls onOpen with the tile index on Space", () => {
+it("calls onToggle (a plain toggle, not a shift-range) with the tile index on Space", () => {
   const onOpen = vi.fn();
-  render(<Tile tile={tile({ index: 7 })} onOpen={onOpen} selected={false} onToggle={() => {}} />);
+  const onToggle = vi.fn();
+  render(<Tile tile={tile({ index: 7 })} onOpen={onOpen} selected={false} onToggle={onToggle} />);
   fireEvent.keyDown(screen.getByRole("button"), { key: " " });
-  expect(onOpen).toHaveBeenCalledWith(7);
+  expect(onToggle).toHaveBeenCalledWith(7, false);
+  expect(onOpen).not.toHaveBeenCalled();
 });
 
 it("shows a video badge with the formatted duration", () => {
@@ -188,4 +190,29 @@ it("does not show a selected ring or check mark when not selected", () => {
   render(<Tile tile={t} onOpen={() => {}} selected={false} onToggle={() => {}} />);
   expect(screen.getByRole("button")).not.toHaveClass("ring-2");
   expect(screen.queryByTestId("tile-selected-check")).not.toBeInTheDocument();
+});
+
+it("reflects the selected state via aria-selected", () => {
+  const { rerender } = render(<Tile tile={tile()} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+  expect(screen.getByRole("button")).toHaveAttribute("aria-selected", "false");
+
+  rerender(<Tile tile={tile()} onOpen={() => {}} selected onToggle={() => {}} />);
+  expect(screen.getByRole("button")).toHaveAttribute("aria-selected", "true");
+});
+
+it("defaults to unfocused when focused is omitted", () => {
+  render(<Tile tile={tile()} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+  expect(screen.getByRole("button")).toHaveAttribute("data-focused", "false");
+});
+
+it("reflects keyboard focus via data-focused and a visible ring", () => {
+  const { rerender } = render(
+    <Tile tile={tile()} onOpen={() => {}} selected={false} onToggle={() => {}} focused={false} />,
+  );
+  expect(screen.getByRole("button")).toHaveAttribute("data-focused", "false");
+  expect(screen.getByRole("button")).not.toHaveClass("outline-2");
+
+  rerender(<Tile tile={tile()} onOpen={() => {}} selected={false} onToggle={() => {}} focused />);
+  expect(screen.getByRole("button")).toHaveAttribute("data-focused", "true");
+  expect(screen.getByRole("button")).toHaveClass("outline-2");
 });

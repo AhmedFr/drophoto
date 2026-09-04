@@ -7,7 +7,10 @@ const initial = {
   density: "Comfortable" as const,
   selectedIds: [] as number[],
   anchorIndex: null as number | null,
+  focusIndex: null as number | null,
   missingOnly: false,
+  query: "",
+  tagId: null as number | null,
 };
 
 beforeEach(() => {
@@ -121,6 +124,75 @@ describe("selection", () => {
     expect(state.anchorIndex).toBeNull();
   });
 
+  it("deselectRange removes the given ids and leaves the rest and the anchor untouched", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().selectRange([2, 3, 4]);
+    useGalleryStore.getState().deselectRange([2, 4]);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1, 3]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("deselectRange is a no-op for ids that aren't selected", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().deselectRange([99]);
+    expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+  });
+
+  it("selectAll replaces the selection with the given ids, deduped, and clears the anchor", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().selectAll([2, 3, 3, 4]);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([2, 3, 4]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("invertSelection selects the complement of the current selection within allIds", () => {
+    useGalleryStore.getState().selectAll([1, 2]);
+    useGalleryStore.getState().invertSelection([1, 2, 3, 4]);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([3, 4]);
+    expect(state.anchorIndex).toBeNull();
+  });
+
+  it("invertSelection with nothing selected selects everything in allIds", () => {
+    useGalleryStore.getState().invertSelection([1, 2, 3]);
+    expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+  });
+
+  it("defaults focusIndex to null", () => {
+    expect(useGalleryStore.getState().focusIndex).toBeNull();
+  });
+
+  it("setFocusIndex updates the roving focus index", () => {
+    useGalleryStore.getState().setFocusIndex(3);
+    expect(useGalleryStore.getState().focusIndex).toBe(3);
+  });
+
+  it("setFocusIndex(null) clears the roving focus index", () => {
+    useGalleryStore.getState().setFocusIndex(3);
+    useGalleryStore.getState().setFocusIndex(null);
+    expect(useGalleryStore.getState().focusIndex).toBeNull();
+  });
+
+  it("setAnchorIndex sets the anchor without touching the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setAnchorIndex(5);
+    const state = useGalleryStore.getState();
+    expect(state.anchorIndex).toBe(5);
+    expect(state.selectedIds).toEqual([1]);
+  });
+
+  it("does not persist focusIndex to localStorage", () => {
+    useGalleryStore.getState().setFocusIndex(2);
+    useGalleryStore.getState().setTypeFilter("RAW");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    const persisted = JSON.parse(raw as string);
+    expect(persisted.state).not.toHaveProperty("focusIndex");
+  });
+
   it("does not persist the selection to localStorage", () => {
     useGalleryStore.getState().toggleSelected(1, 0);
     useGalleryStore.getState().setTypeFilter("RAW");
@@ -132,12 +204,14 @@ describe("selection", () => {
     expect(persisted.state).not.toHaveProperty("anchorIndex");
   });
 
-  it("setTypeFilter clears the selection when the filter actually changes", () => {
+  it("setTypeFilter clears the selection and focus when the filter actually changes", () => {
     useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setFocusIndex(0);
     useGalleryStore.getState().setTypeFilter("RAW");
     const state = useGalleryStore.getState();
     expect(state.selectedIds).toEqual([]);
     expect(state.anchorIndex).toBeNull();
+    expect(state.focusIndex).toBeNull();
   });
 
   it("setTypeFilter to the same value does not clear the selection", () => {
@@ -148,12 +222,14 @@ describe("selection", () => {
     expect(state.anchorIndex).toBe(0);
   });
 
-  it("setSort clears the selection when the sort actually changes", () => {
+  it("setSort clears the selection and focus when the sort actually changes", () => {
     useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setFocusIndex(0);
     useGalleryStore.getState().setSort("OLDEST");
     const state = useGalleryStore.getState();
     expect(state.selectedIds).toEqual([]);
     expect(state.anchorIndex).toBeNull();
+    expect(state.focusIndex).toBeNull();
   });
 
   it("setSort to the same value does not clear the selection", () => {
@@ -203,12 +279,14 @@ describe("missingOnly", () => {
     expect(useGalleryStore.getState().missingOnly).toBe(true);
   });
 
-  it("setMissingOnly clears the selection when the flag actually changes", () => {
+  it("setMissingOnly clears the selection and focus when the flag actually changes", () => {
     useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setFocusIndex(0);
     useGalleryStore.getState().setMissingOnly(true);
     const state = useGalleryStore.getState();
     expect(state.selectedIds).toEqual([]);
     expect(state.anchorIndex).toBeNull();
+    expect(state.focusIndex).toBeNull();
   });
 
   it("setMissingOnly to the same value does not clear the selection", () => {
@@ -227,5 +305,110 @@ describe("missingOnly", () => {
     expect(raw).not.toBeNull();
     const persisted = JSON.parse(raw as string);
     expect(persisted.state).not.toHaveProperty("missingOnly");
+  });
+});
+
+describe("query", () => {
+  it("defaults to an empty string", () => {
+    expect(useGalleryStore.getState().query).toBe("");
+  });
+
+  it("setQuery updates the query", () => {
+    useGalleryStore.getState().setQuery("beach");
+    expect(useGalleryStore.getState().query).toBe("beach");
+  });
+
+  // Same contract as setTypeFilter/setSort/setMissingOnly: a query change
+  // can drop ids out of the visible list, and a still-selected id whose
+  // tile disappeared would be an invisible tag-target.
+  it("setQuery clears the selection and focus when the query actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setFocusIndex(0);
+    useGalleryStore.getState().setQuery("beach");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+    expect(state.focusIndex).toBeNull();
+  });
+
+  it("setQuery to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setQuery("");
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("is not persisted to localStorage — a live view filter, not a preference", () => {
+    useGalleryStore.getState().setQuery("beach");
+    useGalleryStore.getState().setTypeFilter("RAW");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string).state).not.toHaveProperty("query");
+  });
+
+  it("buildQuery omits an empty or whitespace-only query", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST" }, 1, 0).query).toBeUndefined();
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", query: "   " }, 1, 0).query).toBeUndefined();
+  });
+
+  it("buildQuery passes a trimmed query through", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", query: "  beach " }, 1, 0).query).toBe("beach");
+  });
+});
+
+describe("tagId", () => {
+  it("defaults to null", () => {
+    expect(useGalleryStore.getState().tagId).toBeNull();
+  });
+
+  it("setTagId updates the tag filter", () => {
+    useGalleryStore.getState().setTagId(7);
+    expect(useGalleryStore.getState().tagId).toBe(7);
+  });
+
+  it("setTagId(null) clears the tag filter", () => {
+    useGalleryStore.getState().setTagId(7);
+    useGalleryStore.getState().setTagId(null);
+    expect(useGalleryStore.getState().tagId).toBeNull();
+  });
+
+  // Same contract as setTypeFilter/setSort/setMissingOnly/setQuery: a tag
+  // filter change can drop ids out of the visible list.
+  it("setTagId clears the selection and focus when the tag actually changes", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setFocusIndex(0);
+    useGalleryStore.getState().setTagId(7);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([]);
+    expect(state.anchorIndex).toBeNull();
+    expect(state.focusIndex).toBeNull();
+  });
+
+  it("setTagId to the same value does not clear the selection", () => {
+    useGalleryStore.getState().toggleSelected(1, 0);
+    useGalleryStore.getState().setTagId(null);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([1]);
+    expect(state.anchorIndex).toBe(0);
+  });
+
+  it("is not persisted to localStorage — a live view filter, not a preference", () => {
+    useGalleryStore.getState().setTagId(7);
+    useGalleryStore.getState().setTypeFilter("RAW");
+
+    const raw = localStorage.getItem("drophoto.gallery");
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string).state).not.toHaveProperty("tagId");
+  });
+
+  it("buildQuery omits tag_ids when tagId is null or unset", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST" }, 1, 0).tag_ids).toBeUndefined();
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", tagId: null }, 1, 0).tag_ids).toBeUndefined();
+  });
+
+  it("buildQuery wraps a set tagId into a single-element tag_ids array", () => {
+    expect(buildQuery({ typeFilter: "ALL", sort: "NEWEST", tagId: 7 }, 1, 0).tag_ids).toEqual([7]);
   });
 });

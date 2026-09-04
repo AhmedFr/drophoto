@@ -22,7 +22,13 @@ function render(ui: ReactElement) {
 }
 
 beforeEach(() => {
-  useGalleryStore.setState({ typeFilter: "ALL", sort: "NEWEST", density: "Comfortable" });
+  useGalleryStore.setState({
+    typeFilter: "ALL",
+    sort: "NEWEST",
+    density: "Comfortable",
+    query: "",
+    tagId: null,
+  });
   useGalleryStore.persist.clearStorage();
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   // Default: nothing missing, so the pre-existing tests below (none of
@@ -36,9 +42,9 @@ beforeEach(() => {
 });
 
 describe("GalleryToolbar", () => {
-  it("links the search affordance to /search", async () => {
+  it("renders a search box with the Search photos placeholder", async () => {
     render(<GalleryToolbar count={12} />);
-    expect(await screen.findByRole("link")).toHaveAttribute("href", "/search");
+    expect(await screen.findByPlaceholderText("Search photos")).toBeInTheDocument();
   });
 
   it("shows the item count", async () => {
@@ -62,7 +68,7 @@ describe("GalleryToolbar", () => {
 
   it("renders no count while undefined", async () => {
     render(<GalleryToolbar count={undefined} />);
-    await screen.findByRole("link");
+    await screen.findByPlaceholderText("Search photos");
     expect(screen.queryByText(/items/)).not.toBeInTheDocument();
   });
 
@@ -75,7 +81,7 @@ describe("GalleryToolbar", () => {
 
   it("hides the Missing chip when nothing is missing", async () => {
     render(<GalleryToolbar count={0} />);
-    await screen.findByRole("link");
+    await screen.findByPlaceholderText("Search photos");
     expect(screen.queryByRole("button", { name: /Missing/ })).not.toBeInTheDocument();
   });
 
@@ -83,5 +89,22 @@ describe("GalleryToolbar", () => {
     mockIPC((cmd) => (cmd === "count_media" ? 3 : undefined));
     render(<GalleryToolbar count={0} />);
     expect(await screen.findByRole("button", { name: "Missing (3)" })).toBeInTheDocument();
+  });
+
+  it("hides the tag filter chip while no tag filter is active", async () => {
+    render(<GalleryToolbar count={0} />);
+    await screen.findByPlaceholderText("Search photos");
+    expect(screen.queryByText(/^Tag:/)).not.toBeInTheDocument();
+  });
+
+  it("shows the tag filter chip once the store's tagId is set", async () => {
+    useGalleryStore.setState({ tagId: 2 });
+    mockIPC((cmd) => {
+      if (cmd === "count_media") return 0;
+      if (cmd === "list_tags") return [{ id: 2, name: "Trip" }];
+      return undefined;
+    });
+    render(<GalleryToolbar count={0} />);
+    expect(await screen.findByText("Tag: Trip")).toBeInTheDocument();
   });
 });

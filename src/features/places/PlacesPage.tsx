@@ -15,14 +15,14 @@ import { usePlaces } from "./hooks/usePlaces";
 // Selected-place results aren't paged (a single place's photos are a small,
 // bounded set — no reason to reach for `useMediaInfinite`'s cursor
 // machinery here), so just the gallery's normal ("Comfortable") row height
-// reused, same reasoning as `SearchPage`.
+// reused, same reasoning as `GalleryPage`'s own grid.
 const ROW_HEIGHT = DENSITY_ROW_HEIGHT.Comfortable;
 
 const EMPTY_SELECTION = new Set<number>();
 
 // The place-filtered grid supports plain-click-to-open only (no
 // multi-select) — `VirtualGrid` still requires an `onToggle`, so this is
-// the no-op passed for it, same as `SearchPage`.
+// the no-op passed for it.
 function noopToggle() {}
 
 /** Every media item assigned to `placeId`, via the same `query_media` client the gallery/search pages use. `null` disables the query entirely (nothing selected yet). */
@@ -48,7 +48,7 @@ export function PlacesPage() {
 
   // Results can shrink out from under an open lightbox (switching places,
   // or a refetch after a manual override) — clamp instead of leaving a
-  // stale, out-of-range index. Same pattern as `GalleryPage`/`SearchPage`.
+  // stale, out-of-range index. Same pattern as `GalleryPage`.
   const [prevLength, setPrevLength] = useState(items.length);
   if (items.length !== prevLength) {
     setPrevLength(items.length);
