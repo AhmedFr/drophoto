@@ -16,8 +16,9 @@ import type { FeatureModule } from "./registry";
  * A feature (or a sub-page's own `FeatureRoute`) is "active" — for sidebar
  * or sub-nav highlighting — at its own exact path or anywhere nested under
  * it. A child path like `/settings/library` must still highlight the
- * Settings sidebar item, not fail to match it; `SettingsLayout` reuses
- * this same check for its own sub-nav.
+ * Settings sidebar item, not fail to match it. (`SettingsLayout`'s own
+ * sub-nav deliberately does NOT use this: a sub-page link should light up
+ * only on its own exact path, never on a sibling nested under it.)
  */
 export function isActiveFeature(f: { path: string }, pathname: string): boolean {
   return pathname === f.path || pathname.startsWith(`${f.path}/`);
