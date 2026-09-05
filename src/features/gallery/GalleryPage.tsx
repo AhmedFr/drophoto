@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
+import type { MediaItem } from "@/lib/api/media";
 import { PageHeader } from "@/components/PageHeader";
 import { PlacePanel } from "@/features/places/components/PlacePanel";
 import { moveFocusRow } from "@/lib/media/rowNav";
@@ -9,7 +10,7 @@ import { Lightbox } from "./components/Lightbox";
 import { SelectionBar } from "./components/SelectionBar";
 import { TagPanel } from "./components/TagPanel";
 import { VirtualGrid } from "./components/VirtualGrid";
-import { useMediaChunks } from "./hooks/useMediaChunks";
+import { coveringRange, useMediaChunks } from "./hooks/useMediaChunks";
 import { useMediaIndex } from "./hooks/useMediaIndex";
 import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
 
@@ -20,9 +21,23 @@ export function GalleryPage() {
   // before the first chunk is in flight — and both are indexed by the
   // same absolute position, so `entries[n]` and `items[n]` are the same
   // photo.
-  const { entries, isLoading, isError, error } = useMediaIndex();
+  const { entries, key: indexKey, isLoading, isError, error } = useMediaIndex();
+
+  // The tile-index span `VirtualGrid` is currently rendering.
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 });
-  const hydrated = useMediaChunks(visibleRange);
+
+  // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s
+  // `onClose`). Declared up here because hydration has to cover it: with
+  // paging gone, next/prev walk the whole set, so the chunks fetched must
+  // follow the lightbox and not just the grid.
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  const hydrationRange = useMemo(
+    () => coveringRange(visibleRange, openIndex),
+    [visibleRange, openIndex],
+  );
+
+  const { items: hydrated, key: chunksKey } = useMediaChunks(hydrationRange);
 
   const searchQuery = useGalleryStore((s) => s.query);
   const density = useGalleryStore((s) => s.density);
@@ -38,15 +53,35 @@ export function GalleryPage() {
   const invertSelection = useGalleryStore((s) => s.invertSelection);
   const clearSelection = useGalleryStore((s) => s.clearSelection);
 
+  // The geometry (`entries`) and the rows (`hydrated`) are cached
+  // separately and resolve at different speeds, and both hold the outgoing
+  // selection through a settle — so either can be a generation behind the
+  // other after a filter, sort or search change. Rows are painted only
+  // while the two agree; when they don't, the grid falls back to
+  // placeholders over the index's geometry. The invariant this buys: a
+  // tile never shows a thumbnail belonging to a different photo than its
+  // own id.
+  const sameGeneration = indexKey !== null && indexKey === chunksKey;
+
   // `useMediaChunks` only fills the slots it has hydrated, so its `length`
   // stops wherever the highest loaded chunk ends. `Lightbox` reads
-  // `items.length` as the set's total ("03 / 128"), so it's given a view
+  // `items.length` as the set's total ("03 / 17405"), so it's given a view
   // of the same sparse array sized to the whole timeline instead.
   const items = useMemo(() => {
-    const sized = hydrated.slice(0, entries.length);
+    const sized: (MediaItem | undefined)[] = sameGeneration
+      ? hydrated.slice(0, entries.length)
+      : [];
     sized.length = entries.length;
     return sized;
-  }, [hydrated, entries.length]);
+  }, [hydrated, entries.length, sameGeneration]);
+
+  // Read from the `document` keydown handlers below, which must not be
+  // torn down and re-added every time a chunk lands. Same pattern as
+  // `selectedIdsRef`.
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   // Whether the index has actually answered. Until then the toolbar count
   // stays hidden and the empty state is withheld, rather than briefly
@@ -54,9 +89,6 @@ export function GalleryPage() {
   const loaded = !isLoading && !isError;
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-
-  // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s `onClose`).
-  const [openIndex, setOpenIndex] = useState<number | null>(null);
 
   // Opened by `SelectionBar`'s TAG button, for the current selection.
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
@@ -116,6 +148,20 @@ export function GalleryPage() {
   const rowsRef = useRef<number[][]>([]);
   const handleRowsChange = useCallback((rows: number[][]) => {
     rowsRef.current = rows;
+  }, []);
+
+  // Closing the lightbox, from either of its two paths: `Lightbox`'s own
+  // `onClose`, or the Escape handler below when there is no `Lightbox`
+  // rendered to receive the keystroke.
+  const closeLightbox = useCallback(() => {
+    setOpenIndex(null);
+    // Guards against a stale `true` outliving the `MetaPanel` that set it
+    // (e.g. if the lightbox is ever closed by something other than its own
+    // Escape/CLOSE path while the nested panel was left open), which would
+    // otherwise permanently block the Escape-clears-selection behavior
+    // below.
+    setMetaTagPanelOpen(false);
+    setMetaPlacePanelOpen(false);
   }, []);
 
   // `MonthHeader`'s select action: a plain click replaces the selection
@@ -178,13 +224,36 @@ export function GalleryPage() {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       if (tagPanelOpen || metaTagPanelOpen || placePanelOpen || metaPlacePanelOpen) return;
-      if (selectedIdsRef.current.length === 0) return;
-      e.stopImmediatePropagation();
-      clearSelection();
+      if (selectedIdsRef.current.length > 0) {
+        e.stopImmediatePropagation();
+        clearSelection();
+        return;
+      }
+      // A lightbox opened onto a row whose chunk hasn't landed renders
+      // nothing at all, so there is no Radix dismissable layer to receive
+      // this keystroke — close it from here instead. Without this the page
+      // would be keyboard-dead: the grid handler below yields to the
+      // lightbox whenever `openIndex` is set, so nothing would answer any
+      // key until the user reached for the mouse. Ordered *after* the
+      // selection branch so it matches what a hydrated lightbox does (its
+      // Radix layer only ever sees the keystroke once the selection is
+      // already clear).
+      if (openIndex !== null && itemsRef.current[openIndex] === undefined) {
+        e.stopImmediatePropagation();
+        closeLightbox();
+      }
     }
     document.addEventListener("keydown", handleKeyDown, { capture: true });
     return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
-  }, [clearSelection, tagPanelOpen, metaTagPanelOpen, placePanelOpen, metaPlacePanelOpen]);
+  }, [
+    clearSelection,
+    closeLightbox,
+    openIndex,
+    tagPanelOpen,
+    metaTagPanelOpen,
+    placePanelOpen,
+    metaPlacePanelOpen,
+  ]);
 
   // Grid-level keyboard navigation: ⌘/Ctrl+A selects every item in the
   // current filter (the timeline index covers the whole filtered set, not
@@ -283,7 +352,10 @@ export function GalleryPage() {
 
       if (e.key === "Enter" && current !== null) {
         e.preventDefault();
-        setOpenIndex(current);
+        // Same rule `Tile` applies to a click: a row whose chunk hasn't
+        // landed has nothing to show, and opening onto it would strand the
+        // page in a lightbox that renders nothing.
+        if (itemsRef.current[current]) setOpenIndex(current);
       }
     }
 
@@ -385,16 +457,7 @@ export function GalleryPage() {
         <Lightbox
           items={items}
           index={openIndex}
-          onClose={() => {
-            setOpenIndex(null);
-            // Guards against a stale `true` outliving the `MetaPanel` that
-            // set it (e.g. if the lightbox is ever closed by something
-            // other than its own Escape/CLOSE path while the nested panel
-            // was left open), which would otherwise permanently block the
-            // Escape-clears-selection behavior above.
-            setMetaTagPanelOpen(false);
-            setMetaPlacePanelOpen(false);
-          }}
+          onClose={closeLightbox}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
           onNext={() => {
             if (openIndex < entries.length - 1) setOpenIndex(openIndex + 1);

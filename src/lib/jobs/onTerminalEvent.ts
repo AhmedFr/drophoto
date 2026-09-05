@@ -4,7 +4,12 @@ import type { JobEvent } from "@/lib/api/scan";
 
 /** Every query key a completed scan/organize/revert job could have changed the data behind. */
 const INVALIDATE_KEYS: readonly (readonly string[])[] = [
+  // The gallery's timeline index and its hydrated chunks both hang off
+  // `["media"]`, so this one prefix refreshes the whole grid.
   ["media"],
+  // Organize's total-media count (`["media-count", "total"]`). The gallery
+  // no longer has a count query of its own — its toolbar count is the
+  // length of the index refreshed just above.
   ["media-count"],
   // A scan can mark rows missing or clear that mark (`reconcile_missing`),
   // which shifts both the toolbar's global "Missing (N)" chip count and

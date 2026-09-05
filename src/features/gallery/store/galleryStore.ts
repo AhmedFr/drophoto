@@ -208,14 +208,43 @@ export const useGalleryStore = create<GalleryState>()(
   ),
 );
 
+/** The filter/sort selection a media request is composed from. */
+export type GalleryFilters = {
+  typeFilter: TypeFilter;
+  sort: SortOption;
+  missingOnly?: boolean;
+  query?: string;
+  tagId?: number | null;
+};
+
+/**
+ * A stable identity for a filter/sort selection — the *generation* of a
+ * result set.
+ *
+ * The gallery reads two independently-cached sources that must describe
+ * the same photos: the timeline index (geometry and ids) and the hydrated
+ * chunks (thumbnails). They resolve at different speeds, and both hold the
+ * previous selection's data through a settle, so either can be a
+ * generation behind the other. Stamping each result with this key lets the
+ * grid paint a thumbnail only onto the tile whose id it actually belongs
+ * to.
+ *
+ * Mirrors `buildQuery`'s normalization (an untrimmed query and an absent
+ * `missingOnly` must not read as a different generation from the request
+ * they produce).
+ */
+export function filterKey(s: GalleryFilters): string {
+  return JSON.stringify([
+    s.typeFilter,
+    s.sort,
+    s.missingOnly ?? false,
+    s.query?.trim() ?? "",
+    s.tagId ?? null,
+  ]);
+}
+
 export function buildQuery(
-  s: {
-    typeFilter: TypeFilter;
-    sort: SortOption;
-    missingOnly?: boolean;
-    query?: string;
-    tagId?: number | null;
-  },
+  s: GalleryFilters,
   limit: number,
   offset: number,
 ): MediaQuery {

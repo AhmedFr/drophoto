@@ -9,10 +9,12 @@ import { startSidecarSyncAll } from "@/lib/api/sidecars";
  * every one invalidates the same set of query keys (mirroring
  * `useTags`'s `applyMutation`, which does the same for `tag_media`):
  * `["tags"]`/`["tags-with-counts"]` (the tag itself changed), `["media-tags"]`
- * (every cached per-media coverage query), `["media"]`/`["media-count"]`
- * (the gallery, including any active tag filter), and `["search"]` (a tag
- * is indexed text). A successful mutation also fire-and-forgets a sidecar
- * sync sweep, same as `useTags`.
+ * (every cached per-media coverage query), `["media"]` (the gallery's
+ * timeline index and hydrated chunks, including any active tag filter),
+ * `["media-count"]` (Organize's total-media count, `["media-count",
+ * "total"]` — the gallery's own count comes off the index now), and
+ * `["search"]` (a tag is indexed text). A successful mutation also
+ * fire-and-forgets a sidecar sync sweep, same as `useTags`.
  */
 export function useTagMutations() {
   const queryClient = useQueryClient();

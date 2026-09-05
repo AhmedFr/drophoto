@@ -564,3 +564,179 @@ it("still clears the selection on Escape after keyboard selection", async () => 
 
   expect(useGalleryStore.getState().selectedIds).toEqual([]);
 });
+
+// ---------------------------------------------------------------------
+// Hydration edges (Phase 7.4). The index knows the whole set; rows arrive
+// in chunks behind it. A tile the index knows but the chunks haven't
+// delivered is a real, reachable state, and none of these paths may strand
+// the page. `mockPartiallyHydrated` models it directly: the index reports
+// three photos, hydration only ever answers with the first.
+// ---------------------------------------------------------------------
+
+function mockPartiallyHydrated() {
+  const items = [item(1), item(2), item(3)];
+  mockIPC((cmd) => {
+    if (cmd === "media_index") return items.map(entryFor);
+    if (cmd === "query_media") return [items[0]];
+    return undefined;
+  });
+}
+
+it("lays out every indexed photo, as a placeholder where the row hasn't arrived", async () => {
+  mockPartiallyHydrated();
+  renderPage();
+
+  expect(await screen.findAllByRole("img")).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Loading" })).toHaveLength(2);
+  expect(await screen.findByText("3 items")).toBeInTheDocument();
+});
+
+// Same rule `Tile` applies to a click: opening onto a row that isn't there
+// would render an empty dialog and take the keyboard down with it.
+it("does not open the lightbox when Enter lands on a row that hasn't arrived", async () => {
+  mockPartiallyHydrated();
+  renderPage();
+  await screen.findAllByRole("img");
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus 0
+  fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus 1 — not hydrated
+  expect(useGalleryStore.getState().focusIndex).toBe(1);
+
+  fireEvent.keyDown(document.body, { key: "Enter" });
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  // ...and the grid still answers the keyboard.
+  fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+  expect(useGalleryStore.getState().focusIndex).toBe(0);
+});
+
+it("still opens the lightbox when Enter lands on a row that has arrived", async () => {
+  mockPartiallyHydrated();
+  renderPage();
+  await screen.findAllByRole("img");
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus 0 — hydrated
+  fireEvent.keyDown(document.body, { key: "Enter" });
+
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+});
+
+// THE INVARIANT: the app must never reach a state where the keyboard does
+// nothing. Stepping the lightbox past the hydrated rows renders no dialog,
+// so there is no Radix layer to take Escape — and the grid's own handler
+// yields to the lightbox whenever `openIndex` is set. Without GalleryPage
+// answering Escape itself, every key would be dead until a mouse click.
+it("recovers from a lightbox stepped onto a row that hasn't arrived", async () => {
+  mockPartiallyHydrated();
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await user.click(tiles[0]);
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("01 / 3")).toBeInTheDocument();
+
+  // Step onto index 1, whose row never arrives: nothing renders.
+  await user.click(within(dialog).getByRole("button", { name: /next/i }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+  // The keyboard is not dead — Escape gets the page back.
+  fireEvent.keyDown(document.body, { key: "Escape" });
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(useGalleryStore.getState().focusIndex).toBe(0);
+  fireEvent.keyDown(document.body, { key: " " });
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+});
+
+// Escape's existing meaning wins where they compete, exactly as it does
+// with a hydrated lightbox (whose Radix layer only sees the keystroke once
+// the selection is already clear).
+it("clears the selection before closing an unrendered lightbox", async () => {
+  mockPartiallyHydrated();
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+  await user.click(tiles[0]);
+  await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /next/i }));
+
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
+
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(useGalleryStore.getState().focusIndex).toBe(0);
+});
+
+// ---------------------------------------------------------------------
+// Generation pairing (Phase 7.4). Geometry and rows are cached separately
+// and resolve at different speeds. THE INVARIANT: a tile never displays a
+// thumbnail belonging to a different photo than its own id.
+// ---------------------------------------------------------------------
+
+/** Answers the first call outright and leaves every later one pending. */
+function deferAfterFirst<T>(first: T, later: T) {
+  let calls = 0;
+  const pending: ((value: unknown) => void)[] = [];
+  return {
+    handle: () => {
+      calls += 1;
+      if (calls === 1) return first;
+      return new Promise((resolve) => pending.push(() => resolve(later)));
+    },
+    flush: () => pending.splice(0).forEach((resolve) => resolve()),
+  };
+}
+
+it("never paints a new generation's thumbnails onto the previous generation's tiles", async () => {
+  const index = deferAfterFirst([item(1), item(2)].map(entryFor), [entryFor(item(9))]);
+  const rows = deferAfterFirst([item(1), item(2)], [item(9)]);
+  mockIPC((cmd) => {
+    if (cmd === "media_index") return index.handle();
+    if (cmd === "query_media") return rows.handle();
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+  expect(await screen.findAllByRole("img")).toHaveLength(2);
+
+  // Change the filter, then let ONLY the rows resolve — the index is still
+  // describing the old two photos.
+  await user.click(screen.getByRole("button", { name: "RAW" }));
+  await act(async () => {
+    rows.flush();
+  });
+
+  // The incoming photo must not be shown against the outgoing geometry.
+  expect(screen.queryByAltText("photos/9.jpg")).not.toBeInTheDocument();
+
+  await act(async () => {
+    index.flush();
+  });
+  expect(await screen.findByAltText("photos/9.jpg")).toBeInTheDocument();
+});
+
+// The regression this pairing must not cause: `useMediaInfinite` kept
+// thumbnails on screen through a settle, and so must this.
+it("keeps the current thumbnails on screen while a filter change is in flight", async () => {
+  const index = deferAfterFirst([item(1), item(2)].map(entryFor), [entryFor(item(9))]);
+  const rows = deferAfterFirst([item(1), item(2)], [item(9)]);
+  mockIPC((cmd) => {
+    if (cmd === "media_index") return index.handle();
+    if (cmd === "query_media") return rows.handle();
+    return undefined;
+  });
+  const user = userEvent.setup();
+  renderPage();
+  expect(await screen.findAllByRole("img")).toHaveLength(2);
+
+  await user.click(screen.getByRole("button", { name: "RAW" }));
+
+  // Neither side has answered yet: both are still a generation behind
+  // together, so the grid keeps painting what it has.
+  expect(screen.getByAltText("photos/1.jpg")).toBeInTheDocument();
+  expect(screen.getByAltText("photos/2.jpg")).toBeInTheDocument();
+});

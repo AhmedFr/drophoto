@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { mediaIndex, type MediaIndexEntry } from "@/lib/api/media";
-import { buildQuery, useGalleryStore } from "../store/galleryStore";
+import { buildQuery, filterKey, useGalleryStore } from "../store/galleryStore";
 
 /** Stable identity so `buildLayout`'s memo doesn't rerun on every render. */
 const EMPTY: MediaIndexEntry[] = [];
@@ -18,6 +18,12 @@ const EMPTY: MediaIndexEntry[] = [];
  * chunked hydration relies on index position N being the row `query_media`
  * returns at `offset = N`, which only holds while both compose the same
  * filters and the same ordering.
+ *
+ * Returns the `key` (see `filterKey`) the entries actually belong to,
+ * which is *not* necessarily the current selection: `keepPreviousData`
+ * holds the outgoing set through a settle so the grid doesn't flash empty
+ * mid-search. `GalleryPage` pairs it against `useMediaChunks`' key so a
+ * thumbnail is never painted onto a tile from a different generation.
  */
 export function useMediaIndex() {
   const typeFilter = useGalleryStore((s) => s.typeFilter);
@@ -32,16 +38,17 @@ export function useMediaIndex() {
     // place override, a revert, a scan, a date recovery — keep refreshing
     // the gallery. Same reasoning as `PlacesPage`'s ["media", "place", id].
     queryKey: ["media", "index", typeFilter, sort, missingOnly, searchQuery, tagId],
-    queryFn: () =>
-      mediaIndex(buildQuery({ typeFilter, sort, missingOnly, query: searchQuery, tagId }, 0, 0)),
-    // Carries the prior query key's entries forward as `data` while a new
-    // (differently-keyed, e.g. a settled search query) fetch is in flight,
-    // so the grid doesn't flash empty mid-search.
+    queryFn: async () => {
+      const filters = { typeFilter, sort, missingOnly, query: searchQuery, tagId };
+      return { key: filterKey(filters), entries: await mediaIndex(buildQuery(filters, 0, 0)) };
+    },
     placeholderData: keepPreviousData,
   });
 
   return {
-    entries: query.data ?? EMPTY,
+    entries: query.data?.entries ?? EMPTY,
+    /** The generation `entries` describes, or `null` while there is none. */
+    key: query.data?.key ?? null,
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error,
