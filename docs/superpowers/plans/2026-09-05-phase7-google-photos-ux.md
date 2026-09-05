@@ -1089,7 +1089,7 @@ git add src/ && git commit -m "refactor(gallery): timeline index and chunked hyd
 **Interfaces:**
 - Consumes: `entries` (from `useMediaIndex`), the gallery store's selection actions.
 - Produces:
-  - `useDragSelect({ entries, onApply }): { onCheckPointerDown(index, event), onTileEnter(index), isDragging }`
+  - `useDragSelect({ entries, selectedIds, onSelectionChange }): { onCheckPointerDown(index, event), onTileEnter(index), isDragging }`
   - `Tile` gains `onCheckToggle: (index: number) => void`, `onCheckPointerDown`, `onPointerEnter`, `selectionMode: boolean`.
 
 **Behavior (from the spec):**
@@ -1109,55 +1109,84 @@ Selection mode is **derived**: `selectedIds.length > 0`. Nothing new persists.
 
 - [ ] **Step 1: Write the failing `useDragSelect` tests**
 
+> **Contract note (pre-flight ruling).** The hook **snapshots the selection at
+> pointerdown** and emits the *complete desired selection* on every move —
+> it does not emit "ids to add". Emitting only the current range cannot undo
+> tiles a reversed drag already applied, and would also clobber selections
+> made before the drag. Desired = `snapshot ∪ range` in select mode,
+> `snapshot \ range` in deselect mode.
+
 ```tsx
 const entries = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, taken_at: null, width: 1, height: 1 }));
 
-it("selects the range from origin to the tile under the pointer", () => {
-  const onApply = vi.fn();
-  const { result } = renderHook(() => useDragSelect({ entries, onApply }));
+it("selects the range from the origin to the tile under the pointer", () => {
+  const onSelectionChange = vi.fn();
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange }),
+  );
 
   act(() => result.current.onCheckPointerDown(2, pointerEvent()));
   act(() => result.current.onTileEnter(5));
 
-  expect(onApply).toHaveBeenLastCalledWith({ ids: [3, 4, 5, 6], mode: "select" });
+  expect(onSelectionChange).toHaveBeenLastCalledWith([3, 4, 5, 6]);
 });
 
 it("deselects when the origin tile was already selected", () => {
-  const onApply = vi.fn();
+  const onSelectionChange = vi.fn();
   const { result } = renderHook(() =>
-    useDragSelect({ entries, onApply, isSelected: (id) => id === 3 }),
+    useDragSelect({ entries, selectedIds: [3, 4, 5, 9], onSelectionChange }),
   );
 
   act(() => result.current.onCheckPointerDown(2, pointerEvent()));
   act(() => result.current.onTileEnter(4));
 
-  expect(onApply).toHaveBeenLastCalledWith({ ids: [3, 4, 5], mode: "deselect" });
+  // 3,4,5 are swept away; 9 was never touched by the drag and survives.
+  expect(onSelectionChange).toHaveBeenLastCalledWith([9]);
 });
 
-it("reverts tiles when the drag reverses back toward the origin", () => {
-  const onApply = vi.fn();
-  const { result } = renderHook(() => useDragSelect({ entries, onApply }));
+it("releases the tiles it passed when the drag reverses back toward the origin", () => {
+  const onSelectionChange = vi.fn();
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange }),
+  );
 
   act(() => result.current.onCheckPointerDown(2, pointerEvent()));
   act(() => result.current.onTileEnter(6));
   act(() => result.current.onTileEnter(3));
 
-  // The range shrinks — 5,6,7 are no longer part of it.
-  expect(onApply).toHaveBeenLastCalledWith({ ids: [3, 4], mode: "select" });
+  // 5,6,7 are released — this is the assertion the "add only" contract
+  // could not satisfy, and the reason for the snapshot model.
+  expect(onSelectionChange).toHaveBeenLastCalledWith([3, 4]);
+});
+
+it("leaves a pre-drag selection intact when a select-drag passes over it", () => {
+  const onSelectionChange = vi.fn();
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [8], onSelectionChange }),
+  );
+
+  act(() => result.current.onCheckPointerDown(2, pointerEvent()));
+  act(() => result.current.onTileEnter(4));
+
+  expect(onSelectionChange).toHaveBeenLastCalledWith([8, 3, 4, 5]);
 });
 
 it("selects backwards when dragging above the origin", () => {
-  const onApply = vi.fn();
-  const { result } = renderHook(() => useDragSelect({ entries, onApply }));
+  const onSelectionChange = vi.fn();
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange }),
+  );
 
   act(() => result.current.onCheckPointerDown(5, pointerEvent()));
   act(() => result.current.onTileEnter(2));
 
-  expect(onApply).toHaveBeenLastCalledWith({ ids: [3, 4, 5, 6], mode: "select" });
+  expect(onSelectionChange).toHaveBeenLastCalledWith([3, 4, 5, 6]);
 });
 
 it("ends the drag when the pointer is released outside the grid", () => {
-  const { result } = renderHook(() => useDragSelect({ entries, onApply: vi.fn() }));
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange: vi.fn() }),
+  );
 
   act(() => result.current.onCheckPointerDown(2, pointerEvent()));
   expect(result.current.isDragging).toBe(true);
@@ -1166,6 +1195,8 @@ it("ends the drag when the pointer is released outside the grid", () => {
   expect(result.current.isDragging).toBe(false);
 });
 ```
+
+Write `pointerEvent()` as a minimal stub — the hook only calls `preventDefault`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -1180,55 +1211,75 @@ Expected: FAIL — module not found.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LayoutEntry } from "@/lib/media/layout";
 
-export type DragApply = { ids: number[]; mode: "select" | "deselect" };
-
 type Args = {
   entries: LayoutEntry[];
-  onApply: (apply: DragApply) => void;
-  /** Whether an id is currently selected — decides the drag's direction. */
-  isSelected?: (id: number) => boolean;
+  /** The live selection — snapshotted when a drag begins. */
+  selectedIds: number[];
+  /** Called with the complete desired selection on every move. */
+  onSelectionChange: (ids: number[]) => void;
 };
 
 /**
  * The Google Photos drag-select gesture: press a tile's checkmark and
  * sweep across its neighbours.
  *
- * The drag's *direction of effect* is fixed at its origin — if the origin
- * became selected the sweep selects, if it became deselected it
- * deselects. That is what makes reversing a drag undo it: the range is
- * recomputed from the origin every move rather than accumulated, so
- * pulling back releases the tiles it passed instead of stranding them.
+ * The selection is *recomputed from a snapshot* on every move rather than
+ * accumulated. That is what makes a reversed drag undo itself — pulling
+ * back shrinks the range, so the tiles it passed fall out of the result
+ * instead of being stranded selected — and it is also what keeps a
+ * selection made before the drag from being clobbered by it.
+ *
+ * The drag's direction of effect is fixed at its origin: if the origin
+ * tile was unselected the sweep selects, if it was already selected the
+ * sweep deselects.
  */
-export function useDragSelect({ entries, onApply, isSelected }: Args) {
+export function useDragSelect({ entries, selectedIds, onSelectionChange }: Args) {
   const [isDragging, setIsDragging] = useState(false);
   const origin = useRef<number | null>(null);
   const mode = useRef<"select" | "deselect">("select");
+  const snapshot = useRef<number[]>([]);
+
+  const apply = useCallback(
+    (from: number, to: number) => {
+      const [lo, hi] = from <= to ? [from, to] : [to, from];
+      const range = new Set(entries.slice(lo, hi + 1).map((e) => e.id));
+      if (mode.current === "select") {
+        // Snapshot first, then the swept ids it didn't already contain —
+        // insertion order stays stable as the drag grows.
+        const kept = snapshot.current;
+        const added = [...range].filter((id) => !kept.includes(id));
+        onSelectionChange([...kept, ...added]);
+      } else {
+        onSelectionChange(snapshot.current.filter((id) => !range.has(id)));
+      }
+    },
+    [entries, onSelectionChange],
+  );
 
   const onCheckPointerDown = useCallback(
     (index: number, event: { preventDefault: () => void }) => {
       // Stops the browser starting a native image drag mid-gesture.
       event.preventDefault();
       origin.current = index;
-      mode.current = isSelected?.(entries[index].id) ? "deselect" : "select";
+      snapshot.current = selectedIds;
+      mode.current = selectedIds.includes(entries[index].id) ? "deselect" : "select";
       setIsDragging(true);
-      onApply({ ids: [entries[index].id], mode: mode.current });
+      apply(index, index);
     },
-    [entries, isSelected, onApply],
+    [apply, entries, selectedIds],
   );
 
   const onTileEnter = useCallback(
     (index: number) => {
-      const from = origin.current;
-      if (from === null) return;
-      const [lo, hi] = from <= index ? [from, index] : [index, from];
-      onApply({ ids: entries.slice(lo, hi + 1).map((e) => e.id), mode: mode.current });
+      if (origin.current === null) return;
+      apply(origin.current, index);
     },
-    [entries, onApply],
+    [apply],
   );
 
   // Listening on `document` (not the grid) means a release anywhere —
   // outside the window included — ends the gesture, so a drag can never
-  // get stuck "live" after the mouse is already up.
+  // get stuck "live" after the pointer is already up.
   useEffect(() => {
     if (!isDragging) return;
     const end = () => {
@@ -1252,7 +1303,7 @@ export function useDragSelect({ entries, onApply, isSelected }: Args) {
 ```bash
 pnpm vitest run src/features/gallery/hooks/useDragSelect.test.tsx
 ```
-Expected: PASS, 5 tests.
+Expected: PASS, 6 tests.
 
 - [ ] **Step 5: Write the failing Tile tests**
 
@@ -1338,7 +1389,7 @@ onClick={(e) => {
 - [ ] **Step 7: Wire `GalleryPage`**
 
 - `const selectionMode = selectedIds.length > 0;` — passed down through `VirtualGrid` → `JustifiedRow` → `Tile`.
-- Instantiate `useDragSelect({ entries, onApply, isSelected })` where `onApply` calls `selectRange(ids)` for `"select"` and `deselectRange(ids)` for `"deselect"`.
+- Instantiate `useDragSelect({ entries, selectedIds, onSelectionChange })`, where `onSelectionChange` replaces the selection outright via the store's `selectAll(ids)`. Also call `setAnchorIndex(index)` on pointerdown so a Shift+click after a drag ranges from where the drag started.
 - Escape already clears via the existing document keydown handler — confirm it calls `clearSelection()` and add it if not.
 
 - [ ] **Step 8: Add edge auto-scroll during a drag**
@@ -1660,8 +1711,8 @@ it("scrolls the element when the track is clicked", async () => {
 
   fireEvent.pointerDown(screen.getByTestId("scrubber-track"), { clientY: 50 });
 
-  // Track is 200px tall; a click at its midpoint targets the middle of the
-  // scrollable range (scrollHeight - clientHeight = 800).
+  // Track is 200px tall, so clientY 50 is a quarter of the way down; the
+  // scrollable range is scrollHeight - clientHeight = 800, so 0.25 * 800.
   expect(el.scrollTo).toHaveBeenCalledWith({ top: 200, behavior: "auto" });
 });
 
