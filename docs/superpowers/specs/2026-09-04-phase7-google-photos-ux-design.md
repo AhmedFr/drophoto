@@ -85,11 +85,51 @@ reuses the exact `where_clause` and `ORDER BY` composition that
 is guaranteed to be the same row `query_media` returns at `offset = N`.
 It ignores the query's `limit`/`offset`.
 
-Size check: 17,405 rows × ~40 bytes ≈ 700 KB of JSON, well under 100 ms
-from local SQLite. The plan's first task measures this on the real
-catalog and records the number; if it ever exceeds ~300 ms the fallback is
-to send the index as a typed array rather than JSON, but that is not
-expected at this library size and is **not** built now (YAGNI).
+### Measured cost
+
+Taken on the real catalog (17,405 rows) on 2026-09-05, warm:
+
+| | |
+| --- | --- |
+| SQL (`SELECT id, taken_at, width, height, kind` + the sort) | 4 ms warm, 11 ms cold |
+| Payload | 642 KB — **37.8 bytes per photo** |
+| `JSON.parse` of all rows | 3 ms |
+
+Roughly **40 ms end to end** including IPC. The existing `media_taken_at`
+index already covers the sort, so this is one indexed scan of five narrow
+columns — not a build step.
+
+Projected: ~3.7 MB / ~40 ms CPU at 100k photos; ~18 MB / ~200 ms at 500k.
+
+### Why not an approximate scrubber
+
+An exact scrubber requires knowing the whole timeline's shape on the
+client — there is no way around that, only the choice between knowing it
+exactly (this index) and approximately (per-bucket counts with estimated
+heights). Approximate means the label under your thumb disagrees with what
+is on screen, and it does nothing for cross-library selection.
+
+Google Photos' own scrubber is accurate from first paint, which is only
+possible with the full timeline shape client-side; what it separates is
+that cheap shape data from the thumbnails themselves, which is exactly the
+split below. (Google's internals are not verifiable from here — the
+constraint, not their implementation, is what this decision rests on.)
+
+### Nothing blocks on the index
+
+The index query and the first hydration chunk are fired **in parallel**.
+The grid paints from chunk 0 as fast as it does today; the scrubber and
+cross-library selection become live when the index lands a beat later.
+There is no approximate phase to reconcile and only one layout path.
+
+Until the index resolves, the grid renders from the hydrated chunks alone
+(today's behavior), the scrubber renders in its at-rest state without
+year labels, and the toolbar count shows its loading state.
+
+**Documented fallback trigger, not built now (YAGNI):** if the index ever
+exceeds ~200 ms on a real library, switch to a two-stage progressive load
+— per-month counts for an approximate scrubber first, exact index second.
+At 30× the current library that threshold is still not reached.
 
 ### Hydration
 
@@ -295,7 +335,7 @@ Explicitly not in this phase, to keep it shippable:
 
 | Risk | Mitigation |
 | --- | --- |
-| Index fetch is slower than expected on a much larger library | First task measures it on the real 17k catalog and records the number. The chunked hydration means only the index itself is on the critical path. |
+| Index fetch is slower than expected on a much larger library | Measured at ~40 ms for 17k; nothing blocks on it (the grid paints from chunk 0 in parallel), so a slow index degrades the scrubber's arrival, not the gallery. Documented trigger at ~200 ms to switch to the progressive two-stage load. |
 | Offset drift between index and chunk if rows change mid-scroll | Both share an invalidation set; worst case is one stale tile until the next invalidation. Accepted over cursor paging. |
 | Drag-select fighting the browser's native text/image drag | Tiles set `draggable={false}` and the gesture calls `preventDefault` on `pointerdown`, the same guard the existing Shift+click `onMouseDown` uses. |
 | Replacing infinite paging regresses the grid | The index/chunk split lands as its own task with the grid still rendering identically, before any new UI is built on it. |
@@ -304,9 +344,10 @@ Explicitly not in this phase, to keep it shippable:
 
 1. `MediaIndexEntry` + `Catalog::media_index` + the Tauri command, with
    catalog tests asserting index order matches `query_media` at the same
-   offsets. Measure and record fetch time.
+   offsets.
 2. Frontend swap: `useMediaIndex` + `useMediaChunk` replace
-   `useMediaInfinite`; `buildLayout` takes geometry; placeholder tiles;
+   `useMediaInfinite`, fetched **in parallel** so the grid never waits on
+   the index; `buildLayout` takes geometry; placeholder tiles;
    `useMediaCount` deleted and the toolbar count sourced from the index.
    The gallery must look and behave exactly as it does today.
 3. Selection: hover checkmark, selection mode, `useDragSelect` with
