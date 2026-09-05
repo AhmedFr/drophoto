@@ -186,6 +186,13 @@ Expected: FAIL — `cannot find function date_from_filename in this scope`.
 
 Prepend to `crates/dp-metadata/src/filename_date.rs`:
 
+> **Correction (found during execution):** the `dashed_date` code below
+> byte-slices `&stem[i..i + 10]`, which **panics** on a basename containing
+> multi-byte UTF-8 — the real catalog has accented French filenames. The
+> shipped implementation guards each window's edges with
+> `is_char_boundary` before slicing. A genuine `YYYY-MM-DD` is all
+> single-byte ASCII, so the guard can never skip a real date.
+
 ```rust
 //! Recovers a capture date from a file's own name.
 //!
