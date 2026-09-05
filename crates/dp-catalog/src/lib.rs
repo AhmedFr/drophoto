@@ -70,9 +70,10 @@ pub trait Catalog: Send + Sync {
     /// How many `media` rows currently have no `taken_at` — see
     /// [`crate::index::count_undated`]'s doc comment.
     async fn count_undated(&self) -> DpResult<u64>;
-    /// `(id, rel_path)` for `limit` rows with `taken_at IS NULL`, ordered by
-    /// id — see [`crate::index::list_undated`]'s doc comment.
-    async fn list_undated(&self, limit: u32) -> DpResult<Vec<(i64, String)>>;
+    /// `(id, rel_path)` for up to `limit` rows with `taken_at IS NULL` and
+    /// `id > after_id`, ordered by id — see [`crate::index::list_undated`]'s
+    /// doc comment for the cursor-pagination rationale.
+    async fn list_undated(&self, after_id: i64, limit: u32) -> DpResult<Vec<(i64, String)>>;
     /// Writes recovered dates in one transaction, only into rows still
     /// `taken_at IS NULL` — see [`crate::index::set_taken_at_bulk`]'s doc
     /// comment. Returns how many rows were actually changed.
@@ -327,8 +328,8 @@ impl Catalog for SqliteCatalog {
         index::count_undated(&self.pool).await
     }
 
-    async fn list_undated(&self, limit: u32) -> DpResult<Vec<(i64, String)>> {
-        index::list_undated(&self.pool, limit).await
+    async fn list_undated(&self, after_id: i64, limit: u32) -> DpResult<Vec<(i64, String)>> {
+        index::list_undated(&self.pool, after_id, limit).await
     }
 
     async fn set_taken_at_bulk(&self, rows: &[(i64, DateTime<Utc>)]) -> DpResult<u64> {

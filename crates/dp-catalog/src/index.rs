@@ -19,15 +19,29 @@ pub(crate) async fn count_undated(pool: &SqlitePool) -> DpResult<u64> {
     Ok(count as u64)
 }
 
-/// `(id, rel_path)` for every row with `taken_at IS NULL`, ordered by id —
-/// paged by the caller via `limit` (see [`crate::index::set_taken_at_bulk`]'s
-/// termination note on the Tauri command that drives this in batches).
-pub(crate) async fn list_undated(pool: &SqlitePool, limit: u32) -> DpResult<Vec<(i64, String)>> {
-    let rows = sqlx::query("SELECT id, rel_path FROM media WHERE taken_at IS NULL ORDER BY id LIMIT ?")
-        .bind(limit)
-        .fetch_all(pool)
-        .await
-        .map_err(db)?;
+/// `(id, rel_path)` for up to `limit` rows with `taken_at IS NULL` and
+/// `id > after_id`, ordered by id.
+///
+/// Cursor-paginated by `id` rather than offset-paginated — same reasoning
+/// as [`crate::places::list_ungeocoded`]: `after_id` (`0` for the first
+/// page) plus `id > ?, ORDER BY id LIMIT ?` means a row that gains a date
+/// between pages (and so drops out of this predicate) can never shift a
+/// later page's window and cause a not-yet-seen row to be skipped. This
+/// is what lets `recover_filename_dates` advance past a batch that parsed
+/// nothing instead of re-fetching the same stuck lowest-id rows forever —
+/// an `OFFSET` would be wrong here for the identical reason.
+pub(crate) async fn list_undated(
+    pool: &SqlitePool,
+    after_id: i64,
+    limit: u32,
+) -> DpResult<Vec<(i64, String)>> {
+    let rows =
+        sqlx::query("SELECT id, rel_path FROM media WHERE taken_at IS NULL AND id > ? ORDER BY id LIMIT ?")
+            .bind(after_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .map_err(db)?;
     rows.iter()
         .map(|r| {
             let id: i64 = r.try_get("id").map_err(db)?;

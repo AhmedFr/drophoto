@@ -95,8 +95,43 @@ async fn list_undated_returns_id_and_path() {
     let id = insert_media(&cat, drive, "sub/IMG-20240816-WA0010.jpg", None).await;
     insert_media(&cat, drive, "dated.jpg", Some(exif_date())).await;
 
-    let rows = cat.list_undated(100).await.unwrap();
+    let rows = cat.list_undated(0, 100).await.unwrap();
     assert_eq!(rows, vec![(id, "sub/IMG-20240816-WA0010.jpg".to_string())]);
+}
+
+/// Cursor pagination: `after_id` (not an offset) is what lets the caller
+/// advance past a page regardless of whether any row in it got a date —
+/// see `recover_filename_dates_at`'s doc comment for why an offset would
+/// be wrong here (a row leaving the `taken_at IS NULL` set mid-run would
+/// shift an offset-based window).
+#[tokio::test]
+async fn list_undated_pages_by_id_cursor_not_offset() {
+    let cat = new_catalog().await;
+    let drive = insert_drive(&cat, "D").await;
+    let a = insert_media(&cat, drive, "a.jpg", None).await;
+    let b = insert_media(&cat, drive, "b.jpg", None).await;
+    let c = insert_media(&cat, drive, "c.jpg", None).await;
+
+    let page1 = cat.list_undated(0, 2).await.unwrap();
+    assert_eq!(page1, vec![(a, "a.jpg".to_string()), (b, "b.jpg".to_string())]);
+
+    // Advancing the cursor past `b` (the last row *examined*, whether or
+    // not it got a date) must return only `c` — never re-show `a`/`b`,
+    // and never skip `c`.
+    let page2 = cat.list_undated(b, 2).await.unwrap();
+    assert_eq!(page2, vec![(c, "c.jpg".to_string())]);
+
+    // A cursor past every row returns nothing — the loop's termination
+    // condition.
+    assert!(cat.list_undated(c, 2).await.unwrap().is_empty());
+
+    // A row gaining a date between pages drops out of a *later* page's
+    // results (it's no longer `taken_at IS NULL`) but never disturbs a
+    // page already fetched, and never causes a still-undated row to be
+    // skipped.
+    cat.set_taken_at_bulk(&[(a, exif_date())]).await.unwrap();
+    let rows = cat.list_undated(0, 100).await.unwrap();
+    assert_eq!(rows, vec![(b, "b.jpg".to_string()), (c, "c.jpg".to_string())]);
 }
 
 #[tokio::test]

@@ -735,8 +735,8 @@ impl Catalog for FailingCatalog {
         self.0.count_undated().await
     }
 
-    async fn list_undated(&self, limit: u32) -> DpResult<Vec<(i64, String)>> {
-        self.0.list_undated(limit).await
+    async fn list_undated(&self, after_id: i64, limit: u32) -> DpResult<Vec<(i64, String)>> {
+        self.0.list_undated(after_id, limit).await
     }
 
     async fn set_taken_at_bulk(&self, rows: &[(i64, DateTime<Utc>)]) -> DpResult<u64> {

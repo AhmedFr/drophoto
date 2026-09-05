@@ -2794,3 +2794,91 @@ async fn scan_recovers_a_date_from_the_filename_when_exif_has_none() {
         Some(chrono::Utc.with_ymd_and_hms(2024, 8, 16, 0, 0, 0).unwrap())
     );
 }
+
+/// Regression: a filename-derived date must survive a later incremental
+/// rescan of the *same, unchanged* file whose `meta_read_at` is still
+/// NULL — the Task 5b.3 metadata-backfill path (`process_file`'s
+/// `m.meta_read_at.is_none()` branch) re-reads EXIF, correctly finds no
+/// date (that's exactly why the row was undated to begin with), and used
+/// to call `update_media_metadata` with that empty read directly — wiping
+/// `taken_at` back to NULL, since that call has no `taken_at IS NULL`
+/// guard. `apply_filename_fallback` must be applied at *both* call sites
+/// (the full-processing path and this backfill path) for the date to
+/// stick.
+///
+/// First scan uses `FailingMetadata` (metadata read fails) so the row is
+/// upserted with `taken_at` filled purely by the filename fallback and
+/// `meta_read_at` left NULL (exactly the state `recover_filename_dates`
+/// leaves a row in — it never touches `meta_read_at`). The second,
+/// incremental scan finds the file unchanged (skip-eligible) and, because
+/// `meta_read_at` is NULL, re-reads metadata — this time successfully,
+/// via `EmptyMetadata`, but with no EXIF date, same as a real WhatsApp
+/// export. `taken_at` must still read back the filename-derived date
+/// afterward, and `meta_read_at` must now be stamped.
+#[tokio::test]
+async fn filename_derived_date_survives_a_later_metadata_backfill_rescan() {
+    use chrono::{TimeZone, Utc};
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("IMG-20240816-WA0010.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Backfill Survives Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    // First scan: metadata read fails outright — the row is upserted with
+    // `taken_at` set only via the filename fallback, and `meta_read_at`
+    // left NULL (the same shape a `recover_filename_dates` backfill leaves
+    // an existing row in).
+    let mut deps = default_deps(catalog.clone(), store.clone());
+    deps.metadata = Arc::new(FailingMetadata);
+    let (events, terminal) = run_scan(drive.clone(), vec![src.clone()], deps, no_index()).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!((ok, failed), (0, 1), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(
+        rows[0].taken_at,
+        Some(Utc.with_ymd_and_hms(2024, 8, 16, 0, 0, 0).unwrap()),
+        "the filename fallback must fill taken_at even on a failed metadata read"
+    );
+    let index = scan_index(&catalog, drive.id).await;
+    assert!(
+        index.values().all(|e| e.meta_read_at.is_none()),
+        "a failed read must leave meta_read_at NULL, so the row is backfill-eligible"
+    );
+
+    // Second scan: the file is unchanged (skip-eligible) and meta_read_at
+    // is NULL, so this hits the metadata-backfill path. The read succeeds
+    // this time but finds no EXIF date at all — same as the real file.
+    let mut deps = default_deps(catalog.clone(), store);
+    deps.metadata = Arc::new(EmptyMetadata {
+        calls: Arc::new(AtomicU64::new(0)),
+    });
+    let drive_id = drive.id;
+    let (events, terminal) = run_scan(drive, vec![src], deps, index).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!((ok, failed), (1, 0), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(
+        rows[0].taken_at,
+        Some(Utc.with_ymd_and_hms(2024, 8, 16, 0, 0, 0).unwrap()),
+        "the filename-derived date must survive the metadata-backfill rescan"
+    );
+    let index = scan_index(&catalog, drive_id).await;
+    assert!(
+        index.values().all(|e| e.meta_read_at.is_some()),
+        "the successful (if empty) backfill read must stamp meta_read_at"
+    );
+}
