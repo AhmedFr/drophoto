@@ -315,6 +315,33 @@ it("Escape clears a non-empty selection without closing the open lightbox", asyn
   expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
 
+// The same contract, but pressed AFTER the lightbox has been stepped. This
+// is the case that catches GalleryPage's document-capture Escape listener
+// being re-registered while a `Lightbox` is already mounted: the new
+// registration lands behind Radix's `DismissableLayer`, Radix wins the
+// keystroke, and the lightbox closes while the selection survives — the
+// exact inverse of the contract above. The test before this one can't see
+// it, because on the opening commit Radix's Portal hasn't mounted yet.
+it("still clears the selection instead of closing the lightbox after stepping it", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(tiles[1]);
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /next/i }));
+  expect(within(screen.getByRole("dialog")).getByText("03 / 3")).toBeInTheDocument();
+
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+  await waitFor(() => expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument());
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
 it("TAG opens the TagPanel for the current selection", async () => {
   mockMedia([item(1), item(2)], (cmd) => (cmd === "list_tags" || cmd === "tags_for_media" ? [] : undefined));
   const user = userEvent.setup();
@@ -680,7 +707,7 @@ it("clears the selection before closing an unrendered lightbox", async () => {
 /** Answers the first call outright and leaves every later one pending. */
 function deferAfterFirst<T>(first: T, later: T) {
   let calls = 0;
-  const pending: ((value: unknown) => void)[] = [];
+  const pending: (() => void)[] = [];
   return {
     handle: () => {
       calls += 1;
@@ -739,4 +766,49 @@ it("keeps the current thumbnails on screen while a filter change is in flight", 
   // together, so the grid keeps painting what it has.
   expect(screen.getByAltText("photos/1.jpg")).toBeInTheDocument();
   expect(screen.getByAltText("photos/2.jpg")).toBeInTheDocument();
+});
+
+// The generation stamp is the filter tuple, so it does NOT change when the
+// same filters are simply refetched — which is what every
+// `invalidateQueries({ queryKey: ["media"] })` in the app does after a
+// scan, a tag or place edit, a missing-file reconcile, a date recovery. The
+// two sides still land at different times, so position 0 can mean two
+// different photos at once. Only the id check at the paint site catches it.
+it("shows a placeholder rather than another photo's thumbnail when a refetch lands unevenly", async () => {
+  const rows = deferAfterFirst([item(1), item(2)], [item(9), item(1)]);
+  mockIPC((cmd) => {
+    // The index keeps saying position 0 is photo 1, position 1 is photo 2.
+    if (cmd === "media_index") return [item(1), item(2)].map(entryFor);
+    if (cmd === "query_media") return rows.handle();
+    return undefined;
+  });
+  const queryClient = renderPage();
+  expect(await screen.findAllByRole("img")).toHaveLength(2);
+
+  // A scan prepended a row: the chunks come back with photo 9 at position 0
+  // and photo 1 pushed to position 1, while the index still describes the
+  // old order. Not awaited — the refetch it starts is the one deliberately
+  // left pending until `flush`.
+  act(() => {
+    void queryClient.invalidateQueries({ queryKey: ["media"] });
+  });
+  await act(async () => {
+    rows.flush();
+  });
+
+  // Both tiles now disagree with the rows sitting at their positions, so
+  // both fall back to placeholders. Waited for, rather than asserted on the
+  // next tick, so this can't pass on a render that simply hasn't happened.
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Loading" })).toHaveLength(2),
+  );
+
+  // The invariant: photo 9's thumbnail never appears on photo 1's tile.
+  expect(screen.queryByAltText("photos/9.jpg")).not.toBeInTheDocument();
+  expect(screen.queryAllByRole("img")).toHaveLength(0);
+
+  // And the tile still acts as the photo it actually represents — selecting
+  // it must target id 1, not the id of the row that briefly sat there.
+  fireEvent.click(screen.getAllByRole("button", { name: "Loading" })[0], { metaKey: true });
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
 });

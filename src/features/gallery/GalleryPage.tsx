@@ -10,7 +10,7 @@ import { Lightbox } from "./components/Lightbox";
 import { SelectionBar } from "./components/SelectionBar";
 import { TagPanel } from "./components/TagPanel";
 import { VirtualGrid } from "./components/VirtualGrid";
-import { coveringRange, useMediaChunks } from "./hooks/useMediaChunks";
+import { useMediaChunks } from "./hooks/useMediaChunks";
 import { useMediaIndex } from "./hooks/useMediaIndex";
 import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
 
@@ -32,12 +32,10 @@ export function GalleryPage() {
   // follow the lightbox and not just the grid.
   const [openIndex, setOpenIndex] = useState<number | null>(null);
 
-  const hydrationRange = useMemo(
-    () => coveringRange(visibleRange, openIndex),
-    [visibleRange, openIndex],
-  );
-
-  const { items: hydrated, key: chunksKey } = useMediaChunks(hydrationRange);
+  // `openIndex` is handed to hydration as well as to `Lightbox`: the
+  // chunks held are the visible ones plus the lightbox's own and its
+  // neighbours, so stepping never runs off the end of what has loaded.
+  const { items: hydrated, key: chunksKey } = useMediaChunks(visibleRange, openIndex);
 
   const searchQuery = useGalleryStore((s) => s.query);
   const density = useGalleryStore((s) => s.density);
@@ -89,6 +87,17 @@ export function GalleryPage() {
   const loaded = !isLoading && !isError;
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  // Read by the Escape handler below, which must NOT list `openIndex` as a
+  // dependency: re-registering that listener while a `Lightbox` is already
+  // mounted lands it *behind* Radix's `DismissableLayer`, which would then
+  // win the keystroke and close the lightbox instead of clearing the
+  // selection. Registering once at mount keeps it ahead of every Radix
+  // layer the page will ever create.
+  const openIndexRef = useRef(openIndex);
+  useEffect(() => {
+    openIndexRef.current = openIndex;
+  }, [openIndex]);
 
   // Opened by `SelectionBar`'s TAG button, for the current selection.
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
@@ -238,7 +247,8 @@ export function GalleryPage() {
       // selection branch so it matches what a hydrated lightbox does (its
       // Radix layer only ever sees the keystroke once the selection is
       // already clear).
-      if (openIndex !== null && itemsRef.current[openIndex] === undefined) {
+      const open = openIndexRef.current;
+      if (open !== null && itemsRef.current[open] === undefined) {
         e.stopImmediatePropagation();
         closeLightbox();
       }
@@ -247,8 +257,9 @@ export function GalleryPage() {
     return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
   }, [
     clearSelection,
+    // Stable for the page's lifetime (`useCallback` with no dependencies),
+    // so it never causes a re-registration — see `openIndexRef` above.
     closeLightbox,
-    openIndex,
     tagPanelOpen,
     metaTagPanelOpen,
     placePanelOpen,

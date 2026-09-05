@@ -11,29 +11,41 @@ import { buildQuery, filterKey, useGalleryStore } from "../store/galleryStore";
  */
 export const CHUNK_SIZE = 200;
 
+/** The chunk a timeline index falls in. */
+export function chunkOf(index: number): number {
+  return Math.max(0, Math.floor(index / CHUNK_SIZE));
+}
+
 /**
- * What to hydrate: the span the grid is showing, widened to reach an open
- * lightbox.
+ * Which chunks to hold: every chunk the grid is showing, plus the one the
+ * lightbox is in and its two immediate neighbours.
  *
- * With paging gone, next/prev walk the whole set, so the fetched chunks
- * have to follow the lightbox and not just the grid — otherwise the first
- * step past the loaded rows opens onto nothing. The `+ 1` requests the
- * next chunk one step before next/prev actually crosses into it.
+ * With paging gone, next/prev walk the whole set, so hydration has to
+ * follow the lightbox and not just the grid — otherwise the first step
+ * past the loaded rows opens onto nothing. The neighbours are what make
+ * stepping seamless: whichever way the user is going, the chunk they are
+ * about to cross into is already in flight.
  *
- * The span between the two ends is fetched as well, but that is exactly
- * the run the lightbox is walking through, and the grid does not scroll
- * while it is up — so this stays bounded by how far the user has actually
- * navigated.
+ * Deliberately a *set* and not the span between the grid and the lightbox.
+ * Spanning is unbounded — open the lightbox at index 16000 and hold prev
+ * back to 0 and it would subscribe 81 chunks and hold ~16k rows for the
+ * whole `staleTime`. This caps the subscription at the visible chunks plus
+ * three however far the two drift apart; chunks left behind simply fall
+ * out of the active set and are collected normally.
  */
-export function coveringRange(
-  visible: { start: number; end: number },
-  openIndex: number | null,
-): { start: number; end: number } {
-  if (openIndex === null) return visible;
-  return {
-    start: Math.min(visible.start, openIndex),
-    end: Math.max(visible.end, openIndex + 1),
-  };
+export function hydrationChunks(
+  firstVisible: number,
+  lastVisible: number,
+  openChunk: number | null,
+): number[] {
+  const chunks = new Set<number>();
+  for (let c = firstVisible; c <= lastVisible; c++) chunks.add(c);
+  if (openChunk !== null) {
+    if (openChunk > 0) chunks.add(openChunk - 1);
+    chunks.add(openChunk);
+    chunks.add(openChunk + 1);
+  }
+  return [...chunks].sort((a, b) => a - b);
 }
 
 /** What one chunk's query caches: the rows, stamped with what they are. */
@@ -58,18 +70,25 @@ export type MediaChunks = {
 /** Stable identity for the no-data case, so consumers' memos don't churn. */
 const EMPTY: MediaChunks = { items: [], key: null };
 
-export function useMediaChunks(range: { start: number; end: number }): MediaChunks {
+export function useMediaChunks(
+  range: { start: number; end: number },
+  /** Where the lightbox is, so hydration follows it. `null` when closed. */
+  openIndex: number | null = null,
+): MediaChunks {
   const typeFilter = useGalleryStore((s) => s.typeFilter);
   const sort = useGalleryStore((s) => s.sort);
   const missingOnly = useGalleryStore((s) => s.missingOnly);
   const searchQuery = useGalleryStore((s) => s.query);
   const tagId = useGalleryStore((s) => s.tagId);
 
-  const first = Math.max(0, Math.floor(range.start / CHUNK_SIZE));
-  const last = Math.max(first, Math.floor(range.end / CHUNK_SIZE));
+  // Reduced to chunk numbers before memoizing, so scrolling within a chunk
+  // doesn't churn the query set (or `combine`) on every rendered row.
+  const first = chunkOf(range.start);
+  const last = Math.max(first, chunkOf(range.end));
+  const openChunk = openIndex === null ? null : chunkOf(openIndex);
   const chunkIndices = useMemo(
-    () => Array.from({ length: last - first + 1 }, (_, i) => first + i),
-    [first, last],
+    () => hydrationChunks(first, last, openChunk),
+    [first, last, openChunk],
   );
 
   // `useQueries`' `combine` rather than a `useMemo` over the results array:

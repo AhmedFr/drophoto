@@ -6,7 +6,7 @@ import { beforeEach } from "vitest";
 import type { MediaQuery } from "@/lib/api/media";
 import { mediaItem as item } from "@/test/mediaFactories";
 import { filterKey, useGalleryStore } from "../store/galleryStore";
-import { CHUNK_SIZE, coveringRange, useMediaChunks } from "./useMediaChunks";
+import { CHUNK_SIZE, chunkOf, hydrationChunks, useMediaChunks } from "./useMediaChunks";
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -220,42 +220,77 @@ it("never places a chunk's rows at another chunk's offsets", async () => {
 });
 
 // ---------------------------------------------------------------------
-// `coveringRange` — which rows must be hydrated. With paging gone, the
-// lightbox walks the whole set, so it has to drag the fetched chunks along
-// with it or it opens onto nothing one step past the loaded rows.
+// `hydrationChunks` — which chunks to hold. With paging gone the lightbox
+// walks the whole set, so it has to drag hydration along with it; the set
+// must stay bounded however far it drifts from the grid.
 // ---------------------------------------------------------------------
 
-it("hydrates just the visible span when no lightbox is open", () => {
-  expect(coveringRange({ start: 10, end: 40 }, null)).toEqual({ start: 10, end: 40 });
+it("holds just the visible chunks when no lightbox is open", () => {
+  expect(hydrationChunks(0, 0, null)).toEqual([0]);
+  expect(hydrationChunks(2, 4, null)).toEqual([2, 3, 4]);
 });
 
-it("reaches ahead of the lightbox so the next step is already requested", () => {
-  // 199 is the last index of chunk 0; the range must already name 200 so
-  // chunk 1 is in flight before next/prev arrives there.
-  expect(coveringRange({ start: 0, end: 199 }, 199)).toEqual({ start: 0, end: 200 });
+it("holds the lightbox's chunk and both neighbours, so either direction is ready", () => {
+  expect(hydrationChunks(0, 0, 5)).toEqual([0, 4, 5, 6]);
 });
 
-it("widens to cover a lightbox that has walked past the visible span", () => {
-  expect(coveringRange({ start: 0, end: 40 }, 420)).toEqual({ start: 0, end: 421 });
+it("has no chunk below zero to reach back to", () => {
+  expect(hydrationChunks(0, 0, 0)).toEqual([0, 1]);
 });
 
-it("widens backwards for a lightbox behind the visible span", () => {
-  expect(coveringRange({ start: 400, end: 440 }, 12)).toEqual({ start: 12, end: 440 });
+it("does not duplicate a chunk the grid is already showing", () => {
+  expect(hydrationChunks(0, 2, 1)).toEqual([0, 1, 2]);
+});
+
+// The bound: spanning grid-to-lightbox would subscribe 81 chunks here and
+// hold ~16k rows for the whole staleTime.
+it("stays bounded when the lightbox has walked far away from the grid", () => {
+  expect(hydrationChunks(0, 1, chunkOf(16_000))).toEqual([0, 1, 79, 80, 81]);
+  expect(hydrationChunks(0, 1, chunkOf(16_000))).toHaveLength(5);
+});
+
+it("maps an index to its chunk", () => {
+  expect(chunkOf(0)).toBe(0);
+  expect(chunkOf(199)).toBe(0);
+  expect(chunkOf(200)).toBe(1);
+  expect(chunkOf(-5)).toBe(0);
 });
 
 // The reviewer's repro: hold the next key and the lightbox must not run off
 // the end of the hydrated rows.
-it("keeps requesting the chunk the lightbox has moved into", async () => {
+it("requests the chunk the lightbox is about to step into", async () => {
   const offsets: number[] = [];
   collectOffsets(offsets);
 
-  const { rerender } = renderHook(({ openIndex }) => useMediaChunks(coveringRange({ start: 0, end: 10 }, openIndex)), {
+  const { rerender } = renderHook(({ openIndex }) => useMediaChunks({ start: 0, end: 10 }, openIndex), {
     wrapper,
-    initialProps: { openIndex: 5 as number | null },
+    initialProps: { openIndex: null as number | null },
   });
   await waitFor(() => expect(offsets).toEqual([0]));
 
-  rerender({ openIndex: 205 });
+  // Still inside chunk 0, but chunk 1 is now the neighbour — fetched before
+  // next/prev ever arrives there.
+  rerender({ openIndex: 190 });
 
   await waitFor(() => expect(offsets.sort((a, b) => a - b)).toEqual([0, 200]));
+});
+
+it("subscribes a bounded number of chunks however far the lightbox travels", async () => {
+  const offsets: number[] = [];
+  collectOffsets(offsets);
+
+  const { rerender } = renderHook(({ openIndex }) => useMediaChunks({ start: 0, end: 10 }, openIndex), {
+    wrapper,
+    initialProps: { openIndex: 16_000 as number | null },
+  });
+  await waitFor(() => expect(offsets.length).toBeGreaterThan(0));
+  offsets.length = 0;
+
+  // Walk back toward the start a chunk at a time.
+  for (let index = 15_800; index >= 0; index -= 200) rerender({ openIndex: index });
+
+  // Each step adds at most its own chunk and the next neighbour — never the
+  // whole span back to the grid.
+  await waitFor(() => expect(offsets.length).toBeLessThanOrEqual(82));
+  expect(new Set(offsets).size).toBeLessThanOrEqual(82);
 });

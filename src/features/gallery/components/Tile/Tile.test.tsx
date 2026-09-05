@@ -242,3 +242,55 @@ it("still shows the selected check on a placeholder", () => {
   render(<Tile tile={tile({ index: 3 })} onOpen={() => {}} selected onToggle={() => {}} />);
   expect(screen.getByTestId("tile-selected-check")).toBeInTheDocument();
 });
+
+// The geometry and the rows are cached and refetched independently, so
+// position N can briefly mean two different photos on the two sides. The
+// tile is the paint site, so it is where the mismatch has to be caught.
+it("renders a placeholder when the row handed to it is a different photo", () => {
+  render(
+    <Tile
+      tile={tile({ entry: { id: 1, taken_at: null, width: 100, height: 200 } })}
+      item={mediaItem(9)}
+      onOpen={() => {}}
+      selected={false}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  expect(screen.getByRole("button")).toHaveAttribute("aria-busy", "true");
+});
+
+it("does not open a lightbox onto a row belonging to a different photo", () => {
+  const onOpen = vi.fn();
+  render(
+    <Tile
+      tile={tile({ index: 4, entry: { id: 1, taken_at: null, width: 100, height: 200 } })}
+      item={mediaItem(9)}
+      onOpen={onOpen}
+      selected={false}
+      onToggle={() => {}}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button"));
+  expect(onOpen).not.toHaveBeenCalled();
+});
+
+// Selection is keyed off the tile's own entry, so it stays correct through
+// the mismatch — the tile keeps acting as the photo it represents.
+it("still toggles its own index when the row handed to it is a different photo", () => {
+  const onToggle = vi.fn();
+  render(
+    <Tile
+      tile={tile({ index: 4, entry: { id: 1, taken_at: null, width: 100, height: 200 } })}
+      item={mediaItem(9)}
+      onOpen={() => {}}
+      selected={false}
+      onToggle={onToggle}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button"), { metaKey: true });
+  expect(onToggle).toHaveBeenCalledWith(4, false);
+});

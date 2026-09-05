@@ -4,8 +4,21 @@ import { formatDuration } from "@/lib/media/format";
 import { thumbUrl } from "@/lib/media/thumbUrl";
 import type { TileProps } from "./Tile.types";
 
-export function Tile({ tile, item, onOpen, selected, onToggle, focused = false }: TileProps) {
-  const { width, height, index } = tile;
+export function Tile({ tile, item: hydrated, onOpen, selected, onToggle, focused = false }: TileProps) {
+  const { entry, width, height, index } = tile;
+
+  // THE invariant, enforced where the paint actually happens: a tile shows
+  // a row only if that row IS this tile's photo.
+  //
+  // The geometry and the rows are cached separately and refetched
+  // independently — by a filter change, but equally by any of the app's
+  // `invalidateQueries({ queryKey: ["media"] })` calls after a scan, a tag
+  // or place edit, a missing-file reconcile, a date recovery. Whenever one
+  // side lands first, position N briefly means two different photos on the
+  // two sides. Comparing ids here is O(1), needs to know nothing about how
+  // the two got out of step, and holds for call sites that don't exist
+  // yet — where inferring coherence from arrival timing would not.
+  const item = hydrated?.row.id === entry.id ? hydrated : undefined;
 
   return (
     <div
