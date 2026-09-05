@@ -3,8 +3,8 @@
 //! whole-set index the grid's layout and date scrubber are built from.
 
 use chrono::{DateTime, Utc};
-use dp_core::DpResult;
-use sqlx::{Row, SqlitePool};
+use dp_core::{DpResult, MediaIndexEntry, MediaQuery};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 use crate::media::to_rfc3339;
 use crate::sqlite::db;
@@ -72,4 +72,36 @@ pub(crate) async fn set_taken_at_bulk(pool: &SqlitePool, rows: &[(i64, DateTime<
     }
     tx.commit().await.map_err(db)?;
     Ok(changed)
+}
+
+fn row_to_index_entry(row: &SqliteRow) -> DpResult<MediaIndexEntry> {
+    let kind: String = row.try_get("kind").map_err(db)?;
+    let width: Option<i64> = row.try_get("width").map_err(db)?;
+    let height: Option<i64> = row.try_get("height").map_err(db)?;
+    Ok(MediaIndexEntry {
+        id: row.try_get("id").map_err(db)?,
+        taken_at: row.try_get("taken_at").map_err(db)?,
+        width: width.map(|w| w as u32),
+        height: height.map(|h| h as u32),
+        kind: crate::media::kind_from_str(&kind)?,
+    })
+}
+
+/// Every row matching `q`, in `q`'s sort order, as compact index entries.
+/// `q.limit`/`q.offset` are deliberately ignored: the caller wants the
+/// whole set, and the same `MediaQuery` is reused for paged hydration.
+///
+/// Composes the exact same `where_clause`/`order_by` SQL `query_media`
+/// uses (never duplicated) — the guarantee this exists for is that index
+/// position N is the same row `query_media` returns at `offset = N`; any
+/// divergence between the two would put a hydrated tile in the wrong
+/// place in the gallery.
+pub(crate) async fn media_index(pool: &SqlitePool, q: &MediaQuery) -> DpResult<Vec<MediaIndexEntry>> {
+    let (where_sql, args) = crate::query::where_clause(q);
+    let sql = format!(
+        "SELECT m.id, m.taken_at, m.width, m.height, m.kind FROM media m {where_sql} {}",
+        crate::query::order_by(q.sort)
+    );
+    let rows = sqlx::query_with(&sql, args).fetch_all(pool).await.map_err(db)?;
+    rows.iter().map(row_to_index_entry).collect()
 }

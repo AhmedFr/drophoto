@@ -13,7 +13,7 @@ fn kind_to_str(kind: MediaKind) -> &'static str {
     }
 }
 
-fn kind_from_str(s: &str) -> DpResult<MediaKind> {
+pub(crate) fn kind_from_str(s: &str) -> DpResult<MediaKind> {
     match s {
         "photo" => Ok(MediaKind::Photo),
         "video" => Ok(MediaKind::Video),

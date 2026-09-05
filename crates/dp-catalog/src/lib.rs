@@ -16,10 +16,10 @@ mod tags;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dp_core::{
-    AppSettings, DpResult, Drive, JobRunRow, MediaMetadata, MediaQuery, MediaRow, NewDrive, NewJobRun,
-    NewMedia, NewPlace, NewSource, OrganizeDefaults, OrganizeItemRow, OrganizeJobRow, OrganizeRule, Place,
-    PlaceCount, ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source, Tag, TagWithCount,
-    UnorganizedSummary,
+    AppSettings, DpResult, Drive, JobRunRow, MediaIndexEntry, MediaMetadata, MediaQuery, MediaRow, NewDrive,
+    NewJobRun, NewMedia, NewPlace, NewSource, OrganizeDefaults, OrganizeItemRow, OrganizeJobRow,
+    OrganizeRule, Place, PlaceCount, ScanErrorCodeCount, ScanErrorRow, ScanIndexEntry, SidecarHealth, Source,
+    Tag, TagWithCount, UnorganizedSummary,
 };
 pub use sources::normalize_rel_path as normalize_source_rel_path;
 pub use sqlite::SqliteCatalog;
@@ -67,6 +67,11 @@ pub trait Catalog: Send + Sync {
     async fn list_media(&self, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>>;
     async fn query_media(&self, q: &MediaQuery) -> DpResult<Vec<(MediaRow, Drive)>>;
     async fn count_media_query(&self, q: &MediaQuery) -> DpResult<u64>;
+    /// Every row matching `q`, in `q`'s sort order, as compact
+    /// [`MediaIndexEntry`]s — the gallery's whole-set timeline index. See
+    /// [`crate::index::media_index`]'s doc comment for the offset-parity
+    /// guarantee this exists to preserve.
+    async fn media_index(&self, q: &MediaQuery) -> DpResult<Vec<MediaIndexEntry>>;
     /// How many `media` rows currently have no `taken_at` — see
     /// [`crate::index::count_undated`]'s doc comment.
     async fn count_undated(&self) -> DpResult<u64>;
@@ -322,6 +327,10 @@ impl Catalog for SqliteCatalog {
 
     async fn count_media_query(&self, q: &MediaQuery) -> DpResult<u64> {
         query::count_media_query(&self.pool, q).await
+    }
+
+    async fn media_index(&self, q: &MediaQuery) -> DpResult<Vec<MediaIndexEntry>> {
+        index::media_index(&self.pool, q).await
     }
 
     async fn count_undated(&self) -> DpResult<u64> {

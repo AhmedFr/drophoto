@@ -32,6 +32,7 @@ pub fn run() {
             commands::drives::remove_missing_media,
             commands::media::query_media,
             commands::media::count_media,
+            commands::media::media_index,
             commands::media::get_media,
             commands::media::count_undated,
             commands::media::recover_filename_dates,

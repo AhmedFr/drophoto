@@ -1,7 +1,7 @@
 use crate::commands::media_item::to_item;
 use crate::state::AppState;
 use dp_catalog::Catalog;
-use dp_core::{DpError, DpResult, MediaItem, MediaQuery};
+use dp_core::{DpError, DpResult, MediaIndexEntry, MediaItem, MediaQuery};
 use std::sync::Arc;
 use tauri::State;
 
@@ -27,6 +27,17 @@ pub async fn query_media(state: State<'_, AppState>, query: MediaQuery) -> Resul
 #[tauri::command]
 pub async fn count_media(state: State<'_, AppState>, query: MediaQuery) -> Result<u64, DpError> {
     state.catalog.count_media_query(&query).await
+}
+
+/// The whole filtered set as compact index entries — the gallery's
+/// timeline. Fetched in parallel with the first hydration chunk, so
+/// nothing on screen waits for it.
+#[tauri::command]
+pub async fn media_index(
+    state: State<'_, AppState>,
+    query: MediaQuery,
+) -> Result<Vec<MediaIndexEntry>, DpError> {
+    state.catalog.media_index(&query).await
 }
 
 #[tauri::command]

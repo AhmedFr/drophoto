@@ -555,6 +555,26 @@ impl MediaQuery {
     }
 }
 
+/// One row of the gallery's timeline index: the minimum needed to place a
+/// tile in the justified layout and group it under a month header,
+/// without the strings that make [`MediaItem`] expensive to send in bulk.
+///
+/// The gallery fetches one of these per matching row — the *whole*
+/// filtered set, not a page — so that scroll height, the date scrubber's
+/// offset→date mapping, and selection across not-yet-loaded photos are
+/// exact rather than estimated. Measured at ~38 bytes/row.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MediaIndexEntry {
+    pub id: i64,
+    /// RFC3339, matching [`MediaRow::taken_at`]'s serialization exactly —
+    /// the frontend parses both with the same helpers. `None` sorts last,
+    /// the same `NULLS LAST` ordering `query_media` uses.
+    pub taken_at: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub kind: MediaKind,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MediaItem {
     pub row: MediaRow,

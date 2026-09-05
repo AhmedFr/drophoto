@@ -18,7 +18,7 @@ fn kind_str(k: MediaKind) -> &'static str {
     }
 }
 
-fn order_by(sort: MediaSort) -> &'static str {
+pub(crate) fn order_by(sort: MediaSort) -> &'static str {
     match sort {
         MediaSort::TakenDesc => "ORDER BY m.taken_at DESC NULLS LAST, m.id DESC",
         MediaSort::TakenAsc => "ORDER BY m.taken_at ASC NULLS LAST, m.id ASC",
@@ -32,7 +32,7 @@ fn order_by(sort: MediaSort) -> &'static str {
 /// clause by interpolating [`SELECT_JOINED`] or a bare `media m`, so the
 /// `m.*` column references produced here always alias the `media` table as
 /// `m` — keep that alias in sync if either call site changes it.
-fn where_clause(q: &MediaQuery) -> (String, SqliteArguments<'static>) {
+pub(crate) fn where_clause(q: &MediaQuery) -> (String, SqliteArguments<'static>) {
     let mut clauses = Vec::new();
     let mut args = SqliteArguments::default();
     if !q.kinds.is_empty() {

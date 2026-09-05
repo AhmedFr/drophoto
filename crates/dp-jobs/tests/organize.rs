@@ -731,6 +731,10 @@ impl Catalog for FailingCatalog {
         self.0.count_media_query(q).await
     }
 
+    async fn media_index(&self, q: &MediaQuery) -> DpResult<Vec<dp_core::MediaIndexEntry>> {
+        self.0.media_index(q).await
+    }
+
     async fn count_undated(&self) -> DpResult<u64> {
         self.0.count_undated().await
     }
