@@ -381,7 +381,7 @@ see it. That placement matters: a later full rescan re-derives the date
 rather than wiping it back to NULL, so recovery is durable rather than a
 one-shot that the next scan undoes.
 
-Existing rows are handled by a Settings → Metadata action
+Existing rows are handled by a Settings → Maintenance action
 (`recover_filename_dates`), which fills `taken_at` **only where it is
 NULL**, in batches, guarded in the SQL itself so a concurrent scan's real
 EXIF date always wins. No migration, no file on disk is touched.
@@ -415,7 +415,7 @@ Explicitly not in this phase, to keep it shippable:
 
 1. `dp_metadata::date_from_filename` — pure, conservative, unit-tested
    against real paths from the catalog.
-2. Apply it: the `ScanJob` metadata seam, plus a Settings → Metadata
+2. Apply it: the `ScanJob` metadata seam, plus a Settings → Maintenance
    backfill for existing rows.
 3. `MediaIndexEntry` + `Catalog::media_index` + the Tauri command, with
    catalog tests asserting index order matches `query_media` at the same

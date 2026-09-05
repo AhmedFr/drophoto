@@ -366,7 +366,7 @@ git commit -m "feat(metadata): recover capture dates from filenames"
 - Create: `crates/dp-catalog/src/index.rs` (the undated helpers; `media_index` lands here in Task 3)
 - Modify: `crates/dp-catalog/src/lib.rs` (trait + impl + `mod index;`)
 - Modify: `src-tauri/src/commands/media.rs`
-- Modify: the Settings **Metadata** sub-page
+- Modify: the Settings **Maintenance** sub-page
 - Test: `crates/dp-catalog/tests/undated.rs`
 
 **Interfaces:**
@@ -590,7 +590,7 @@ Register both in the `invoke_handler!` list in `src-tauri/src/lib.rs`.
 
 - [ ] **Step 8: Add the Settings action**
 
-On the Settings **Metadata** sub-page, add a row beneath the existing tools section:
+On the Settings **Maintenance** sub-page, add a row beneath the existing tools section:
 
 - Label: `PHOTOS WITHOUT A DATE`, value: the `count_undated` result.
 - A button `RECOVER FROM FILENAMES`, disabled when the count is 0 or while running.
@@ -634,7 +634,7 @@ git commit -m "feat(metadata): apply filename dates on scan and backfill existin
 
 - [ ] **Step 12: Run it on the real library**
 
-Launch the app (`pnpm tauri dev`), open Settings → Metadata, and press RECOVER FROM FILENAMES. Expected: ~9,900 recovered, and the gallery's Undated section shrinks dramatically. **Record the actual number in the ledger** — the scrubber's value in Task 8 depends on it.
+Launch the app (`pnpm tauri dev`), open Settings → Maintenance, and press RECOVER FROM FILENAMES. Expected: ~9,900 recovered, and the gallery's Undated section shrinks dramatically. **Record the actual number in the ledger** — the scrubber's value in Task 8 depends on it.
 
 ---
 
