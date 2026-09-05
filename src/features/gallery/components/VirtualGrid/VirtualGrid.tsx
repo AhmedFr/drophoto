@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { buildLayout, GAP, type LayoutItem } from "@/lib/media/layout";
 import { JustifiedRow } from "./JustifiedRow";
@@ -7,23 +7,27 @@ import { useContainerWidth } from "./useContainerWidth";
 import type { VirtualGridProps } from "./VirtualGrid.types";
 
 function VirtualGridImpl({
+  entries,
   items,
   targetRowHeight,
   onOpen,
-  onNearEnd,
   selectedIds,
   onToggle,
   focusIndex = null,
   onRowsChange,
+  onRangeChange,
   onSelectMonth,
 }: VirtualGridProps) {
   // `useContainerWidth` measures `contentRect.width`, which already excludes
   // the scroll element's `p-4` padding — no further subtraction needed here.
   const { ref, width } = useContainerWidth<HTMLDivElement>();
 
+  // Built from the index, not the hydrated rows: the layout is complete and
+  // final from the first render, so a chunk landing never reflows the grid
+  // or moves the scrollbar under the user's thumb.
   const layout = useMemo(
-    () => buildLayout(items, width, targetRowHeight),
-    [items, width, targetRowHeight],
+    () => buildLayout(entries, width, targetRowHeight),
+    [entries, width, targetRowHeight],
   );
 
   const virtualizer = useVirtualizer({
@@ -37,12 +41,12 @@ function VirtualGridImpl({
   // container resize that doesn't change `layout.length` (e.g. the same
   // number of rows re-packed at a new width) leaves stale `start`/total-size
   // values behind. Re-measuring whenever `layout` is a new reference (i.e.
-  // whenever width, items, or row height change) keeps them in sync.
+  // whenever width, entries, or row height change) keeps them in sync.
   useEffect(() => {
     virtualizer.measure();
   }, [virtualizer, layout]);
 
-  // Row grouping (each row as its tiles' `items`-array indices, in column
+  // Row grouping (each row as its tiles' `entries`-array indices, in column
   // order, omitting headers) for GalleryPage's keyboard Up/Down handling —
   // see `onRowsChange`'s docs. Recomputed only when `layout` itself changes.
   const rows = useMemo(
@@ -58,18 +62,34 @@ function VirtualGridImpl({
   }, [rows, onRowsChange]);
 
   const virtualItems = virtualizer.getVirtualItems();
-  const maxIndex = virtualItems.reduce((max, v) => Math.max(max, v.index), -1);
+  const firstVirtual = virtualItems.length > 0 ? virtualItems[0].index : 0;
+  const lastVirtual = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1].index : -1;
 
-  // Fires `onNearEnd` at most once per distinct layout length, so paging in
-  // more items (which grows the layout) re-arms the check.
-  const notifiedLength = useRef<number | null>(null);
-  useEffect(() => {
-    if (!onNearEnd || layout.length === 0) return;
-    if (maxIndex >= layout.length - 3 && notifiedLength.current !== layout.length) {
-      notifiedLength.current = layout.length;
-      onNearEnd();
+  // The tile-index span the virtualizer is currently rendering. Derived
+  // from the first/last virtual *layout* indices rather than the
+  // `getVirtualItems()` array itself, which is a fresh identity every
+  // render; the virtualizer's own `overscan` is already baked into that
+  // span, so no extra widening is needed here.
+  const range = useMemo(() => {
+    let start = Number.POSITIVE_INFINITY;
+    let end = -1;
+    for (let i = firstVirtual; i <= lastVirtual; i++) {
+      const row = layout[i];
+      if (row?.kind !== "row") continue;
+      for (const tile of row.tiles) {
+        if (tile.index < start) start = tile.index;
+        if (tile.index > end) end = tile.index;
+      }
     }
-  }, [maxIndex, layout.length, onNearEnd]);
+    // Nothing laid out yet (no width, no entries, or headers only) — chunk
+    // 0 is still the right thing to hydrate, so the first rows are already
+    // in flight by the time the index lands.
+    return end < 0 ? { start: 0, end: 0 } : { start, end };
+  }, [layout, firstVirtual, lastVirtual]);
+
+  useEffect(() => {
+    onRangeChange?.(range);
+  }, [range, onRangeChange]);
 
   return (
     <div ref={ref} className="h-full overflow-y-auto p-4">
@@ -105,6 +125,7 @@ function VirtualGridImpl({
               ) : (
                 <JustifiedRow
                   tiles={row.tiles}
+                  items={items}
                   onOpen={onOpen}
                   selectedIds={selectedIds}
                   onToggle={onToggle}

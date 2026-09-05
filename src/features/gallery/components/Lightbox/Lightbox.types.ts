@@ -1,7 +1,14 @@
 import type { MediaItem } from "@/lib/api/media";
 
 export type LightboxProps = {
-  items: MediaItem[];
+  /**
+   * The set being browsed, indexed by absolute position. Sparse in the
+   * gallery, where rows are hydrated in chunks: `items.length` is the
+   * whole set's size (what the "03 / 128" counter reports) while
+   * `items[index]` may not have landed yet, which the component already
+   * renders as nothing.
+   */
+  items: (MediaItem | undefined)[];
   index: number;
   onClose(): void;
   onPrev(): void;

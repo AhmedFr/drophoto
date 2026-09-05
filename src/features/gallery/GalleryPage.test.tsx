@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
+import { entryFor, mediaItem } from "@/test/mediaFactories";
 import { virtualizerMockFactory } from "@/test/mockVirtualizer";
 import { renderWithRouter } from "@/test/renderWithRouter";
 import { useGalleryStore } from "./store/galleryStore";
@@ -60,70 +61,39 @@ function renderPage() {
 }
 
 function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
-  return {
-    row: {
-      id,
-      drive_id: 1,
-      rel_path: `photos/${id}.jpg`,
-      hash: `hash${id}`,
-      size: 1234,
-      kind: "photo",
-      ext: "jpg",
-      width: 100,
-      height: 200,
-      duration_ms: null,
-      taken_at: "2024-06-15T12:00:00Z",
-      camera: null,
-      lens: null,
-      aperture: null,
-      shutter: null,
-      iso: null,
-      focal_mm: null,
-      lat: null,
-      lon: null,
-      missing_at: null,
-      organized_at: null,
-      source_id: null,
-      place_id: null,
-      mtime: null,
-    },
-    thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
-    preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
-    drive_name: "Kodachrome",
-    online: true,
-    original_path: null,
-    has_thumb: true,
-    ...overrides,
-  };
+  return mediaItem(id, overrides);
+}
+
+/**
+ * The gallery reads a set through two commands that must agree: the
+ * timeline index (`media_index`, the whole filtered set as geometry) and
+ * chunked hydration (`query_media` at chunk-aligned offsets). Mocking both
+ * from one list keeps them in the offset parity the real backend
+ * guarantees. `extra` answers any other command the test needs.
+ */
+function mockMedia(items: MediaItem[], extra?: (cmd: string, args: unknown) => unknown) {
+  mockIPC((cmd, args) => {
+    if (cmd === "media_index") return items.map(entryFor);
+    if (cmd === "query_media") return items;
+    return extra?.(cmd, args);
+  });
 }
 
 it("renders the Gallery header", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [];
-    if (cmd === "count_media") return 0;
-    return undefined;
-  });
+  mockMedia([]);
   renderPage();
   expect(await screen.findByRole("heading")).toHaveTextContent("GALLERY");
   await screen.findByText("0 items");
 });
 
 it("shows the item count once media loads", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   renderPage();
   expect(await screen.findByText("2 items")).toBeInTheDocument();
 });
 
 it("shows an empty state with a link to /drives when there is no media", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [];
-    if (cmd === "count_media") return 0;
-    return undefined;
-  });
+  mockMedia([]);
   renderPage();
   expect(await screen.findByText(/No media yet/i)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: /drive/i })).toHaveAttribute("href", "/drives");
@@ -133,11 +103,7 @@ it("shows an empty state with a link to /drives when there is no media", async (
 // "No media yet — register and scan a drive" onboarding copy, which
 // would read as though the whole library had vanished.
 it("shows a query-specific empty state when a search matches nothing", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [];
-    if (cmd === "count_media") return 0;
-    return undefined;
-  });
+  mockMedia([]);
   useGalleryStore.setState({ query: "nonexistent" });
   renderPage();
 
@@ -146,11 +112,7 @@ it("shows a query-specific empty state when a search matches nothing", async () 
 });
 
 it("renders a tile once media loads", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2), item(3)];
-    if (cmd === "count_media") return 3;
-    return undefined;
-  });
+  mockMedia([item(1), item(2), item(3)]);
   renderPage();
   expect(await screen.findAllByRole("img")).toHaveLength(3);
   expect(screen.queryByText(/No media yet/i)).not.toBeInTheDocument();
@@ -172,7 +134,7 @@ it("changing a type chip re-queries media with the new filter", async () => {
       calls.push(query);
       return [];
     }
-    if (cmd === "count_media") return 0;
+    if (cmd === "media_index") return [];
     return undefined;
   });
   const user = userEvent.setup();
@@ -188,11 +150,7 @@ it("changing a type chip re-queries media with the new filter", async () => {
 });
 
 it("opens the lightbox when a tile is clicked", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -204,11 +162,7 @@ it("opens the lightbox when a tile is clicked", async () => {
 });
 
 it("navigates between items with the prev/next buttons, clamped to the loaded range", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -234,11 +188,7 @@ it("navigates between items with the prev/next buttons, clamped to the loaded ra
 });
 
 it("closes the lightbox on Escape", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -255,13 +205,13 @@ it("closes the lightbox on Escape", async () => {
 });
 
 it("clamps the open lightbox index when a refetch shrinks the item list", async () => {
-  let calls = 0;
+  let indexCalls = 0;
   mockIPC((cmd) => {
-    if (cmd === "query_media") {
-      calls += 1;
-      return calls === 1 ? [item(1), item(2)] : [item(1)];
+    if (cmd === "media_index") {
+      indexCalls += 1;
+      return (indexCalls === 1 ? [item(1), item(2)] : [item(1)]).map(entryFor);
     }
-    if (cmd === "count_media") return 2;
+    if (cmd === "query_media") return [item(1), item(2)];
     return undefined;
   });
   const user = userEvent.setup();
@@ -283,11 +233,7 @@ it("clamps the open lightbox index when a refetch shrinks the item list", async 
 });
 
 it("shows the selection bar with a count after a cmd-click", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2), item(3)];
-    if (cmd === "count_media") return 3;
-    return undefined;
-  });
+  mockMedia([item(1), item(2), item(3)]);
   renderPage();
 
   const tiles = await screen.findAllByRole("button", { name: /photos\// });
@@ -297,22 +243,14 @@ it("shows the selection bar with a count after a cmd-click", async () => {
 });
 
 it("does not show the selection bar when nothing is selected", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   renderPage();
   await screen.findAllByRole("button", { name: /photos\// });
   expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
 });
 
 it("clears the selection when CLEAR is clicked", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -325,11 +263,7 @@ it("clears the selection when CLEAR is clicked", async () => {
 });
 
 it("a shift-click with no prior anchor behaves like a plain toggle", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2), item(3)];
-    if (cmd === "count_media") return 3;
-    return undefined;
-  });
+  mockMedia([item(1), item(2), item(3)]);
   renderPage();
 
   const tiles = await screen.findAllByRole("button", { name: /photos\// });
@@ -339,11 +273,7 @@ it("a shift-click with no prior anchor behaves like a plain toggle", async () =>
 });
 
 it("a shift-click after a cmd-click selects the range between them", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2), item(3), item(4)];
-    if (cmd === "count_media") return 4;
-    return undefined;
-  });
+  mockMedia([item(1), item(2), item(3), item(4)]);
   renderPage();
 
   const tiles = await screen.findAllByRole("button", { name: /photos\// });
@@ -354,11 +284,7 @@ it("a shift-click after a cmd-click selects the range between them", async () =>
 });
 
 it("still opens the lightbox on a plain click of a selected tile", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -372,11 +298,7 @@ it("still opens the lightbox on a plain click of a selected tile", async () => {
 });
 
 it("Escape clears a non-empty selection without closing the open lightbox", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -394,13 +316,7 @@ it("Escape clears a non-empty selection without closing the open lightbox", asyn
 });
 
 it("TAG opens the TagPanel for the current selection", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    if (cmd === "list_tags") return [];
-    if (cmd === "tags_for_media") return [];
-    return undefined;
-  });
+  mockMedia([item(1), item(2)], (cmd) => (cmd === "list_tags" || cmd === "tags_for_media" ? [] : undefined));
   const user = userEvent.setup();
   renderPage();
 
@@ -414,13 +330,7 @@ it("TAG opens the TagPanel for the current selection", async () => {
 });
 
 it("Escape while the selection TagPanel is open closes only the panel and keeps the selection", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    if (cmd === "list_tags") return [];
-    if (cmd === "tags_for_media") return [];
-    return undefined;
-  });
+  mockMedia([item(1), item(2)], (cmd) => (cmd === "list_tags" || cmd === "tags_for_media" ? [] : undefined));
   const user = userEvent.setup();
   renderPage();
 
@@ -440,13 +350,7 @@ it("Escape while the selection TagPanel is open closes only the panel and keeps 
 });
 
 it("Escape while MetaPanel's +-opened TagPanel is open keeps the background selection and the lightbox", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    if (cmd === "list_tags") return [];
-    if (cmd === "tags_for_media") return [];
-    return undefined;
-  });
+  mockMedia([item(1), item(2)], (cmd) => (cmd === "list_tags" || cmd === "tags_for_media" ? [] : undefined));
   const user = userEvent.setup();
   renderPage();
 
@@ -470,11 +374,7 @@ it("Escape while MetaPanel's +-opened TagPanel is open keeps the background sele
 });
 
 it("PLACE opens the PlacePanel for the current selection", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -488,11 +388,7 @@ it("PLACE opens the PlacePanel for the current selection", async () => {
 });
 
 it("Escape while the selection PlacePanel is open closes only the panel and keeps the selection", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -512,11 +408,7 @@ it("Escape while the selection PlacePanel is open closes only the panel and keep
 });
 
 it("Escape while MetaPanel's Change-opened PlacePanel is open keeps the background selection and the lightbox", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
 
@@ -540,11 +432,7 @@ it("Escape while MetaPanel's Change-opened PlacePanel is open keeps the backgrou
 });
 
 it("Escape still clears the selection when no panel is open", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   renderPage();
 
   const tiles = await screen.findAllByRole("button", { name: /photos\// });
@@ -557,11 +445,7 @@ it("Escape still clears the selection when no panel is open", async () => {
 });
 
 it("clears the selection on unmount", async () => {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2)];
-    if (cmd === "count_media") return 2;
-    return undefined;
-  });
+  mockMedia([item(1), item(2)]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const { unmount } = renderWithRouter(
     <QueryClientProvider client={queryClient}>
@@ -584,11 +468,7 @@ it("clears the selection on unmount", async () => {
 // ---------------------------------------------------------------------
 
 function mockThreeItems() {
-  mockIPC((cmd) => {
-    if (cmd === "query_media") return [item(1), item(2), item(3)];
-    if (cmd === "count_media") return 3;
-    return undefined;
-  });
+  mockMedia([item(1), item(2), item(3)]);
 }
 
 it("selects every loaded item on ⌘A", async () => {

@@ -73,7 +73,36 @@ export type MediaQuery = {
   tag_ids?: number[];
 };
 
+/**
+ * One row of the gallery's timeline index — see `dp_core::MediaIndexEntry`.
+ * The minimum needed to place a tile in the justified layout and group it
+ * under a month header, without the strings that make `MediaItem`
+ * expensive to send in bulk.
+ *
+ * `taken_at` is RFC3339, but *not* byte-identical to `MediaRow.taken_at`
+ * (the index serializes `+00:00` where a row serializes `Z`). Both parse
+ * identically through `new Date()`, which is how every helper here reads
+ * them — never compare the two as strings.
+ */
+export type MediaIndexEntry = {
+  id: number;
+  taken_at: string | null;
+  width: number | null;
+  height: number | null;
+  kind: MediaKind;
+};
+
 export const queryMedia = (query: MediaQuery) => invokeApi<MediaItem[]>("query_media", { query });
+
+/**
+ * The whole filtered set as compact index entries, in the query's sort
+ * order — never a page: `limit`/`offset` are ignored by the command by
+ * design. Index position N is guaranteed to be the same row `query_media`
+ * returns at `offset = N` for the same filters and sort, which is what
+ * lets the gallery hydrate the timeline in chunks.
+ */
+export const mediaIndex = (query: MediaQuery) =>
+  invokeApi<MediaIndexEntry[]>("media_index", { query });
 
 export const countMedia = (query: MediaQuery) => invokeApi<number>("count_media", { query });
 

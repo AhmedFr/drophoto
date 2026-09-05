@@ -1,7 +1,18 @@
-import type { MediaItem } from "@/lib/api/media";
 import { monthKey, monthLabel } from "./format";
 
-export type Tile = { item: MediaItem; width: number; height: number; index: number };
+/**
+ * The minimum a tile needs to be *placed*; hydrated detail (thumbnail,
+ * drive, badges) arrives separately, chunk by chunk. Structurally a
+ * `MediaIndexEntry`, so the gallery's timeline index feeds this directly.
+ */
+export type LayoutEntry = {
+  id: number;
+  taken_at: string | null;
+  width: number | null;
+  height: number | null;
+};
+
+export type Tile = { entry: LayoutEntry; width: number; height: number; index: number };
 
 export type LayoutItem =
   | { kind: "header"; key: string; label: string; count: number; ids: number[]; height: number }
@@ -13,17 +24,17 @@ export const GAP = 8;
 const MIN_RATIO = 0.3;
 const MAX_RATIO = 4;
 
-function tileRatio(item: MediaItem): number {
-  const { width, height } = item.row;
+function tileRatio(entry: LayoutEntry): number {
+  const { width, height } = entry;
   const ratio = width && height && width > 0 && height > 0 ? width / height : 4 / 3;
   return Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
 }
 
-type Placed = { item: MediaItem; ratio: number; index: number };
+type Placed = { entry: LayoutEntry; ratio: number; index: number };
 
 function closeRow(key: string, rowIndex: number, placed: Placed[], height: number): LayoutItem {
-  const tiles: Tile[] = placed.map(({ item, ratio, index }) => ({
-    item,
+  const tiles: Tile[] = placed.map(({ entry, ratio, index }) => ({
+    entry,
     width: ratio * height,
     height,
     index,
@@ -32,7 +43,7 @@ function closeRow(key: string, rowIndex: number, placed: Placed[], height: numbe
 }
 
 function packGroup(
-  group: MediaItem[],
+  group: LayoutEntry[],
   offset: number,
   key: string,
   containerWidth: number,
@@ -43,9 +54,9 @@ function packGroup(
   let sumRatio = 0;
   let rowIndex = 0;
 
-  group.forEach((item, i) => {
-    const ratio = tileRatio(item);
-    current.push({ item, ratio, index: offset + i });
+  group.forEach((entry, i) => {
+    const ratio = tileRatio(entry);
+    current.push({ entry, ratio, index: offset + i });
     sumRatio += ratio;
     const width = sumRatio * targetRowHeight + GAP * (current.length - 1);
     if (width >= containerWidth) {
@@ -64,7 +75,7 @@ function packGroup(
 }
 
 export function buildLayout(
-  items: MediaItem[],
+  entries: LayoutEntry[],
   containerWidth: number,
   targetRowHeight: number,
 ): LayoutItem[] {
@@ -72,13 +83,13 @@ export function buildLayout(
 
   const layout: LayoutItem[] = [];
   let i = 0;
-  while (i < items.length) {
-    const monthKeyValue = monthKey(items[i].row.taken_at);
+  while (i < entries.length) {
+    const monthKeyValue = monthKey(entries[i].taken_at);
     let j = i + 1;
-    while (j < items.length && monthKey(items[j].row.taken_at) === monthKeyValue) j++;
+    while (j < entries.length && monthKey(entries[j].taken_at) === monthKeyValue) j++;
 
-    const group = items.slice(i, j);
-    const label = monthKeyValue === "undated" ? "Undated" : monthLabel(items[i].row.taken_at);
+    const group = entries.slice(i, j);
+    const label = monthKeyValue === "undated" ? "Undated" : monthLabel(entries[i].taken_at);
     // Include the group's start index (`i`) so that when a month recurs
     // non-consecutively (e.g. after an ADDED sort), each occurrence still
     // gets a positionally unique key instead of colliding on `monthKey`.
@@ -90,9 +101,9 @@ export function buildLayout(
       count: group.length,
       // The group's media ids, in the same order as the group itself — used
       // by `MonthHeader`'s "select all in this section" action. Kept
-      // separate from `Tile.index` (a position in the flat `items` array)
+      // separate from `Tile.index` (a position in the timeline index)
       // since ids are what the selection store actually tracks.
-      ids: group.map((it) => it.row.id),
+      ids: group.map((e) => e.id),
       height: HEADER_HEIGHT,
     });
     layout.push(...packGroup(group, i, groupKey, containerWidth, targetRowHeight));

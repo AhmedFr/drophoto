@@ -9,13 +9,21 @@ import { Lightbox } from "./components/Lightbox";
 import { SelectionBar } from "./components/SelectionBar";
 import { TagPanel } from "./components/TagPanel";
 import { VirtualGrid } from "./components/VirtualGrid";
-import { useMediaCount } from "./hooks/useMediaCount";
-import { useMediaInfinite } from "./hooks/useMediaInfinite";
+import { useMediaChunks } from "./hooks/useMediaChunks";
+import { useMediaIndex } from "./hooks/useMediaIndex";
 import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
 
 export function GalleryPage() {
-  const media = useMediaInfinite();
-  const count = useMediaCount();
+  // The whole filtered set as geometry (`entries`), hydrated in chunks
+  // around whatever the grid is currently rendering (`items`). The two
+  // requests go out together — nothing on screen waits for the index
+  // before the first chunk is in flight — and both are indexed by the
+  // same absolute position, so `entries[n]` and `items[n]` are the same
+  // photo.
+  const { entries, isLoading, isError, error } = useMediaIndex();
+  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 });
+  const hydrated = useMediaChunks(visibleRange);
+
   const searchQuery = useGalleryStore((s) => s.query);
   const density = useGalleryStore((s) => s.density);
   const selectedIds = useGalleryStore((s) => s.selectedIds);
@@ -29,7 +37,21 @@ export function GalleryPage() {
   const selectAll = useGalleryStore((s) => s.selectAll);
   const invertSelection = useGalleryStore((s) => s.invertSelection);
   const clearSelection = useGalleryStore((s) => s.clearSelection);
-  const items = media.items;
+
+  // `useMediaChunks` only fills the slots it has hydrated, so its `length`
+  // stops wherever the highest loaded chunk ends. `Lightbox` reads
+  // `items.length` as the set's total ("03 / 128"), so it's given a view
+  // of the same sparse array sized to the whole timeline instead.
+  const items = useMemo(() => {
+    const sized = hydrated.slice(0, entries.length);
+    sized.length = entries.length;
+    return sized;
+  }, [hydrated, entries.length]);
+
+  // Whether the index has actually answered. Until then the toolbar count
+  // stays hidden and the empty state is withheld, rather than briefly
+  // claiming an empty library.
+  const loaded = !isLoading && !isError;
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -51,34 +73,39 @@ export function GalleryPage() {
   // `onToggle` from `Tile`/`VirtualGrid`: `shiftKey` false is a plain
   // (cmd/ctrl-click) toggle, `shiftKey` true is a shift-range select. Range
   // selection computes ids between the anchor and `index` (inclusive) over
-  // the loaded `items` array; without an anchor it degrades to a plain
-  // toggle, per the brief.
+  // the timeline index — so it spans photos whose rows haven't been
+  // hydrated yet; without an anchor it degrades to a plain toggle, per the
+  // brief.
   //
   // `useCallback` here is load-bearing, not just tidy: `VirtualGrid` is
   // wrapped in `React.memo`, and an inline function identity that changes
-  // every render (as this closes over `items`/`anchorIndex`) would defeat
+  // every render (as this closes over `entries`/`anchorIndex`) would defeat
   // that memoization on every `GalleryPage` render, not just on selection
   // changes.
   const handleToggle = useCallback(
     (index: number, shiftKey: boolean) => {
       if (shiftKey && anchorIndex !== null) {
         const [lo, hi] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex];
-        const ids = items.slice(lo, hi + 1).map((it) => it.row.id);
+        const ids = entries.slice(lo, hi + 1).map((e) => e.id);
         selectRange(ids);
         return;
       }
-      const item = items[index];
-      if (!item) return;
-      toggleSelected(item.row.id, index);
+      const entry = entries[index];
+      if (!entry) return;
+      toggleSelected(entry.id, index);
     },
-    [anchorIndex, items, selectRange, toggleSelected],
+    [anchorIndex, entries, selectRange, toggleSelected],
   );
 
   // Same reasoning as `handleToggle` above — kept stable so it doesn't
-  // defeat `VirtualGrid`'s memoization on every render.
-  const handleNearEnd = useCallback(() => {
-    if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
-  }, [media]);
+  // defeat `VirtualGrid`'s memoization on every render. The identity guard
+  // also keeps the grid's own report from bouncing back as a fresh object
+  // and re-keying the chunk queries for an unchanged range.
+  const handleRangeChange = useCallback((next: { start: number; end: number }) => {
+    setVisibleRange((prev) =>
+      prev.start === next.start && prev.end === next.end ? prev : next,
+    );
+  }, []);
 
   // `VirtualGrid`'s justified layout has no fixed items-per-row count, so
   // the keyboard Up/Down handler below needs the real row grouping to move
@@ -159,10 +186,9 @@ export function GalleryPage() {
     return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
   }, [clearSelection, tagPanelOpen, metaTagPanelOpen, placePanelOpen, metaPlacePanelOpen]);
 
-  // Grid-level keyboard navigation: ⌘/Ctrl+A selects every *loaded* item
-  // (paging is infinite, so that's honestly not necessarily the whole
-  // library — SelectionBar's copy says "loaded" for the same reason);
-  // Left/Right move the roving focus one item; Up/Down move it a row, via
+  // Grid-level keyboard navigation: ⌘/Ctrl+A selects every item in the
+  // current filter (the timeline index covers the whole filtered set, not
+  // a page); Left/Right move the roving focus one item; Up/Down move it a row, via
   // `rowsRef` (see above — the justified layout has no fixed
   // items-per-row); Space toggles the focused item; Enter opens it in the
   // lightbox; Shift+Arrow extends/shrinks the selection from the anchor as
@@ -176,7 +202,7 @@ export function GalleryPage() {
   useEffect(() => {
     function idsInRange(lo: number, hi: number): number[] {
       const [from, to] = lo <= hi ? [lo, hi] : [hi, lo];
-      return items.slice(from, to + 1).map((it) => it.row.id);
+      return entries.slice(from, to + 1).map((e) => e.id);
     }
 
     function handleKeyDown(e: KeyboardEvent) {
@@ -187,15 +213,15 @@ export function GalleryPage() {
       if (isEditable) return;
       if (openIndex !== null) return;
       if (tagPanelOpen || placePanelOpen || metaTagPanelOpen || metaPlacePanelOpen) return;
-      if (items.length === 0) return;
+      if (entries.length === 0) return;
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        selectAll(items.map((it) => it.row.id));
+        selectAll(entries.map((entry) => entry.id));
         return;
       }
 
-      const current = focusIndex !== null ? Math.min(focusIndex, items.length - 1) : null;
+      const current = focusIndex !== null ? Math.min(focusIndex, entries.length - 1) : null;
 
       if (
         e.key === "ArrowLeft" ||
@@ -212,7 +238,7 @@ export function GalleryPage() {
         } else if (e.key === "ArrowLeft") {
           next = Math.max(0, current - 1);
         } else if (e.key === "ArrowRight") {
-          next = Math.min(items.length - 1, current + 1);
+          next = Math.min(entries.length - 1, current + 1);
         } else {
           next = moveFocusRow(rowsRef.current, current, e.key === "ArrowUp" ? -1 : 1);
         }
@@ -249,8 +275,8 @@ export function GalleryPage() {
       if (e.key === " ") {
         e.preventDefault();
         const spaceIndex = current ?? 0;
-        const item = items[spaceIndex];
-        if (item) toggleSelected(item.row.id, spaceIndex);
+        const entry = entries[spaceIndex];
+        if (entry) toggleSelected(entry.id, spaceIndex);
         if (current === null) setFocusIndex(spaceIndex);
         return;
       }
@@ -264,7 +290,7 @@ export function GalleryPage() {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [
-    items,
+    entries,
     focusIndex,
     anchorIndex,
     openIndex,
@@ -280,32 +306,32 @@ export function GalleryPage() {
     toggleSelected,
   ]);
 
-  // `items` can shrink out from under an open lightbox (e.g. a refetch after
-  // a scan removes media) — clamp `openIndex` back into range, or close it
-  // entirely once there's nothing left to show. Adjusted during render
-  // (React's documented pattern for state derived from a value that just
-  // changed: https://react.dev/learn/you-might-not-need-an-effect) rather
-  // than in an effect, so there's no extra frame where a stale, out-of-range
-  // index reaches `Lightbox`. The `prevItemsLength` guard makes this run at
-  // most once per `items.length` change instead of on every render.
-  const [prevItemsLength, setPrevItemsLength] = useState(items.length);
-  if (items.length !== prevItemsLength) {
-    setPrevItemsLength(items.length);
-    if (openIndex !== null && openIndex >= items.length) {
-      setOpenIndex(items.length ? items.length - 1 : null);
+  // The set can shrink out from under an open lightbox (e.g. a refetch
+  // after a scan removes media) — clamp `openIndex` back into range, or
+  // close it entirely once there's nothing left to show. Adjusted during
+  // render (React's documented pattern for state derived from a value that
+  // just changed: https://react.dev/learn/you-might-not-need-an-effect)
+  // rather than in an effect, so there's no extra frame where a stale,
+  // out-of-range index reaches `Lightbox`. The `prevCount` guard makes this
+  // run at most once per `entries.length` change instead of on every render.
+  const [prevCount, setPrevCount] = useState(entries.length);
+  if (entries.length !== prevCount) {
+    setPrevCount(entries.length);
+    if (openIndex !== null && openIndex >= entries.length) {
+      setOpenIndex(entries.length ? entries.length - 1 : null);
     }
   }
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Gallery">
-        <GalleryToolbar count={count} />
+        <GalleryToolbar count={loaded ? entries.length : undefined} />
       </PageHeader>
       <div className="flex-1 overflow-hidden">
-        {media.isError && (
-          <p className="px-5 pt-5 font-mono text-[11px] text-red-400">{(media.error as Error).message}</p>
+        {isError && (
+          <p className="px-5 pt-5 font-mono text-[11px] text-red-400">{(error as Error).message}</p>
         )}
-        {media.isSuccess && items.length === 0 ? (
+        {loaded && entries.length === 0 ? (
           <div className="p-5 font-mono text-[11px] text-faint">
             {searchQuery.trim() ? (
               `No photos match "${searchQuery.trim()}"`
@@ -331,26 +357,27 @@ export function GalleryPage() {
           </div>
         ) : (
           <VirtualGrid
+            entries={entries}
             items={items}
             targetRowHeight={DENSITY_ROW_HEIGHT[density]}
             onOpen={setOpenIndex}
-            onNearEnd={handleNearEnd}
             selectedIds={selectedIdSet}
             onToggle={handleToggle}
             focusIndex={focusIndex}
             onRowsChange={handleRowsChange}
+            onRangeChange={handleRangeChange}
             onSelectMonth={handleSelectMonth}
           />
         )}
       </div>
       <SelectionBar
         count={selectedIds.length}
-        total={items.length}
+        total={entries.length}
         onTag={() => setTagPanelOpen(true)}
         onPlace={() => setPlacePanelOpen(true)}
         onClear={clearSelection}
-        onSelectAll={() => selectAll(items.map((it) => it.row.id))}
-        onInvert={() => invertSelection(items.map((it) => it.row.id))}
+        onSelectAll={() => selectAll(entries.map((entry) => entry.id))}
+        onInvert={() => invertSelection(entries.map((entry) => entry.id))}
       />
       <TagPanel mediaIds={selectedIds} open={tagPanelOpen} onClose={() => setTagPanelOpen(false)} />
       <PlacePanel mediaIds={selectedIds} open={placePanelOpen} onClose={() => setPlacePanelOpen(false)} />
@@ -370,8 +397,7 @@ export function GalleryPage() {
           }}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
           onNext={() => {
-            if (openIndex < items.length - 1) setOpenIndex(openIndex + 1);
-            else if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
+            if (openIndex < entries.length - 1) setOpenIndex(openIndex + 1);
           }}
           onTagPanelOpenChange={setMetaTagPanelOpen}
           onPlacePanelOpenChange={setMetaPlacePanelOpen}

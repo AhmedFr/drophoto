@@ -57,7 +57,7 @@ export function ScanErrorsDialog({ drive, onClose }: ScanErrorsDialogProps) {
   });
 
   // Stable reference across renders where `rowsQuery.data` hasn't changed —
-  // same reasoning as `useMediaInfinite`'s `items`.
+  // same reasoning as the gallery's own flattened item arrays.
   const rows = useMemo(() => rowsQuery.data?.pages.flat() ?? [], [rowsQuery.data]);
   const total = countQuery.data ?? rows.length;
 

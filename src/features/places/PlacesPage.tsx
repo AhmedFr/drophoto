@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { DotLoader } from "@/components/DotLoader";
@@ -12,10 +12,10 @@ import { PlaceList } from "./components/PlaceList";
 import { PlacesMap } from "./components/PlacesMap";
 import { usePlaces } from "./hooks/usePlaces";
 
-// Selected-place results aren't paged (a single place's photos are a small,
-// bounded set — no reason to reach for `useMediaInfinite`'s cursor
-// machinery here), so just the gallery's normal ("Comfortable") row height
-// reused, same reasoning as `GalleryPage`'s own grid.
+// Selected-place results aren't chunked (a single place's photos are a
+// small, bounded set — no reason to reach for the gallery's timeline index
+// and chunked hydration here), so just the gallery's normal ("Comfortable")
+// row height reused, same reasoning as `GalleryPage`'s own grid.
 const ROW_HEIGHT = DENSITY_ROW_HEIGHT.Comfortable;
 
 const EMPTY_SELECTION = new Set<number>();
@@ -44,7 +44,23 @@ export function PlacesPage() {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
 
   const mediaQuery = usePlaceMedia(selectedPlaceId);
-  const items = mediaQuery.data ?? [];
+  // Memoized rather than a bare `?? []`: a fresh empty array every render
+  // would re-run the `entries` projection below on every render.
+  const items = useMemo(() => mediaQuery.data ?? [], [mediaQuery.data]);
+
+  // `VirtualGrid` lays out from geometry alone, so that the gallery can
+  // place tiles it hasn't hydrated. Here every row is already loaded, so
+  // the entries are just projected straight off them.
+  const entries = useMemo(
+    () =>
+      items.map(({ row }) => ({
+        id: row.id,
+        taken_at: row.taken_at,
+        width: row.width,
+        height: row.height,
+      })),
+    [items],
+  );
 
   // Results can shrink out from under an open lightbox (switching places,
   // or a refetch after a manual override) — clamp instead of leaving a
@@ -110,6 +126,7 @@ export function PlacesPage() {
         {selectedPlaceId !== null && (
           <aside className="w-[420px] shrink-0 overflow-y-auto border-l border-border">
             <VirtualGrid
+              entries={entries}
               items={items}
               targetRowHeight={ROW_HEIGHT}
               onOpen={setOpenIndex}

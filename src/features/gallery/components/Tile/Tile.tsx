@@ -4,15 +4,18 @@ import { formatDuration } from "@/lib/media/format";
 import { thumbUrl } from "@/lib/media/thumbUrl";
 import type { TileProps } from "./Tile.types";
 
-export function Tile({ tile, onOpen, selected, onToggle, focused = false }: TileProps) {
-  const { item, width, height, index } = tile;
-  const { row, thumb_path, drive_name, online, has_thumb } = item;
+export function Tile({ tile, item, onOpen, selected, onToggle, focused = false }: TileProps) {
+  const { width, height, index } = tile;
 
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={row.rel_path}
+      // Placeholders have no path to name themselves with, and no content
+      // to describe — `aria-busy` says the box is a stand-in for something
+      // still arriving.
+      aria-label={item ? item.row.rel_path : "Loading"}
+      aria-busy={item ? undefined : true}
       aria-selected={selected}
       data-focused={focused ? "true" : "false"}
       className={cn(
@@ -21,15 +24,20 @@ export function Tile({ tile, onOpen, selected, onToggle, focused = false }: Tile
         focused && "outline-2 outline-offset-[-2px] outline-ring",
       )}
       style={{ width, height }}
+      // Selection works on a placeholder — `tile.entry.id` identifies it
+      // without any hydrated detail, which is the whole point of selecting
+      // across a set the grid hasn't loaded. Opening doesn't: the lightbox
+      // needs the row itself, so a plain click on a placeholder is inert
+      // rather than opening an empty dialog.
       onClick={(e) => {
         if (e.metaKey || e.ctrlKey) onToggle(index, false);
         else if (e.shiftKey) onToggle(index, true);
-        else onOpen(index);
+        else if (item) onOpen(index);
       }}
       onMouseDown={(e) => e.shiftKey && e.preventDefault()}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
-          onOpen(index);
+          if (item) onOpen(index);
         } else if (e.key === " ") {
           e.preventDefault();
           onToggle(index, false);
@@ -45,6 +53,17 @@ export function Tile({ tile, onOpen, selected, onToggle, focused = false }: Tile
         </div>
       )}
 
+      {item && <TileContent item={item} />}
+    </div>
+  );
+}
+
+/** Everything that needs the hydrated row: thumbnail, badges, drive name. */
+function TileContent({ item }: { item: NonNullable<TileProps["item"]> }) {
+  const { row, thumb_path, drive_name, online, has_thumb } = item;
+
+  return (
+    <>
       {has_thumb ? (
         <img
           loading="lazy"
@@ -96,6 +115,6 @@ export function Tile({ tile, onOpen, selected, onToggle, focused = false }: Tile
       >
         <span className="font-mono text-[9px] text-white">{drive_name}</span>
       </div>
-    </div>
+    </>
   );
 }

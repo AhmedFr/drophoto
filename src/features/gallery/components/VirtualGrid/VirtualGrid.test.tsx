@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
+import type { LayoutEntry } from "@/lib/media/layout";
 import { virtualizerMockFactory } from "@/test/mockVirtualizer";
+import { entryFor, mediaItem } from "@/test/mediaFactories";
 import { VirtualGrid } from "./VirtualGrid";
 
 const virtualizerSpies = vi.hoisted(() => ({ measure: vi.fn() }));
@@ -39,78 +41,115 @@ beforeEach(() => {
 });
 
 function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
-  return {
-    row: {
-      id,
-      drive_id: 1,
-      rel_path: `photos/${id}.jpg`,
-      hash: `hash${id}`,
-      size: 1234,
-      kind: "photo",
-      ext: "jpg",
-      width: 100,
-      height: 200,
-      duration_ms: null,
-      taken_at: "2025-09-10T12:00:00Z",
-      camera: null,
-      lens: null,
-      aperture: null,
-      shutter: null,
-      iso: null,
-      focal_mm: null,
-      lat: null,
-      lon: null,
-      missing_at: null,
-      organized_at: null,
-      source_id: null,
-      place_id: null,
-      mtime: null,
-    },
-    thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
-    preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
-    drive_name: "Kodachrome",
-    online: true,
-    original_path: null,
-    has_thumb: true,
+  return mediaItem(id, {
     ...overrides,
-  };
+    row: { ...mediaItem(id).row, taken_at: "2025-09-10T12:00:00Z", ...overrides.row },
+  });
+}
+
+/** A hydrated set: `entries` and `items` in the offset parity the gallery relies on. */
+function hydrated(count: number): { entries: LayoutEntry[]; items: MediaItem[] } {
+  const items = Array.from({ length: count }, (_, i) => item(i + 1));
+  return { entries: items.map(entryFor), items };
 }
 
 it("renders a month header with a label and item count", () => {
-  const items = [item(1), item(2)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  const { entries, items } = hydrated(2);
+  render(<VirtualGrid entries={entries} items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
   expect(screen.getByText("September 2025")).toBeInTheDocument();
   expect(screen.getByText("2")).toBeInTheDocument();
 });
 
 it("renders a tile per item with alt text", () => {
-  const items = [item(1), item(2), item(3)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  const { entries, items } = hydrated(3);
+  render(<VirtualGrid entries={entries} items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
   const imgs = screen.getAllByRole("img");
   expect(imgs).toHaveLength(3);
   expect(imgs[0]).toHaveAttribute("alt", "photos/1.jpg");
 });
 
-it("calls onNearEnd once when the last rendered row is near the end of the layout", () => {
-  const items = Array.from({ length: 3 }, (_, i) => item(i + 1));
-  const onNearEnd = vi.fn();
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />);
-  expect(onNearEnd).toHaveBeenCalledTimes(1);
+// The layout comes from the index alone, so an entry with no hydrated row
+// still takes up its exact space — that's what keeps the scroll height
+// stable while chunks land.
+it("lays out every entry, rendering placeholders for the ones not yet hydrated", () => {
+  const { entries, items } = hydrated(3);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={[items[0]]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+  expect(screen.getAllByRole("img")).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Loading" })).toHaveLength(2);
+  expect(screen.getByText("3")).toBeInTheDocument();
 });
 
-it("does not call onNearEnd again for the same layout length", () => {
-  const items = Array.from({ length: 3 }, (_, i) => item(i + 1));
-  const onNearEnd = vi.fn();
-  const { rerender } = render(
-    <VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />,
+it("reports the rendered tile-index range via onRangeChange", () => {
+  const { entries, items } = hydrated(3);
+  const onRangeChange = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onRangeChange={onRangeChange}
+    />,
   );
-  rerender(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />);
-  expect(onNearEnd).toHaveBeenCalledTimes(1);
+  expect(onRangeChange).toHaveBeenCalledWith({ start: 0, end: 2 });
+});
+
+// Chunk 0 is the right thing to hydrate before the index has landed, so
+// the first rows are already in flight when it does.
+it("reports a chunk-0 range when there is nothing laid out yet", () => {
+  const onRangeChange = vi.fn();
+  render(
+    <VirtualGrid
+      entries={[]}
+      items={[]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onRangeChange={onRangeChange}
+    />,
+  );
+  expect(onRangeChange).toHaveBeenCalledWith({ start: 0, end: 0 });
+});
+
+// A chunk landing must not re-report the range: that would feed straight
+// back into the queries that produced it.
+it("does not re-report the range when only the hydrated items change", () => {
+  const { entries, items } = hydrated(3);
+  const onRangeChange = vi.fn();
+  const props = {
+    entries,
+    targetRowHeight: 200,
+    onOpen: () => {},
+    selectedIds: new Set<number>(),
+    onToggle: () => {},
+    onRangeChange,
+  };
+  const { rerender } = render(<VirtualGrid {...props} items={[items[0]]} />);
+  // Mount settles at the measured width; what matters is that hydration
+  // afterwards adds nothing.
+  const callsAfterMount = onRangeChange.mock.calls.length;
+  expect(onRangeChange).toHaveBeenLastCalledWith({ start: 0, end: 2 });
+
+  rerender(<VirtualGrid {...props} items={items} />);
+
+  expect(onRangeChange).toHaveBeenCalledTimes(callsAfterMount);
 });
 
 it("re-measures the virtualizer when the container is resized", () => {
-  const items = [item(1), item(2)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  const { entries, items } = hydrated(2);
+  render(<VirtualGrid entries={entries} items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
 
   const callsAfterMount = virtualizerSpies.measure.mock.calls.length;
   expect(callsAfterMount).toBeGreaterThan(0);
@@ -126,9 +165,10 @@ it("re-measures the virtualizer when the container is resized", () => {
 });
 
 it("marks a tile as selected when its id is in selectedIds", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
@@ -140,11 +180,12 @@ it("marks a tile as selected when its id is in selectedIds", () => {
 });
 
 it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   const onOpen = vi.fn();
   const onToggle = vi.fn();
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={onOpen}
@@ -159,9 +200,10 @@ it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {
 });
 
 it("marks the tile at focusIndex as keyboard-focused", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
@@ -176,10 +218,11 @@ it("marks the tile at focusIndex as keyboard-focused", () => {
 });
 
 it("reports the row grouping via onRowsChange, omitting the month header", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   const onRowsChange = vi.fn();
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
@@ -192,10 +235,11 @@ it("reports the row grouping via onRowsChange, omitting the month header", () =>
 });
 
 it("clicking a month header's select action calls onSelectMonth with that month's ids", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   const onSelectMonth = vi.fn();
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
