@@ -1,6 +1,7 @@
 mod drives;
 mod forget_drive;
 mod fts;
+mod index;
 mod job_runs;
 mod media;
 mod organize;
@@ -66,6 +67,16 @@ pub trait Catalog: Send + Sync {
     async fn list_media(&self, limit: u32, offset: u32) -> DpResult<Vec<MediaRow>>;
     async fn query_media(&self, q: &MediaQuery) -> DpResult<Vec<(MediaRow, Drive)>>;
     async fn count_media_query(&self, q: &MediaQuery) -> DpResult<u64>;
+    /// How many `media` rows currently have no `taken_at` — see
+    /// [`crate::index::count_undated`]'s doc comment.
+    async fn count_undated(&self) -> DpResult<u64>;
+    /// `(id, rel_path)` for `limit` rows with `taken_at IS NULL`, ordered by
+    /// id — see [`crate::index::list_undated`]'s doc comment.
+    async fn list_undated(&self, limit: u32) -> DpResult<Vec<(i64, String)>>;
+    /// Writes recovered dates in one transaction, only into rows still
+    /// `taken_at IS NULL` — see [`crate::index::set_taken_at_bulk`]'s doc
+    /// comment. Returns how many rows were actually changed.
+    async fn set_taken_at_bulk(&self, rows: &[(i64, DateTime<Utc>)]) -> DpResult<u64>;
     async fn get_media_with_drive(&self, id: i64) -> DpResult<(MediaRow, Drive)>;
     async fn count_media(&self, drive_id: Option<i64>) -> DpResult<u64>;
     async fn media_hash_exists(&self, hash: &str) -> DpResult<bool>;
@@ -310,6 +321,18 @@ impl Catalog for SqliteCatalog {
 
     async fn count_media_query(&self, q: &MediaQuery) -> DpResult<u64> {
         query::count_media_query(&self.pool, q).await
+    }
+
+    async fn count_undated(&self) -> DpResult<u64> {
+        index::count_undated(&self.pool).await
+    }
+
+    async fn list_undated(&self, limit: u32) -> DpResult<Vec<(i64, String)>> {
+        index::list_undated(&self.pool, limit).await
+    }
+
+    async fn set_taken_at_bulk(&self, rows: &[(i64, DateTime<Utc>)]) -> DpResult<u64> {
+        index::set_taken_at_bulk(&self.pool, rows).await
     }
 
     async fn get_media_with_drive(&self, id: i64) -> DpResult<(MediaRow, Drive)> {

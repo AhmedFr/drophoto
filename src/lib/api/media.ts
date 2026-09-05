@@ -78,3 +78,14 @@ export const queryMedia = (query: MediaQuery) => invokeApi<MediaItem[]>("query_m
 export const countMedia = (query: MediaQuery) => invokeApi<number>("count_media", { query });
 
 export const getMedia = (id: number) => invokeApi<MediaItem>("get_media", { id });
+
+/** How many `media` rows currently have no `taken_at` at all. */
+export const countUndated = () => invokeApi<number>("count_undated");
+
+/**
+ * Fills `taken_at` from the filename (see `dp_metadata::date_from_filename`)
+ * for every row that currently has none — never overwrites a row that
+ * already has a real EXIF date. Resolves with how many rows were actually
+ * given a date.
+ */
+export const recoverFilenameDates = () => invokeApi<number>("recover_filename_dates");

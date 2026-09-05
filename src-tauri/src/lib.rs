@@ -33,6 +33,8 @@ pub fn run() {
             commands::media::query_media,
             commands::media::count_media,
             commands::media::get_media,
+            commands::media::count_undated,
+            commands::media::recover_filename_dates,
             commands::scan::start_scan,
             commands::scan::cancel_job,
             commands::scan::count_scan_errors,

@@ -236,4 +236,18 @@ mod tests {
             ymd("2024-08-16T00:00:00+00:00")
         );
     }
+
+    // Regression: the original `dashed_date` byte-sliced the stem at fixed
+    // offsets without checking char boundaries, so a multi-byte UTF-8
+    // basename (accented characters, non-Latin scripts) panicked instead of
+    // either parsing or returning `None`. The `is_char_boundary` guard fixes
+    // this — assert it holds both when a date is present and when it isn't.
+    #[test]
+    fn does_not_panic_on_multi_byte_utf8_basenames() {
+        assert_eq!(
+            date_from_filename("Étoiles café 2019-03-12.jpg"),
+            ymd("2019-03-12T00:00:00+00:00")
+        );
+        assert_eq!(date_from_filename("Étoiles café à Paris.jpg"), None);
+    }
 }

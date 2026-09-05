@@ -788,7 +788,7 @@ async fn process_file(
         return;
     }
 
-    let (metadata, metadata_read_ok) = match deps.metadata.read(&file.path).await {
+    let (mut metadata, metadata_read_ok) = match deps.metadata.read(&file.path).await {
         Ok(m) => (m, true),
         Err(e) => {
             had_error = true;
@@ -796,6 +796,15 @@ async fn process_file(
             (MediaMetadata::default(), false)
         }
     };
+
+    // Files with no EXIF date (WhatsApp exports, screenshots) still carry
+    // their real capture date in the name. Applying the fallback here — to
+    // `metadata` itself — means both `upsert_media` below and
+    // `update_media_metadata` persist the same derived date, and a later
+    // full rescan re-derives it rather than wiping it back to NULL.
+    if metadata.taken_at.is_none() {
+        metadata.taken_at = dp_metadata::date_from_filename(&rel);
+    }
 
     let new_media = NewMedia {
         drive_id,

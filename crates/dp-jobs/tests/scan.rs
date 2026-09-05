@@ -2755,3 +2755,42 @@ async fn errored_source_is_not_reconciled_but_other_sources_still_are() {
         "Missing's walk errored — it must not be reconciled at all"
     );
 }
+
+/// Task 2: a file with no EXIF date (simulated here with `EmptyMetadata`,
+/// standing in for a real WhatsApp export/screenshot whose EXIF was
+/// stripped) still gets a real capture date on the scanned-in row, read
+/// back out of its own filename by `dp_metadata::date_from_filename`.
+#[tokio::test]
+async fn scan_recovers_a_date_from_the_filename_when_exif_has_none() {
+    use chrono::TimeZone;
+
+    let drive_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fx("sample.jpg"), drive_dir.path().join("IMG-20240816-WA0010.jpg")).unwrap();
+
+    let catalog: Arc<dyn Catalog> = Arc::new(SqliteCatalog::open_in_memory().await.unwrap());
+    let drive = register_drive(&catalog, "Filename Date Drive", drive_dir.path()).await;
+    let src = root_source(&catalog, drive.id).await;
+
+    let thumbs_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ThumbStore::new(thumbs_dir.path()));
+
+    let mut deps = default_deps(catalog.clone(), store);
+    deps.metadata = Arc::new(EmptyMetadata {
+        calls: Arc::new(AtomicU64::new(0)),
+    });
+
+    let (events, terminal) = run_scan(drive, vec![src], deps, no_index()).await;
+    match terminal {
+        JobEvent::Finished { ok, failed, .. } => {
+            assert_eq!((ok, failed), (1, 0), "events: {events:?}");
+        }
+        other => panic!("expected Finished, got {other:?} (events: {events:?})"),
+    }
+
+    let rows = catalog.list_media(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].taken_at,
+        Some(chrono::Utc.with_ymd_and_hms(2024, 8, 16, 0, 0, 0).unwrap())
+    );
+}
