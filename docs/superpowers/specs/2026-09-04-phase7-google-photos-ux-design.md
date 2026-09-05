@@ -18,10 +18,16 @@ Google Photos:
    expands on hover, shows the date at the current position, and can be
    dragged to jump anywhere in the library.
 
+Plus the prerequisite that makes the third one worth having:
+
+4. **Filename date recovery** — lifting date coverage from 35% to ~92%,
+   so the timeline the scrubber scrubs is a real one (Part 5).
+
 ## Decisions taken during brainstorming
 
 | Question | Decision |
 | --- | --- |
+| Date coverage is 35% — recover dates now or later? | **Now, in this phase** (Part 5). The scrubber is worth little over a library that is two-thirds "Undated". |
 | Which selection behaviors? | Hover checkmark + selection mode, and drag-to-select. The existing selection bar and month-header select stay as they are, refitted to the new model. |
 | Albums: new concept or restyled tags? | **Restyled tags.** No new data model, no migration. One photo still carries many tags, still written to `.xmp` sidecars. |
 | Grid grouping granularity? | **Keep month grouping.** Day detail lives in the scrollbar tooltip instead. |
@@ -69,10 +75,12 @@ filtered set:
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MediaIndexEntry {
     pub id: i64,
-    /// Epoch milliseconds, or `None` for rows with no `taken_at` — these
-    /// sort last under `TakenDesc`/`TakenAsc` and group under an
-    /// "Undated" header, matching `query_media`'s `NULLS LAST`.
-    pub taken_at: Option<i64>,
+    /// RFC3339, matching `MediaRow::taken_at`'s serialization exactly so
+    /// the frontend parses both with the same helpers — a second date
+    /// representation would be a bug factory for ~150 KB of savings.
+    /// `None` sorts last, the same `NULLS LAST` `query_media` uses, and
+    /// groups under an "Undated" header.
+    pub taken_at: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub kind: MediaKind,
@@ -320,6 +328,69 @@ scroll element.
 
 ---
 
+---
+
+## Part 5 — Filename date recovery
+
+### Why this is in the phase
+
+The scrubber is only as good as the dates it scrubs. Measured on the real
+catalog on 2026-09-05:
+
+| | |
+| --- | --- |
+| Total rows | 17,405 |
+| With an EXIF `taken_at` | **6,007 (35%)** |
+| Without | 11,398 — of which 10,203 have already had metadata read |
+
+So two-thirds of the library genuinely carries no EXIF date; it is not
+waiting on a scan. As specced, the scrubber would show one enormous
+"Undated" block covering most of the track.
+
+### Why not file mtime
+
+Tested and **rejected**. Where both dates exist (5,880 rows), `mtime` is
+within a day of `taken_at` only 384 times (6.5%); 336 are off by over a
+year. `COALESCE(taken_at, mtime)` collapses 88% of the library into
+2024–2025. It records when files were copied, not when photos were taken.
+
+### The filename
+
+WhatsApp strips EXIF but names its exports `IMG-YYYYMMDD-WA####`.
+Screenshots and camera exports embed dates the same way.
+
+| Pattern | Undated rows matching |
+| --- | --- |
+| `IMG-20240816-WA0010.jpg` | **9,345** |
+| `2019-03-12` dashed | 578 |
+| `20190312_101530` | 127 |
+
+Recovery takes date coverage from 35% to roughly **92%**, with real
+capture dates.
+
+### How it applies
+
+`dp_metadata::date_from_filename` is a pure function, deliberately
+conservative — only the basename is read (a dated folder names a batch,
+not each photo), digit runs longer than a date are rejected as ids, and
+every candidate must be a real calendar date between 1990 and 2100.
+
+It is applied at the metadata-read seam in `ScanJob`, mutating
+`metadata.taken_at` before both `upsert_media` and `update_media_metadata`
+see it. That placement matters: a later full rescan re-derives the date
+rather than wiping it back to NULL, so recovery is durable rather than a
+one-shot that the next scan undoes.
+
+Existing rows are handled by a Settings → Metadata action
+(`recover_filename_dates`), which fills `taken_at` **only where it is
+NULL**, in batches, guarded in the SQL itself so a concurrent scan's real
+EXIF date always wins. No migration, no file on disk is touched.
+
+Not addressed here: some undated rows are not photographs at all
+(`June2023/Documents/.../Purple_Nebula_03-1024x1024.png` and similar
+assets swept in from a Documents folder). That is a scan-source question,
+not a date question.
+
 ## Out of scope
 
 Explicitly not in this phase, to keep it shippable:
@@ -342,19 +413,23 @@ Explicitly not in this phase, to keep it shippable:
 
 ## Task shape for the plan
 
-1. `MediaIndexEntry` + `Catalog::media_index` + the Tauri command, with
+1. `dp_metadata::date_from_filename` — pure, conservative, unit-tested
+   against real paths from the catalog.
+2. Apply it: the `ScanJob` metadata seam, plus a Settings → Metadata
+   backfill for existing rows.
+3. `MediaIndexEntry` + `Catalog::media_index` + the Tauri command, with
    catalog tests asserting index order matches `query_media` at the same
    offsets.
-2. Frontend swap: `useMediaIndex` + `useMediaChunk` replace
+4. Frontend swap: `useMediaIndex` + `useMediaChunk` replace
    `useMediaInfinite`, fetched **in parallel** so the grid never waits on
    the index; `buildLayout` takes geometry; placeholder tiles;
    `useMediaCount` deleted and the toolbar count sourced from the index.
    The gallery must look and behave exactly as it does today.
-3. Selection: hover checkmark, selection mode, `useDragSelect` with
+5. Selection: hover checkmark, selection mode, `useDragSelect` with
    edge auto-scroll, Escape, month-header toggle.
-4. Tags page as albums: `cover_hash`, the `TagCard` DTO, the card grid,
+6. Tags page as albums: `cover_hash`, the `TagCard` DTO, the card grid,
    the sort control, the overflow menu.
-5. The date scrubber: `useTimelineTicks`, the scrubber component, hiding
+7. The date scrubber: `useTimelineTicks`, the scrubber component, hiding
    the native scrollbar, drag and click-to-jump.
-6. Finalize: full `pnpm check`, version bump, PR, squash-merge, signed and
+8. Finalize: full `pnpm check`, version bump, PR, squash-merge, signed and
    notarized release.
