@@ -317,6 +317,61 @@ it("clicking a month header's select action calls onSelectMonth with that month'
   expect(onSelectMonth).toHaveBeenCalledWith([1, 2], false);
 });
 
+// The date scrubber replaces the native scrollbar this container would
+// otherwise show, so it only earns its place once there is a timeline.
+it("mounts the date scrubber with a label for the year the library spans", () => {
+  const { entries, items } = hydrated(2);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.getByTestId("scrubber-track")).toBeInTheDocument();
+  expect(screen.getByText("2025")).toBeInTheDocument();
+});
+
+it("leaves the scrubber off when there is no timeline to scrub", () => {
+  render(
+    <VirtualGrid
+      entries={[]}
+      items={[]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.queryByTestId("scrubber-track")).not.toBeInTheDocument();
+});
+
+// The year labels come from the month headers; the scrubber's value text
+// comes from the index, which is the only thing that knows a given photo's
+// day. jsdom gives the container no layout (`scrollHeight` and
+// `clientHeight` are both 0), so the position under test is the top of the
+// timeline — the first photo's own capture date.
+it("reports the exact date of the photo at the scrubber's position, not just its month", () => {
+  const items = [item(1, { row: { ...mediaItem(1).row, taken_at: "2025-09-10T12:00:00Z" } })];
+  render(
+    <VirtualGrid
+      entries={items.map(entryFor)}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "10 September 2025");
+});
+
 // A checkmark press whose click the gesture claims must not also run the
 // tile's own click handling — that click lands on the tile whenever the
 // pointer drifted off the small checkmark before releasing.
