@@ -56,9 +56,11 @@ it("renders the Tags header", async () => {
 });
 
 describe("TagsPage", () => {
-  function mockTagCommands(tags = [{ tag: { id: 1, name: "Family" }, count: 3 }]) {
+  function mockTagCommands(
+    cards = [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false }],
+  ) {
     mockIPC((cmd) => {
-      if (cmd === "list_tags_with_counts") return tags;
+      if (cmd === "list_tags_with_counts") return cards;
       return undefined;
     });
   }
@@ -69,19 +71,19 @@ describe("TagsPage", () => {
     expect(await screen.findByText(/No tags yet/)).toBeInTheDocument();
   });
 
-  it("renders every tag with its photo count", async () => {
+  it("renders every tag as a card with its photo count", async () => {
     mockTagCommands([
-      { tag: { id: 1, name: "Family" }, count: 3 },
-      { tag: { id: 2, name: "Trip" }, count: 0 },
+      { tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false },
+      { tag: { id: 2, name: "Trip" }, count: 0, thumb_path: null, has_thumb: false },
     ]);
     renderTagsPage();
     expect(await screen.findByText("Family")).toBeInTheDocument();
-    expect(screen.getByText("3 photos")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
     expect(screen.getByText("Trip")).toBeInTheDocument();
-    expect(screen.getByText("0 photos")).toBeInTheDocument();
+    expect(screen.getByText("0")).toBeInTheDocument();
   });
 
-  it("clicking a tag sets the gallery store's tagId and navigates to /gallery", async () => {
+  it("clicking a tag card sets the gallery store's tagId and navigates to /gallery", async () => {
     mockTagCommands();
     const user = userEvent.setup();
     const router = renderTagsPage();
@@ -93,11 +95,13 @@ describe("TagsPage", () => {
     expect(await screen.findByText("gallery stub")).toBeInTheDocument();
   });
 
-  it("renames a tag through the Rename dialog", async () => {
+  it("renames a tag through the overflow menu's Rename dialog", async () => {
     mockTagCommands();
     let renameArgs: unknown;
     mockIPC((cmd, args) => {
-      if (cmd === "list_tags_with_counts") return [{ tag: { id: 1, name: "Family" }, count: 3 }];
+      if (cmd === "list_tags_with_counts") {
+        return [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false }];
+      }
       if (cmd === "rename_tag") {
         renameArgs = args;
         return null;
@@ -107,7 +111,8 @@ describe("TagsPage", () => {
     const user = userEvent.setup();
     renderTagsPage();
 
-    await user.click(await screen.findByRole("button", { name: "RENAME" }));
+    await user.click(await screen.findByRole("button", { name: "Tag actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename…" }));
     const dialog = await screen.findByRole("dialog");
     const input = within(dialog).getByDisplayValue("Family");
     await user.clear(input);
@@ -118,13 +123,13 @@ describe("TagsPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
-  it("merges a tag into another through the Merge dialog", async () => {
+  it("merges a tag into another through the overflow menu's Merge dialog", async () => {
     let mergeArgs: unknown;
     mockIPC((cmd, args) => {
       if (cmd === "list_tags_with_counts") {
         return [
-          { tag: { id: 1, name: "Family" }, count: 3 },
-          { tag: { id: 2, name: "Relatives" }, count: 1 },
+          { tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false },
+          { tag: { id: 2, name: "Relatives" }, count: 1, thumb_path: null, has_thumb: false },
         ];
       }
       if (cmd === "merge_tags") {
@@ -136,8 +141,9 @@ describe("TagsPage", () => {
     const user = userEvent.setup();
     renderTagsPage();
 
-    const rows = await screen.findAllByRole("button", { name: "MERGE INTO…" });
-    await user.click(rows[0]);
+    const overflowButtons = await screen.findAllByRole("button", { name: "Tag actions" });
+    await user.click(overflowButtons[0]);
+    await user.click(await screen.findByRole("menuitem", { name: "Merge into…" }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("radio", { name: "Relatives" }));
     await user.click(within(dialog).getByRole("button", { name: "MERGE" }));
@@ -146,10 +152,12 @@ describe("TagsPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
-  it("deletes a tag through the Delete dialog, stating the photo count and that files are untouched", async () => {
+  it("deletes a tag through the overflow menu's Delete dialog, stating the photo count and that files are untouched", async () => {
     let deleteArgs: unknown;
     mockIPC((cmd, args) => {
-      if (cmd === "list_tags_with_counts") return [{ tag: { id: 1, name: "Family" }, count: 3 }];
+      if (cmd === "list_tags_with_counts") {
+        return [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false }];
+      }
       if (cmd === "delete_tag") {
         deleteArgs = args;
         return null;
@@ -159,7 +167,8 @@ describe("TagsPage", () => {
     const user = userEvent.setup();
     renderTagsPage();
 
-    await user.click(await screen.findByRole("button", { name: "DELETE" }));
+    await user.click(await screen.findByRole("button", { name: "Tag actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Delete…" }));
     const dialog = await screen.findByRole("dialog");
     expect(
       within(dialog).getByText(/Removes this tag from 3 photos and queues their sidecars for a rewrite/),
@@ -170,5 +179,36 @@ describe("TagsPage", () => {
 
     await waitFor(() => expect(deleteArgs).toEqual({ id: 1 }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("sorts the grid by name and by count via the sort menu", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "list_tags_with_counts") {
+        return [
+          { tag: { id: 1, name: "Zebra" }, count: 1, thumb_path: null, has_thumb: false },
+          { tag: { id: 2, name: "Apple" }, count: 9, thumb_path: null, has_thumb: false },
+        ];
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    renderTagsPage();
+
+    await screen.findByText("Zebra");
+
+    function cardOrder() {
+      return screen.getAllByText(/^(Zebra|Apple)$/).map((el) => el.textContent);
+    }
+
+    // Default "Recently updated" keeps the fetched (server) order.
+    expect(cardOrder()).toEqual(["Zebra", "Apple"]);
+
+    await user.click(screen.getByRole("button", { name: /Recently updated/ }));
+    await user.click(await screen.findByRole("menuitem", { name: "Name" }));
+    await waitFor(() => expect(cardOrder()).toEqual(["Apple", "Zebra"]));
+
+    await user.click(screen.getByRole("button", { name: /^Name/ }));
+    await user.click(await screen.findByRole("menuitem", { name: "Count" }));
+    await waitFor(() => expect(cardOrder()).toEqual(["Apple", "Zebra"]));
   });
 });

@@ -23,12 +23,23 @@ pub(crate) async fn list_tags(pool: &SqlitePool) -> DpResult<Vec<Tag>> {
     rows.iter().map(row_to_tag).collect()
 }
 
-/// Every tag with its linked-media count, for the Tags page — see
-/// [`TagWithCount`]'s doc comment. `LEFT JOIN` (not an inner join) so a
-/// tag with zero links still appears, with `count = 0`.
+/// Every tag with its linked-media count and cover art, for the Tags
+/// page's album grid — see [`TagWithCount`]'s doc comment. `LEFT JOIN`
+/// (not an inner join) so a tag with zero links still appears, with
+/// `count = 0` and `cover_hash = None`. `cover_hash` is a correlated
+/// subquery rather than a second join: it needs its own `ORDER BY
+/// taken_at DESC ... LIMIT 1` per tag to pick a single "newest photo"
+/// hash, which a plain join can't express without also collapsing
+/// `count` back down to at most 1 via `DISTINCT`/a window function.
+/// `NULLS LAST` keeps an undated photo from shadowing a dated one as the
+/// cover; `m.id DESC` breaks a `taken_at` tie deterministically.
 pub(crate) async fn list_tags_with_counts(pool: &SqlitePool) -> DpResult<Vec<TagWithCount>> {
     let rows = sqlx::query(
-        "SELECT t.id AS id, t.name AS name, COUNT(mt.media_id) AS count \
+        "SELECT t.id AS id, t.name AS name, COUNT(mt.media_id) AS count, \
+         (SELECT m.hash FROM media m \
+            JOIN media_tags mt2 ON mt2.media_id = m.id \
+           WHERE mt2.tag_id = t.id \
+           ORDER BY m.taken_at DESC NULLS LAST, m.id DESC LIMIT 1) AS cover_hash \
          FROM tags t LEFT JOIN media_tags mt ON mt.tag_id = t.id \
          GROUP BY t.id ORDER BY t.name COLLATE NOCASE",
     )
@@ -41,6 +52,7 @@ pub(crate) async fn list_tags_with_counts(pool: &SqlitePool) -> DpResult<Vec<Tag
             Ok(TagWithCount {
                 tag: row_to_tag(r)?,
                 count: count as u64,
+                cover_hash: r.try_get("cover_hash").map_err(db)?,
             })
         })
         .collect()

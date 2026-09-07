@@ -133,6 +133,10 @@ pub struct Tag {
 pub struct TagWithCount {
     pub tag: Tag,
     pub count: u64,
+    /// `hash` of the tag's newest photo — the album card's cover art. A
+    /// cover is art, not a presence claim: a row whose file is currently
+    /// missing still supplies one. `None` only when the tag has no media.
+    pub cover_hash: Option<String>,
 }
 
 /// Where a [`Place`] came from: `Geocoder` rows are found-or-created by

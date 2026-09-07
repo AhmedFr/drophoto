@@ -1,20 +1,57 @@
 use crate::state::AppState;
 use dp_core::{DpError, DpResult, Tag, TagWithCount};
+use dp_thumbs::ThumbStore;
 use tauri::State;
 
 /// Longest a tag name is allowed to be, after trimming. Chosen to keep
 /// tags readable in chips/lists rather than for any storage limit.
 const MAX_TAG_NAME_LEN: usize = 64;
 
+/// A tag as the Tags page renders it: an album card with cover art.
+/// `thumb_path`/`has_thumb` are resolved here rather than in the catalog
+/// for the same reason `to_item` does it — the thumbnail store is an
+/// app-layer concern the catalog knows nothing about.
+#[derive(serde::Serialize)]
+pub struct TagCard {
+    pub tag: Tag,
+    pub count: u64,
+    pub thumb_path: Option<String>,
+    pub has_thumb: bool,
+}
+
+/// Maps a catalog [`TagWithCount`] into the [`TagCard`] shape sent to the
+/// frontend: `cover_hash` resolved into a thumbnail path through `store`,
+/// mirroring `media_item::to_item`'s split between "the catalog returns a
+/// hash" and "the command layer turns it into `thumb_path` + `has_thumb`".
+/// A tag with no `cover_hash` (no linked media) gets `thumb_path: None`,
+/// `has_thumb: false` — the same shape a hash whose thumbnail was never
+/// generated gets, so the frontend renders one placeholder treatment for
+/// both.
+fn to_card(store: &ThumbStore, t: TagWithCount) -> TagCard {
+    let thumb_path = t
+        .cover_hash
+        .as_ref()
+        .map(|h| store.path(h, 400).to_string_lossy().into_owned());
+    let has_thumb = t.cover_hash.as_ref().is_some_and(|h| store.exists(h, 400));
+    TagCard {
+        tag: t.tag,
+        count: t.count,
+        thumb_path,
+        has_thumb,
+    }
+}
+
 #[tauri::command]
 pub async fn list_tags(state: State<'_, AppState>) -> Result<Vec<Tag>, DpError> {
     state.catalog.list_tags().await
 }
 
-/// Every tag with its linked-media count, for the Tags page.
+/// Every tag with its linked-media count and cover art, for the Tags
+/// page's album grid — see [`to_card`].
 #[tauri::command]
-pub async fn list_tags_with_counts(state: State<'_, AppState>) -> Result<Vec<TagWithCount>, DpError> {
-    state.catalog.list_tags_with_counts().await
+pub async fn list_tags_with_counts(state: State<'_, AppState>) -> Result<Vec<TagCard>, DpError> {
+    let tags = state.catalog.list_tags_with_counts().await?;
+    Ok(tags.into_iter().map(|t| to_card(&state.store, t)).collect())
 }
 
 #[tauri::command]
@@ -198,5 +235,71 @@ mod tests {
             }
             other => panic!("expected Unsupported, got {other:?}"),
         }
+    }
+
+    fn tag_with_count(cover_hash: Option<&str>) -> TagWithCount {
+        TagWithCount {
+            tag: Tag {
+                id: 1,
+                name: "Trip".into(),
+            },
+            count: 3,
+            cover_hash: cover_hash.map(String::from),
+        }
+    }
+
+    #[test]
+    fn to_card_resolves_a_thumb_path_under_the_store_root_when_a_cover_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThumbStore::new(dir.path());
+
+        let card = to_card(&store, tag_with_count(Some("abc123")));
+
+        assert_eq!(
+            card.thumb_path,
+            Some(
+                dir.path()
+                    .join("abc123")
+                    .join("400.webp")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+        assert_eq!(card.tag.name, "Trip");
+        assert_eq!(card.count, 3);
+    }
+
+    #[test]
+    fn to_card_has_thumb_is_false_when_no_thumbnail_was_ever_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThumbStore::new(dir.path());
+
+        let card = to_card(&store, tag_with_count(Some("abc123")));
+
+        assert!(!card.has_thumb);
+    }
+
+    #[test]
+    fn to_card_has_thumb_is_true_when_a_400px_thumbnail_exists_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThumbStore::new(dir.path());
+        let thumb_path = store.path("abc123", 400);
+        std::fs::create_dir_all(thumb_path.parent().unwrap()).unwrap();
+        std::fs::write(&thumb_path, b"fake webp bytes").unwrap();
+
+        let card = to_card(&store, tag_with_count(Some("abc123")));
+
+        assert!(card.has_thumb);
+    }
+
+    #[test]
+    fn to_card_has_no_thumb_path_when_the_tag_has_no_cover() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThumbStore::new(dir.path());
+
+        let card = to_card(&store, tag_with_count(None));
+
+        assert_eq!(card.thumb_path, None);
+        assert!(!card.has_thumb);
     }
 }

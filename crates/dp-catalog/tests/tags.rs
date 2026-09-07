@@ -1,3 +1,4 @@
+use chrono::{DateTime, TimeZone, Utc};
 use dp_catalog::{Catalog, SqliteCatalog};
 use dp_core::{DriveRole, MediaKind, NewDrive, NewMedia, NewSource};
 
@@ -25,6 +26,20 @@ fn nm(drive_id: i64, rel_path: &str, hash: &str) -> NewMedia {
         mtime: None,
         source_id: None,
     }
+}
+
+/// Same shape as [`nm`], but with `taken_at` set — needed to exercise the
+/// cover-art subquery's `ORDER BY m.taken_at DESC` in
+/// `list_tags_with_counts`.
+fn nm_taken(drive_id: i64, rel_path: &str, hash: &str, taken_at: DateTime<Utc>) -> NewMedia {
+    NewMedia {
+        taken_at: Some(taken_at),
+        ..nm(drive_id, rel_path, hash)
+    }
+}
+
+fn ymd(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap()
 }
 
 async fn drive(c: &SqliteCatalog) -> i64 {
@@ -706,4 +721,47 @@ async fn has_sidecar_pending_ignores_rows_marked_missing() {
         !c.has_sidecar_pending(drive_id).await.unwrap(),
         "a missing row's stuck pending flag must not keep re-triggering the sweep"
     );
+}
+
+/// The Tags page's album card needs cover art: `list_tags_with_counts`
+/// picks the tag's newest-`taken_at` photo's hash as `cover_hash`.
+#[tokio::test]
+async fn tags_with_counts_carry_the_newest_photos_hash_as_cover() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let older = c
+        .upsert_media(nm_taken(drive_id, "a.jpg", "hash-old", ymd(2020, 1, 1)))
+        .await
+        .unwrap();
+    let newer = c
+        .upsert_media(nm_taken(drive_id, "b.jpg", "hash-new", ymd(2024, 1, 1)))
+        .await
+        .unwrap();
+    c.tag_media(&[older, newer], &["trip".into()], &[]).await.unwrap();
+    let tag_id = c.list_tags().await.unwrap()[0].id;
+
+    let tags = c.list_tags_with_counts().await.unwrap();
+    let entry = tags.iter().find(|t| t.tag.id == tag_id).unwrap();
+
+    assert_eq!(entry.count, 2);
+    assert_eq!(entry.cover_hash.as_deref(), Some("hash-new"));
+}
+
+/// A tag with zero linked media (e.g. every photo it was on got
+/// untagged, leaving the tag itself behind) has no cover — `cover_hash`
+/// is `None`, not the empty string or some other sentinel.
+#[tokio::test]
+async fn a_tag_with_no_media_has_no_cover() {
+    let c = SqliteCatalog::open_in_memory().await.unwrap();
+    let drive_id = drive(&c).await;
+    let a = c.upsert_media(nm(drive_id, "a.jpg", "h-a")).await.unwrap();
+    c.tag_media(&[a], &["empty".into()], &[]).await.unwrap();
+    let tag_id = c.list_tags().await.unwrap()[0].id;
+    c.tag_media(&[a], &[], &[tag_id]).await.unwrap();
+
+    let tags = c.list_tags_with_counts().await.unwrap();
+    let entry = tags.iter().find(|t| t.tag.id == tag_id).unwrap();
+
+    assert_eq!(entry.count, 0);
+    assert_eq!(entry.cover_hash, None);
 }
