@@ -9,6 +9,16 @@ export type LightboxProps = {
    * renders as nothing.
    */
   items: (MediaItem | undefined)[];
+  /**
+   * The media id expected at each position, from the same source that
+   * numbered `items`. `Lightbox` shows `items[index]` only when it is
+   * really `ids[index]`'s photo — a refetch can land new rows under an
+   * already-open lightbox without the index moving, and displaying the
+   * wrong one would also retarget `MetaPanel`'s tag and place writes.
+   * Checked in here rather than at the call sites, so no caller can
+   * bypass it.
+   */
+  ids: number[];
   index: number;
   onClose(): void;
   onPrev(): void;

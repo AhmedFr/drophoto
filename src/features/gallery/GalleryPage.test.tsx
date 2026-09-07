@@ -812,3 +812,87 @@ it("shows a placeholder rather than another photo's thumbnail when a refetch lan
   fireEvent.click(screen.getAllByRole("button", { name: "Loading" })[0], { metaKey: true });
   expect(useGalleryStore.getState().selectedIds).toEqual([1]);
 });
+
+// The same drift as the test above, but reaching the photo through the two
+// surfaces that don't draw a tile. These matter more than the grid case:
+// the lightbox hosts MetaPanel, whose tag and place actions WRITE against
+// `row.id`, and a tag write sets `sidecar_pending` — so a row read from the
+// wrong position eventually reaches a real .xmp file on disk.
+it("does not open the lightbox on another photo when Enter lands on a drifted row", async () => {
+  const rows = deferAfterFirst([item(1), item(2)], [item(9), item(1)]);
+  mockIPC((cmd) => {
+    if (cmd === "media_index") return [item(1), item(2)].map(entryFor);
+    if (cmd === "query_media") return rows.handle();
+    if (cmd === "tags_for_media") return [];
+    if (cmd === "list_tags") return [];
+    return undefined;
+  });
+  const queryClient = renderPage();
+  expect(await screen.findAllByRole("img")).toHaveLength(2);
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus index 0
+  expect(useGalleryStore.getState().focusIndex).toBe(0);
+
+  act(() => {
+    void queryClient.invalidateQueries({ queryKey: ["media"] });
+  });
+  await act(async () => {
+    rows.flush();
+  });
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Loading" })).toHaveLength(2),
+  );
+
+  // Index 0 now holds photo 9's row while the timeline still says photo 1.
+  fireEvent.keyDown(document.body, { key: "Enter" });
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  // ...and the grid is still answering the keyboard.
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(useGalleryStore.getState().focusIndex).toBe(1);
+});
+
+it("does not swap the displayed photo when a refetch lands under an open lightbox", async () => {
+  const rows = deferAfterFirst([item(1), item(2)], [item(9), item(1)]);
+  const taggedIds: number[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "media_index") return [item(1), item(2)].map(entryFor);
+    if (cmd === "query_media") return rows.handle();
+    if (cmd === "tags_for_media") {
+      taggedIds.push((args as { mediaIds: number[] }).mediaIds);
+      return [];
+    }
+    if (cmd === "list_tags") return [];
+    return undefined;
+  });
+  const user = userEvent.setup();
+  const queryClient = renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await user.click(tiles[0]);
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("01 / 2")).toBeInTheDocument();
+  await waitFor(() => expect(taggedIds).toContainEqual([1]));
+
+  // A scan prepends a row while the lightbox sits open at index 0. The
+  // index doesn't move, so nothing tells the user the photo changed.
+  act(() => {
+    void queryClient.invalidateQueries({ queryKey: ["media"] });
+  });
+  await act(async () => {
+    rows.flush();
+  });
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Loading" })).toHaveLength(2),
+  );
+
+  // Photo 9 must not be displayed, and MetaPanel must not have retargeted
+  // onto it — a tag applied there would land on the wrong photo.
+  expect(screen.queryByAltText("photos/9.jpg")).not.toBeInTheDocument();
+  expect(taggedIds).not.toContainEqual([9]);
+
+  // The page is not stranded: Escape gets the keyboard back.
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(useGalleryStore.getState().focusIndex).toBe(0);
+});

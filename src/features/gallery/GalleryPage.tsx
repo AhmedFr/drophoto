@@ -4,6 +4,7 @@ import type { router } from "@/app/router";
 import type { MediaItem } from "@/lib/api/media";
 import { PageHeader } from "@/components/PageHeader";
 import { PlacePanel } from "@/features/places/components/PlacePanel";
+import { rowAt } from "@/lib/media/hydration";
 import { moveFocusRow } from "@/lib/media/rowNav";
 import { GalleryToolbar } from "./components/GalleryToolbar";
 import { Lightbox } from "./components/Lightbox";
@@ -73,6 +74,10 @@ export function GalleryPage() {
     return sized;
   }, [hydrated, entries.length, sameGeneration]);
 
+  // The photo each position is *supposed* to hold. Paired with `items`
+  // everywhere a position is turned into a photo — see `rowAt`.
+  const ids = useMemo(() => entries.map((entry) => entry.id), [entries]);
+
   // Read from the `document` keydown handlers below, which must not be
   // torn down and re-added every time a chunk lands. Same pattern as
   // `selectedIdsRef`.
@@ -80,6 +85,11 @@ export function GalleryPage() {
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+
+  const idsRef = useRef(ids);
+  useEffect(() => {
+    idsRef.current = ids;
+  }, [ids]);
 
   // Whether the index has actually answered. Until then the toolbar count
   // stays hidden and the empty state is withheld, rather than briefly
@@ -248,7 +258,7 @@ export function GalleryPage() {
       // Radix layer only ever sees the keystroke once the selection is
       // already clear).
       const open = openIndexRef.current;
-      if (open !== null && itemsRef.current[open] === undefined) {
+      if (open !== null && rowAt(itemsRef.current, idsRef.current, open) === undefined) {
         e.stopImmediatePropagation();
         closeLightbox();
       }
@@ -363,10 +373,11 @@ export function GalleryPage() {
 
       if (e.key === "Enter" && current !== null) {
         e.preventDefault();
-        // Same rule `Tile` applies to a click: a row whose chunk hasn't
-        // landed has nothing to show, and opening onto it would strand the
-        // page in a lightbox that renders nothing.
-        if (itemsRef.current[current]) setOpenIndex(current);
+        // Same rule `Tile` applies to a click, and for the same two
+        // reasons: a row whose chunk hasn't landed has nothing to show,
+        // and a row belonging to a *different* photo must not be opened —
+        // the lightbox's tag and place panels write against `row.id`.
+        if (rowAt(itemsRef.current, idsRef.current, current)) setOpenIndex(current);
       }
     }
 
@@ -467,6 +478,7 @@ export function GalleryPage() {
       {openIndex !== null && (
         <Lightbox
           items={items}
+          ids={ids}
           index={openIndex}
           onClose={closeLightbox}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}

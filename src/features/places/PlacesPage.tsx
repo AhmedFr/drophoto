@@ -62,6 +62,10 @@ export function PlacesPage() {
     [items],
   );
 
+  // Every row here is loaded from one query, so these always agree — the
+  // lightbox checks them regardless, which is the point of checking there.
+  const ids = useMemo(() => entries.map((entry) => entry.id), [entries]);
+
   // Results can shrink out from under an open lightbox (switching places,
   // or a refetch after a manual override) — clamp instead of leaving a
   // stale, out-of-range index. Same pattern as `GalleryPage`.
@@ -139,6 +143,7 @@ export function PlacesPage() {
       {openIndex !== null && (
         <Lightbox
           items={items}
+          ids={ids}
           index={openIndex}
           onClose={() => setOpenIndex(null)}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}

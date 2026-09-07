@@ -22,11 +22,16 @@ beforeEach(() => {
   });
 });
 
-function renderLightbox(props: LightboxProps) {
+/**
+ * `ids` defaults to the ids `items` actually carry — the ordinary case,
+ * where the timeline and the hydrated rows agree. Pass it explicitly to
+ * exercise a disagreement.
+ */
+function renderLightbox({ ids, ...props }: Omit<LightboxProps, "ids"> & { ids?: number[] }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <Lightbox {...props} />
+      <Lightbox {...props} ids={ids ?? props.items.map((it) => it?.row.id ?? -1)} />
     </QueryClientProvider>,
   );
 }
@@ -313,4 +318,43 @@ it("does not navigate when arrow keys are pressed inside the tag panel filter", 
   expect(filter).toHaveValue("wed");
   expect(onPrev).not.toHaveBeenCalled();
   expect(onNext).not.toHaveBeenCalled();
+});
+
+// A refetch can land new rows under an already-open lightbox without the
+// index moving. Checked in `Lightbox` itself rather than at the call sites,
+// so neither GalleryPage nor PlacesPage can bypass it.
+it("renders nothing when the row at the index is a different photo", () => {
+  renderLightbox({
+    items: items(3),
+    ids: [99, 98, 97],
+    index: 0,
+    onClose: vi.fn(),
+    onPrev: vi.fn(),
+    onNext: vi.fn(),
+  });
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("does not hand a mismatched row to MetaPanel's tag panel", () => {
+  const seen: number[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "tags_for_media") {
+      seen.push((args as { mediaIds: number[] }).mediaIds);
+      return [];
+    }
+    if (cmd === "list_tags") return [];
+    return undefined;
+  });
+
+  renderLightbox({
+    items: items(3),
+    ids: [99, 98, 97],
+    index: 0,
+    onClose: vi.fn(),
+    onPrev: vi.fn(),
+    onNext: vi.fn(),
+  });
+
+  expect(seen).toEqual([]);
 });
