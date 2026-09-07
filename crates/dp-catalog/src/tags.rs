@@ -2,7 +2,7 @@
 //! `sidecar_pending` flag on `media` that tracks when a row's tag set has
 //! changed since its sidecar file was last written.
 
-use crate::media::row_to_media;
+use crate::media::{from_rfc3339, row_to_media};
 use crate::sqlite::db;
 use dp_core::{DpResult, MediaRow, SidecarHealth, Tag, TagWithCount};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
@@ -23,12 +23,37 @@ pub(crate) async fn list_tags(pool: &SqlitePool) -> DpResult<Vec<Tag>> {
     rows.iter().map(row_to_tag).collect()
 }
 
-/// Every tag with its linked-media count, for the Tags page — see
-/// [`TagWithCount`]'s doc comment. `LEFT JOIN` (not an inner join) so a
-/// tag with zero links still appears, with `count = 0`.
+/// Every tag with its linked-media count and cover art, for the Tags
+/// page's album grid — see [`TagWithCount`]'s doc comment. `LEFT JOIN`
+/// (not an inner join) so a tag with zero links still appears, with
+/// `count = 0` and `cover_hash = cover_taken_at = None`. `cover_hash` and
+/// `cover_taken_at` are each their own correlated subquery rather than a
+/// second join: each needs its own `ORDER BY taken_at DESC ... LIMIT 1`
+/// per tag to pick a single "newest photo" row, which a plain join can't
+/// express without also collapsing `count` back down to at most 1 via
+/// `DISTINCT`/a window function. The two subqueries are ordered
+/// identically (`taken_at DESC NULLS LAST, id DESC`), so they always name
+/// the same row — `cover_taken_at` is that row's `taken_at`, not
+/// independently selected. `NULLS LAST` keeps an undated photo from
+/// shadowing a dated one as the cover; `m.id DESC` breaks a `taken_at`
+/// tie deterministically.
+///
+/// This list's own row order is unaffected by either subquery — it's
+/// still `t.name COLLATE NOCASE`, same as before `cover_hash` existed.
+/// `cover_taken_at` exists precisely so a caller wanting a *recency*
+/// order (the Tags page's "Recently updated" sort) has something to sort
+/// by; this function itself makes no claim to already be in that order.
 pub(crate) async fn list_tags_with_counts(pool: &SqlitePool) -> DpResult<Vec<TagWithCount>> {
     let rows = sqlx::query(
-        "SELECT t.id AS id, t.name AS name, COUNT(mt.media_id) AS count \
+        "SELECT t.id AS id, t.name AS name, COUNT(mt.media_id) AS count, \
+         (SELECT m.hash FROM media m \
+            JOIN media_tags mt2 ON mt2.media_id = m.id \
+           WHERE mt2.tag_id = t.id \
+           ORDER BY m.taken_at DESC NULLS LAST, m.id DESC LIMIT 1) AS cover_hash, \
+         (SELECT m.taken_at FROM media m \
+            JOIN media_tags mt3 ON mt3.media_id = m.id \
+           WHERE mt3.tag_id = t.id \
+           ORDER BY m.taken_at DESC NULLS LAST, m.id DESC LIMIT 1) AS cover_taken_at \
          FROM tags t LEFT JOIN media_tags mt ON mt.tag_id = t.id \
          GROUP BY t.id ORDER BY t.name COLLATE NOCASE",
     )
@@ -38,9 +63,12 @@ pub(crate) async fn list_tags_with_counts(pool: &SqlitePool) -> DpResult<Vec<Tag
     rows.iter()
         .map(|r| {
             let count: i64 = r.try_get("count").map_err(db)?;
+            let cover_taken_at: Option<String> = r.try_get("cover_taken_at").map_err(db)?;
             Ok(TagWithCount {
                 tag: row_to_tag(r)?,
                 count: count as u64,
+                cover_hash: r.try_get("cover_hash").map_err(db)?,
+                cover_taken_at: from_rfc3339(cover_taken_at)?,
             })
         })
         .collect()

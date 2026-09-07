@@ -5,7 +5,7 @@ import { countMedia } from "@/lib/api/media";
  * How many media rows are currently marked missing, across every drive and
  * regardless of the gallery's active type filter — the toolbar's "Missing
  * (N)" chip only renders once this is nonzero, and reads it independently
- * of `useMediaCount` (whose count tracks the *currently filtered* grid, not
+ * of the gallery's own count (which tracks the *currently filtered* grid, not
  * "is there anything to toggle to at all"). Deliberately not scoped by
  * `typeFilter`/`sort` — the chip's very existence shouldn't flicker in and
  * out as the user changes an unrelated filter.

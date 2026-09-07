@@ -731,6 +731,22 @@ impl Catalog for FailingCatalog {
         self.0.count_media_query(q).await
     }
 
+    async fn media_index(&self, q: &MediaQuery) -> DpResult<Vec<dp_core::MediaIndexEntry>> {
+        self.0.media_index(q).await
+    }
+
+    async fn count_undated(&self) -> DpResult<u64> {
+        self.0.count_undated().await
+    }
+
+    async fn list_undated(&self, after_id: i64, limit: u32) -> DpResult<Vec<(i64, String)>> {
+        self.0.list_undated(after_id, limit).await
+    }
+
+    async fn set_taken_at_bulk(&self, rows: &[(i64, DateTime<Utc>)]) -> DpResult<u64> {
+        self.0.set_taken_at_bulk(rows).await
+    }
+
     async fn get_media_with_drive(&self, id: i64) -> DpResult<(MediaRow, Drive)> {
         self.0.get_media_with_drive(id).await
     }

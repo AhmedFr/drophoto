@@ -97,6 +97,17 @@ body {
   background: transparent;
 }
 
+/* Opts a single container out of the scrollbars above. Used by the gallery
+   grid, which replaces the native bar with the date scrubber — the
+   container still scrolls natively in every other way (wheel, trackpad,
+   keyboard, Page Up/Down); only the bar itself is gone. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Indeterminate progress bar (ui/progress.tsx's `indeterminate` prop) — a
    sliding bar with no numeric meaning, used while a scan's directory walk
    is under way and there's no done/total to show yet. */

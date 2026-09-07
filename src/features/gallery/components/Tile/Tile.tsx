@@ -4,15 +4,76 @@ import { formatDuration } from "@/lib/media/format";
 import { thumbUrl } from "@/lib/media/thumbUrl";
 import type { TileProps } from "./Tile.types";
 
-export function Tile({ tile, onOpen, selected, onToggle, focused = false }: TileProps) {
-  const { item, width, height, index } = tile;
-  const { row, thumb_path, drive_name, online, has_thumb } = item;
+export function Tile({
+  tile,
+  item: hydrated,
+  onOpen,
+  selected,
+  onToggle,
+  focused = false,
+  selectionMode = false,
+  onCheckToggle,
+  onCheckPointerDown,
+  onPointerEnter,
+  consumeGestureClick,
+}: TileProps) {
+  const { entry, width, height, index } = tile;
+
+  // THE invariant, enforced where the paint actually happens: a tile shows
+  // a row only if that row IS this tile's photo.
+  //
+  // The geometry and the rows are cached separately and refetched
+  // independently — by a filter change, but equally by any of the app's
+  // `invalidateQueries({ queryKey: ["media"] })` calls after a scan, a tag
+  // or place edit, a missing-file reconcile, a date recovery. Whenever one
+  // side lands first, position N briefly means two different photos on the
+  // two sides. Comparing ids here is O(1), needs to know nothing about how
+  // the two got out of step, and holds for call sites that don't exist
+  // yet — where inferring coherence from arrival timing would not.
+  const item = hydrated?.row.id === entry.id ? hydrated : undefined;
+
+  /**
+   * Whether this click belongs to a checkmark gesture that already acted
+   * on it — asked of the gesture, since the browser decides which element
+   * receives the click and it isn't always the checkmark.
+   *
+   * A keyboard activation is excluded before the question is even asked.
+   * It synthesises a click with `detail === 0` and, crucially, no pointer
+   * press ahead of it — so it can never be a gesture's own click, and
+   * letting it consume a claim left by an earlier drag would silently eat
+   * the keystroke.
+   */
+  const isGestureClick = (e: { detail: number }) =>
+    e.detail !== 0 && (consumeGestureClick?.() ?? false);
+
+  /**
+   * Whether this grid does selection at all. The checkmark is mounted only
+   * where it is, because a grid that supplies neither callback (the Places
+   * page's place-filtered strip, which is out of scope for this phase and
+   * passes a no-op `onToggle`) would otherwise show a "Select" button on
+   * every photo that does nothing — and double the grid's tab stops with
+   * dead ones.
+   */
+  const selectable = Boolean(onCheckPointerDown || onCheckToggle);
 
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={row.rel_path}
+      data-testid="tile"
+      // The tile's position in the timeline, readable from the DOM. Edge
+      // auto-scroll resolves which tile is under the pointer by hit-testing
+      // and reading this back, since a pointer held outside the container
+      // never fires `pointerenter` on anything.
+      data-tile-index={index}
+      // The browser's own image drag would compete with the drag-select
+      // gesture for the pointer stream and win.
+      draggable={false}
+      // Placeholders have no path to name themselves with, and no content
+      // to describe — `aria-busy` says the box is a stand-in for something
+      // still arriving.
+      aria-label={item ? item.row.rel_path : "Loading"}
+      aria-busy={item ? undefined : true}
       aria-selected={selected}
       data-focused={focused ? "true" : "false"}
       className={cn(
@@ -21,30 +82,110 @@ export function Tile({ tile, onOpen, selected, onToggle, focused = false }: Tile
         focused && "outline-2 outline-offset-[-2px] outline-ring",
       )}
       style={{ width, height }}
+      // Selection works on a placeholder — `tile.entry.id` identifies it
+      // without any hydrated detail, which is the whole point of selecting
+      // across a set the grid hasn't loaded. Opening doesn't: the lightbox
+      // needs the row itself, so a plain click on a placeholder is inert
+      // rather than opening an empty dialog.
+      //
+      // In selection mode a plain click toggles rather than opens — the
+      // Google Photos rule, and the reason it comes before the `item`
+      // check: a placeholder has no row to open, but it does have an id to
+      // select.
+      //
+      // The gesture check comes first and covers the whole handler. A
+      // checkmark press that drifts a few pixels before releasing sends
+      // its `click` here — to the nearest common ancestor of press and
+      // release — rather than to the checkmark, and running any of the
+      // branches below on it would undo the gesture (or, once undoing it
+      // empties the selection and leaves selection mode, open the
+      // lightbox from what the user experienced as a checkmark press).
       onClick={(e) => {
+        if (isGestureClick(e)) return;
         if (e.metaKey || e.ctrlKey) onToggle(index, false);
         else if (e.shiftKey) onToggle(index, true);
-        else onOpen(index);
+        else if (selectionMode) onToggle(index, false);
+        else if (item) onOpen(index);
       }}
       onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+      onPointerEnter={() => onPointerEnter?.(index)}
+      // `stopPropagation` is what makes exactly one handler act. GalleryPage
+      // also listens for Enter and Space on `document`, against its *roving*
+      // focus (`focusIndex`) — but when a tile holds real DOM focus, this
+      // tile is the truth about what the user is acting on, and the two
+      // indices are routinely different. Without this, one keystroke
+      // toggled two different photos, or opened a photo other than the
+      // focused one. Only the keys handled here are stopped; arrows still
+      // reach the grid handler, so the keyboard is never left dead.
       onKeyDown={(e) => {
         if (e.key === "Enter") {
-          onOpen(index);
+          e.stopPropagation();
+          if (item) onOpen(index);
         } else if (e.key === " ") {
           e.preventDefault();
+          e.stopPropagation();
           onToggle(index, false);
         }
       }}
     >
-      {selected && (
-        <div
-          data-testid="tile-selected-check"
-          className="absolute top-1.5 left-1.5 z-10 flex size-4 items-center justify-center bg-foreground text-background"
+      {/*
+        Mounted whether or not the row has hydrated: selection is keyed on
+        `tile.entry.id`, which the timeline index knows for every tile.
+        Hidden until the tile is hovered (or the gallery is already in
+        selection mode, where showing every target is the point), so an
+        idle grid stays quiet.
+      */}
+      {selectable && (
+        <button
+          type="button"
+          aria-label={selected ? "Deselect" : "Select"}
+          aria-pressed={selected}
+          data-testid="tile-check"
+          className={cn(
+            "absolute top-1.5 left-1.5 z-10 flex size-5 items-center justify-center rounded-full transition-opacity focus-visible:opacity-100",
+            selected
+              ? "bg-foreground text-background opacity-100"
+              : cn(
+                  "bg-black/40 text-white group-hover:opacity-100",
+                  selectionMode ? "opacity-100" : "opacity-0",
+                ),
+          )}
+          onClick={(e) => {
+            // The tile body's handler would otherwise open the lightbox too.
+            e.stopPropagation();
+            // A press that released on this same button lands its click
+            // here; one that drifted onto the tile lands it on the tile.
+            // Both consult the same gesture state.
+            if (isGestureClick(e)) return;
+            if (onCheckToggle) onCheckToggle(index);
+            else onToggle(index, false);
+          }}
+          onPointerDown={(e) => {
+            if (!onCheckPointerDown) return;
+            // Primary button only. A right- or middle-click would otherwise
+            // toggle the photo and open a sweep that runs until the next
+            // release — the tile body never had this problem, since `click`
+            // doesn't fire for those buttons at all.
+            if (e.button !== 0) return;
+            e.stopPropagation();
+            onCheckPointerDown(index, e);
+          }}
         >
-          <Check size={11} strokeWidth={2.5} />
-        </div>
+          <Check size={12} strokeWidth={2.5} />
+        </button>
       )}
 
+      {item && <TileContent item={item} />}
+    </div>
+  );
+}
+
+/** Everything that needs the hydrated row: thumbnail, badges, drive name. */
+function TileContent({ item }: { item: NonNullable<TileProps["item"]> }) {
+  const { row, thumb_path, drive_name, online, has_thumb } = item;
+
+  return (
+    <>
       {has_thumb ? (
         <img
           loading="lazy"
@@ -96,6 +237,6 @@ export function Tile({ tile, onOpen, selected, onToggle, focused = false }: Tile
       >
         <span className="font-mono text-[9px] text-white">{drive_name}</span>
       </div>
-    </div>
+    </>
   );
 }

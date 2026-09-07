@@ -1,10 +1,12 @@
 mod exiftool;
+mod filename_date;
 mod parse;
 mod resolve;
 mod sidecar;
 mod version;
 
 pub use exiftool::ExiftoolProvider;
+pub use filename_date::date_from_filename;
 pub use parse::parse_exiftool_json;
 pub use resolve::{resolve_tool, resolve_tool_in};
 pub use sidecar::{sidecar_path, ExiftoolSidecars, Sidecars};

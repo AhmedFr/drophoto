@@ -5,6 +5,7 @@ import {
   formatDims,
   formatDuration,
   formatExposure,
+  formatFullDate,
   formatIsoFocal,
   formatMissingSince,
   formatTakenAt,
@@ -137,6 +138,22 @@ describe("formatTakenAt", () => {
 
   it("returns Unknown for null", () => {
     expect(formatTakenAt(null)).toBe("Unknown");
+  });
+});
+
+describe("formatFullDate", () => {
+  it("spells the month out in full", () => {
+    expect(formatFullDate("2019-03-12T09:30:00Z")).toBe("12 March 2019");
+  });
+
+  // Read in UTC, like every other formatter here — a timestamp just past
+  // midnight must not slide back a day for a viewer west of Greenwich.
+  it("reads the date in UTC, not the viewer's time zone", () => {
+    expect(formatFullDate("2019-03-12T00:30:00Z")).toBe("12 March 2019");
+  });
+
+  it("returns Undated for null, matching the grid's own header", () => {
+    expect(formatFullDate(null)).toBe("Undated");
   });
 });
 

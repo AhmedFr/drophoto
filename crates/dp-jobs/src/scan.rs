@@ -571,6 +571,22 @@ fn rel_path(path: &Path, mount: &Path) -> Option<String> {
     )
 }
 
+/// Fills `metadata.taken_at` from `rel_path`'s own name (WhatsApp exports,
+/// screenshots — see `dp_metadata::date_from_filename`) whenever the
+/// metadata read itself found no date. Deliberately factored into its own
+/// function and called from *every* site that persists a freshly-read
+/// `MediaMetadata` (the full-processing path below, and the Task 5b.3
+/// metadata-backfill path in `find_skip_match`'s branch): a filename-derived
+/// date already written by `recover_filename_dates` must survive a later
+/// scan that re-reads EXIF and — correctly — finds nothing, or that scan
+/// would silently wipe it back to NULL. A second call site duplicating this
+/// check inline is exactly how that regression happened once already.
+fn apply_filename_fallback(metadata: &mut MediaMetadata, rel_path: &str) {
+    if metadata.taken_at.is_none() {
+        metadata.taken_at = dp_metadata::date_from_filename(rel_path);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn process_file(
     ctx: &JobCtx,
@@ -667,7 +683,8 @@ async fn process_file(
         // `meta_read_at` NULL so it's retried on the next scan too.
         if m.meta_read_at.is_none() {
             match deps.metadata.read(&file.path).await {
-                Ok(metadata) => {
+                Ok(mut metadata) => {
+                    apply_filename_fallback(&mut metadata, &rel);
                     if let Err(e) = deps
                         .catalog
                         .update_media_metadata(m.id, &metadata, Utc::now())
@@ -788,7 +805,7 @@ async fn process_file(
         return;
     }
 
-    let (metadata, metadata_read_ok) = match deps.metadata.read(&file.path).await {
+    let (mut metadata, metadata_read_ok) = match deps.metadata.read(&file.path).await {
         Ok(m) => (m, true),
         Err(e) => {
             had_error = true;
@@ -796,6 +813,7 @@ async fn process_file(
             (MediaMetadata::default(), false)
         }
     };
+    apply_filename_fallback(&mut metadata, &rel);
 
     let new_media = NewMedia {
         drive_id,

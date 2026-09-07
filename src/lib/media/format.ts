@@ -47,6 +47,21 @@ export function monthKey(takenAt: string | null): string {
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}`;
 }
 
+/**
+ * A photo's capture date spelled out — "12 March 2019" — for the date
+ * scrubber's pill, where the whole point is knowing exactly where in the
+ * timeline the drag has landed. `null` reads "Undated", matching what the
+ * grid's own header calls that group.
+ *
+ * UTC getters, like its neighbours above: a photo must not appear to have
+ * been taken on a different day depending on where it is being viewed.
+ */
+export function formatFullDate(takenAt: string | null): string {
+  if (!takenAt) return "Undated";
+  const d = new Date(takenAt);
+  return `${d.getUTCDate()} ${MONTHS_LONG[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}
+
 export function formatDuration(ms: number | null): string {
   if (ms === null) return "";
   const totalSeconds = Math.round(ms / 1000);

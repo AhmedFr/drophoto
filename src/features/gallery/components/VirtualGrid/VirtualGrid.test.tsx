@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, vi } from "vitest";
 import type { MediaItem } from "@/lib/api/media";
+import type { LayoutEntry } from "@/lib/media/layout";
 import { virtualizerMockFactory } from "@/test/mockVirtualizer";
+import { entryFor, mediaItem } from "@/test/mediaFactories";
 import { VirtualGrid } from "./VirtualGrid";
 
 const virtualizerSpies = vi.hoisted(() => ({ measure: vi.fn() }));
@@ -10,6 +12,30 @@ vi.mock("@tanstack/react-virtual", () => virtualizerMockFactory(virtualizerSpies
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://mock/${path}`,
 }));
+
+// jsdom lays nothing out: every element reports 0 for both of these, which
+// would leave the grid with no scrollable range at all — and so no ticks
+// and no scrubber. These are the numbers the scrubber's arithmetic runs
+// on: 1400px of content in a 400px viewport is a 1000px scrollable range.
+const SCROLL_HEIGHT = 1400;
+const CLIENT_HEIGHT = 400;
+Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+  configurable: true,
+  get: () => SCROLL_HEIGHT,
+});
+Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+  configurable: true,
+  get: () => CLIENT_HEIGHT,
+});
+
+/** Scrolls the grid's own container and lets the scrubber hear about it. */
+function scrollTo(top: number) {
+  const scroller = screen.getByTestId("grid-scroll");
+  // jsdom's `scrollTop` setter is inert without layout, so the position is
+  // installed on the element directly.
+  Object.defineProperty(scroller, "scrollTop", { configurable: true, value: top });
+  fireEvent.scroll(scroller);
+}
 
 let latestResizeCallback: ResizeObserverCallback | null = null;
 
@@ -39,78 +65,181 @@ beforeEach(() => {
 });
 
 function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
-  return {
-    row: {
-      id,
-      drive_id: 1,
-      rel_path: `photos/${id}.jpg`,
-      hash: `hash${id}`,
-      size: 1234,
-      kind: "photo",
-      ext: "jpg",
-      width: 100,
-      height: 200,
-      duration_ms: null,
-      taken_at: "2025-09-10T12:00:00Z",
-      camera: null,
-      lens: null,
-      aperture: null,
-      shutter: null,
-      iso: null,
-      focal_mm: null,
-      lat: null,
-      lon: null,
-      missing_at: null,
-      organized_at: null,
-      source_id: null,
-      place_id: null,
-      mtime: null,
-    },
-    thumb_path: `/tmp/thumbs/hash${id}/400.webp`,
-    preview_path: `/tmp/thumbs/hash${id}/2000.webp`,
-    drive_name: "Kodachrome",
-    online: true,
-    original_path: null,
-    has_thumb: true,
+  return mediaItem(id, {
     ...overrides,
-  };
+    row: { ...mediaItem(id).row, taken_at: "2025-09-10T12:00:00Z", ...overrides.row },
+  });
+}
+
+/** A hydrated set: `entries` and `items` in the offset parity the gallery relies on. */
+function hydrated(count: number): { entries: LayoutEntry[]; items: MediaItem[] } {
+  const items = Array.from({ length: count }, (_, i) => item(i + 1));
+  return { entries: items.map(entryFor), items };
 }
 
 it("renders a month header with a label and item count", () => {
-  const items = [item(1), item(2)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  const { entries, items } = hydrated(2);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
   expect(screen.getByText("September 2025")).toBeInTheDocument();
   expect(screen.getByText("2")).toBeInTheDocument();
 });
 
+// The header's action is a checkbox for its section, so the grid — which
+// holds both the section's ids and the selection — is what decides whether
+// pressing it means select or deselect, and tells the header and the page
+// the same thing.
+it("reports a month whose every photo is selected as an already-selected section", () => {
+  const { entries, items } = hydrated(2);
+  const onSelectMonth = vi.fn();
+  const { rerender } = render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set([1])}
+      onToggle={() => {}}
+      onSelectMonth={onSelectMonth}
+    />,
+  );
+
+  // One of the two selected: still a section to finish selecting.
+  fireEvent.click(screen.getByRole("button", { name: /^Select all 2 in September 2025$/ }));
+  expect(onSelectMonth).toHaveBeenLastCalledWith([1, 2], false, false);
+
+  rerender(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set([1, 2])}
+      onToggle={() => {}}
+      onSelectMonth={onSelectMonth}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Deselect all 2 in September 2025" }));
+  expect(onSelectMonth).toHaveBeenLastCalledWith([1, 2], false, true);
+});
+
 it("renders a tile per item with alt text", () => {
-  const items = [item(1), item(2), item(3)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  const { entries, items } = hydrated(3);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
   const imgs = screen.getAllByRole("img");
   expect(imgs).toHaveLength(3);
   expect(imgs[0]).toHaveAttribute("alt", "photos/1.jpg");
 });
 
-it("calls onNearEnd once when the last rendered row is near the end of the layout", () => {
-  const items = Array.from({ length: 3 }, (_, i) => item(i + 1));
-  const onNearEnd = vi.fn();
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />);
-  expect(onNearEnd).toHaveBeenCalledTimes(1);
+// The layout comes from the index alone, so an entry with no hydrated row
+// still takes up its exact space — that's what keeps the scroll height
+// stable while chunks land.
+it("lays out every entry, rendering placeholders for the ones not yet hydrated", () => {
+  const { entries, items } = hydrated(3);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={[items[0]]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+  expect(screen.getAllByRole("img")).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Loading" })).toHaveLength(2);
+  expect(screen.getByText("3")).toBeInTheDocument();
 });
 
-it("does not call onNearEnd again for the same layout length", () => {
-  const items = Array.from({ length: 3 }, (_, i) => item(i + 1));
-  const onNearEnd = vi.fn();
-  const { rerender } = render(
-    <VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />,
+it("reports the rendered tile-index range via onRangeChange", () => {
+  const { entries, items } = hydrated(3);
+  const onRangeChange = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onRangeChange={onRangeChange}
+    />,
   );
-  rerender(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} onNearEnd={onNearEnd} selectedIds={new Set()} onToggle={() => {}} />);
-  expect(onNearEnd).toHaveBeenCalledTimes(1);
+  expect(onRangeChange).toHaveBeenCalledWith({ start: 0, end: 2 });
+});
+
+// Chunk 0 is the right thing to hydrate before the index has landed, so
+// the first rows are already in flight when it does.
+it("reports a chunk-0 range when there is nothing laid out yet", () => {
+  const onRangeChange = vi.fn();
+  render(
+    <VirtualGrid
+      entries={[]}
+      items={[]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onRangeChange={onRangeChange}
+    />,
+  );
+  expect(onRangeChange).toHaveBeenCalledWith({ start: 0, end: 0 });
+});
+
+// A chunk landing must not re-report the range: that would feed straight
+// back into the queries that produced it.
+it("does not re-report the range when only the hydrated items change", () => {
+  const { entries, items } = hydrated(3);
+  const onRangeChange = vi.fn();
+  const props = {
+    entries,
+    targetRowHeight: 200,
+    onOpen: () => {},
+    selectedIds: new Set<number>(),
+    onToggle: () => {},
+    onRangeChange,
+  };
+  const { rerender } = render(<VirtualGrid {...props} items={[items[0]]} />);
+  // Mount settles at the measured width; what matters is that hydration
+  // afterwards adds nothing.
+  const callsAfterMount = onRangeChange.mock.calls.length;
+  expect(onRangeChange).toHaveBeenLastCalledWith({ start: 0, end: 2 });
+
+  rerender(<VirtualGrid {...props} items={items} />);
+
+  expect(onRangeChange).toHaveBeenCalledTimes(callsAfterMount);
 });
 
 it("re-measures the virtualizer when the container is resized", () => {
-  const items = [item(1), item(2)];
-  render(<VirtualGrid items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  const { entries, items } = hydrated(2);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
 
   const callsAfterMount = virtualizerSpies.measure.mock.calls.length;
   expect(callsAfterMount).toBeGreaterThan(0);
@@ -126,25 +255,116 @@ it("re-measures the virtualizer when the container is resized", () => {
 });
 
 it("marks a tile as selected when its id is in selectedIds", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
       selectedIds={new Set([2])}
       onToggle={() => {}}
+      onCheckPointerDown={() => {}}
     />,
   );
-  expect(screen.getByTestId("tile-selected-check")).toBeInTheDocument();
+  // The checkmark is mounted on every tile of a selecting grid (it doubles
+  // as the hover affordance), so "selected" is its pressed state, not its
+  // presence.
+  const checks = screen.getAllByTestId("tile-check");
+  expect(checks.map((c) => c.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
 });
 
-it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {
-  const items = [item(1), item(2)];
+// The Places page mounts this same grid to browse one place's photos, with
+// no selection callbacks and a no-op `onToggle` — selection there is out
+// of scope for this phase. Every tile would otherwise carry a "Select"
+// button that does nothing, doubling the strip's tab stops with dead ones.
+it("renders no checkmarks when the grid is given no selection callbacks", () => {
+  const { entries, items } = hydrated(3);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.getAllByTestId("tile")).toHaveLength(3);
+  expect(screen.queryAllByTestId("tile-check")).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: "Select" })).toHaveLength(0);
+});
+
+it("puts every tile into selection mode once anything is selected", () => {
+  const { entries, items } = hydrated(2);
   const onOpen = vi.fn();
   const onToggle = vi.fn();
   render(
     <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={onOpen}
+      selectedIds={new Set([2])}
+      onToggle={onToggle}
+      selectionMode
+    />,
+  );
+
+  fireEvent.click(screen.getAllByRole("button", { name: /photos\// })[0]);
+
+  expect(onToggle).toHaveBeenCalledWith(0, false);
+  expect(onOpen).not.toHaveBeenCalled();
+});
+
+it("reports a tile's pointer entry through onTileEnter so a drag can extend to it", () => {
+  const { entries, items } = hydrated(2);
+  const onTileEnter = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onTileEnter={onTileEnter}
+    />,
+  );
+
+  fireEvent.pointerEnter(screen.getAllByRole("button", { name: /photos\// })[1]);
+
+  expect(onTileEnter).toHaveBeenCalledWith(1);
+});
+
+it("starts a drag-select from a tile's checkmark", () => {
+  const { entries, items } = hydrated(2);
+  const onCheckPointerDown = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onCheckPointerDown={onCheckPointerDown}
+    />,
+  );
+
+  fireEvent.pointerDown(screen.getAllByTestId("tile-check")[1]);
+
+  expect(onCheckPointerDown).toHaveBeenCalledWith(1, expect.anything());
+});
+
+it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {
+  const { entries, items } = hydrated(2);
+  const onOpen = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={onOpen}
@@ -159,9 +379,10 @@ it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {
 });
 
 it("marks the tile at focusIndex as keyboard-focused", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
@@ -176,10 +397,11 @@ it("marks the tile at focusIndex as keyboard-focused", () => {
 });
 
 it("reports the row grouping via onRowsChange, omitting the month header", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   const onRowsChange = vi.fn();
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
@@ -192,10 +414,11 @@ it("reports the row grouping via onRowsChange, omitting the month header", () =>
 });
 
 it("clicking a month header's select action calls onSelectMonth with that month's ids", () => {
-  const items = [item(1), item(2)];
+  const { entries, items } = hydrated(2);
   const onSelectMonth = vi.fn();
   render(
     <VirtualGrid
+      entries={entries}
       items={items}
       targetRowHeight={200}
       onOpen={() => {}}
@@ -205,5 +428,124 @@ it("clicking a month header's select action calls onSelectMonth with that month'
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: /select all/i }));
-  expect(onSelectMonth).toHaveBeenCalledWith([1, 2], false);
+  // Nothing selected here, so the section is not an already-selected one.
+  expect(onSelectMonth).toHaveBeenCalledWith([1, 2], false, false);
+});
+
+// The date scrubber replaces the native scrollbar this container would
+// otherwise show, so it only earns its place once there is a timeline.
+it("mounts the date scrubber with a label for the year the library spans", () => {
+  const { entries, items } = hydrated(2);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.getByTestId("scrubber-track")).toBeInTheDocument();
+  expect(screen.getByText("2025")).toBeInTheDocument();
+});
+
+it("leaves the scrubber off when there is no timeline to scrub", () => {
+  render(
+    <VirtualGrid
+      entries={[]}
+      items={[]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.queryByTestId("scrubber-track")).not.toBeInTheDocument();
+});
+
+// The year labels come from the month headers; the scrubber's value text
+// comes from the index, which is the only thing that knows a given photo's
+// day.
+it("reports the exact date of the photo at the scrubber's position, not just its month", () => {
+  const items = [item(1, { row: { ...mediaItem(1).row, taken_at: "2025-09-10T12:00:00Z" } })];
+  render(
+    <VirtualGrid
+      entries={items.map(entryFor)}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "10 September 2025");
+});
+
+/**
+ * Ten square photos at a 1000px container width pack five to a row, each
+ * (1000 - 4 gaps) / 5 = 193.6px tall. So in the layout's own coordinates
+ * the month header occupies 0–60 (52 + an 8px gap), the first row starts
+ * at 60, and the second starts at 261.6.
+ *
+ * `scrollTop` counts the container's 16px top padding and those offsets
+ * don't, which is the whole job of `CONTENT_PADDING`: the second row
+ * reaches the top of the viewport at a `scrollTop` of 277.6, not 261.6.
+ * The two assertions below sit either side of that line, so the constant
+ * is pinned to within a pixel — with no padding correction at all, the
+ * first of them reads the wrong row's date.
+ */
+it("maps a scroll position to the photo actually at the top of the viewport", () => {
+  const entries = Array.from({ length: 10 }, (_, i) => ({
+    id: i + 1,
+    taken_at: i < 5 ? "2025-09-20T12:00:00Z" : "2025-09-10T12:00:00Z",
+    width: 100,
+    height: 100,
+  }));
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={[]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  scrollTo(277);
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "20 September 2025");
+
+  scrollTo(278);
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "10 September 2025");
+});
+
+// A checkmark press whose click the gesture claims must not also run the
+// tile's own click handling — that click lands on the tile whenever the
+// pointer drifted off the small checkmark before releasing.
+it("does not open or toggle on a click the drag gesture claims", () => {
+  const { entries, items } = hydrated(2);
+  const onOpen = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={onOpen}
+      selectedIds={new Set()}
+      onToggle={onToggle}
+      onCheckPointerDown={() => {}}
+      consumeGestureClick={() => true}
+    />,
+  );
+
+  // A pointer click (`detail` 1), which is what a drifted press produces.
+  fireEvent.click(screen.getAllByRole("button", { name: /photos\// })[0], { detail: 1 });
+
+  expect(onOpen).not.toHaveBeenCalled();
+  expect(onToggle).not.toHaveBeenCalled();
 });

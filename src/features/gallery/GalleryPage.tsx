@@ -1,21 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { router } from "@/app/router";
+import type { MediaItem } from "@/lib/api/media";
 import { PageHeader } from "@/components/PageHeader";
 import { PlacePanel } from "@/features/places/components/PlacePanel";
+import { rowAt } from "@/lib/media/hydration";
 import { moveFocusRow } from "@/lib/media/rowNav";
 import { GalleryToolbar } from "./components/GalleryToolbar";
 import { Lightbox } from "./components/Lightbox";
 import { SelectionBar } from "./components/SelectionBar";
 import { TagPanel } from "./components/TagPanel";
 import { VirtualGrid } from "./components/VirtualGrid";
-import { useMediaCount } from "./hooks/useMediaCount";
-import { useMediaInfinite } from "./hooks/useMediaInfinite";
+import { useDragSelect } from "./hooks/useDragSelect";
+import { useMediaChunks } from "./hooks/useMediaChunks";
+import { useMediaIndex } from "./hooks/useMediaIndex";
 import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
 
 export function GalleryPage() {
-  const media = useMediaInfinite();
-  const count = useMediaCount();
+  // The whole filtered set as geometry (`entries`), hydrated in chunks
+  // around whatever the grid is currently rendering (`items`). The two
+  // requests go out together — nothing on screen waits for the index
+  // before the first chunk is in flight — and both are indexed by the
+  // same absolute position, so `entries[n]` and `items[n]` are the same
+  // photo.
+  const { entries, key: indexKey, isLoading, isError, error } = useMediaIndex();
+
+  // The tile-index span `VirtualGrid` is currently rendering.
+  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 });
+
+  // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s
+  // `onClose`). Declared up here because hydration has to cover it: with
+  // paging gone, next/prev walk the whole set, so the chunks fetched must
+  // follow the lightbox and not just the grid.
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  // `openIndex` is handed to hydration as well as to `Lightbox`: the
+  // chunks held are the visible ones plus the lightbox's own and its
+  // neighbours, so stepping never runs off the end of what has loaded.
+  const { items: hydrated, key: chunksKey } = useMediaChunks(visibleRange, openIndex);
+
   const searchQuery = useGalleryStore((s) => s.query);
   const density = useGalleryStore((s) => s.density);
   const selectedIds = useGalleryStore((s) => s.selectedIds);
@@ -29,12 +52,63 @@ export function GalleryPage() {
   const selectAll = useGalleryStore((s) => s.selectAll);
   const invertSelection = useGalleryStore((s) => s.invertSelection);
   const clearSelection = useGalleryStore((s) => s.clearSelection);
-  const items = media.items;
+
+  // The geometry (`entries`) and the rows (`hydrated`) are cached
+  // separately and resolve at different speeds, and both hold the outgoing
+  // selection through a settle — so either can be a generation behind the
+  // other after a filter, sort or search change. Rows are painted only
+  // while the two agree; when they don't, the grid falls back to
+  // placeholders over the index's geometry. The invariant this buys: a
+  // tile never shows a thumbnail belonging to a different photo than its
+  // own id.
+  const sameGeneration = indexKey !== null && indexKey === chunksKey;
+
+  // `useMediaChunks` only fills the slots it has hydrated, so its `length`
+  // stops wherever the highest loaded chunk ends. `Lightbox` reads
+  // `items.length` as the set's total ("03 / 17405"), so it's given a view
+  // of the same sparse array sized to the whole timeline instead.
+  const items = useMemo(() => {
+    const sized: (MediaItem | undefined)[] = sameGeneration
+      ? hydrated.slice(0, entries.length)
+      : [];
+    sized.length = entries.length;
+    return sized;
+  }, [hydrated, entries.length, sameGeneration]);
+
+  // The photo each position is *supposed* to hold. Paired with `items`
+  // everywhere a position is turned into a photo — see `rowAt`.
+  const ids = useMemo(() => entries.map((entry) => entry.id), [entries]);
+
+  // Read from the `document` keydown handlers below, which must not be
+  // torn down and re-added every time a chunk lands. Same pattern as
+  // `selectedIdsRef`.
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  const idsRef = useRef(ids);
+  useEffect(() => {
+    idsRef.current = ids;
+  }, [ids]);
+
+  // Whether the index has actually answered. Until then the toolbar count
+  // stays hidden and the empty state is withheld, rather than briefly
+  // claiming an empty library.
+  const loaded = !isLoading && !isError;
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
-  // Opened by `VirtualGrid`'s `onOpen` (and closed by `Lightbox`'s `onClose`).
-  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  // Read by the Escape handler below, which must NOT list `openIndex` as a
+  // dependency: re-registering that listener while a `Lightbox` is already
+  // mounted lands it *behind* Radix's `DismissableLayer`, which would then
+  // win the keystroke and close the lightbox instead of clearing the
+  // selection. Registering once at mount keeps it ahead of every Radix
+  // layer the page will ever create.
+  const openIndexRef = useRef(openIndex);
+  useEffect(() => {
+    openIndexRef.current = openIndex;
+  }, [openIndex]);
 
   // Opened by `SelectionBar`'s TAG button, for the current selection.
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
@@ -51,34 +125,88 @@ export function GalleryPage() {
   // `onToggle` from `Tile`/`VirtualGrid`: `shiftKey` false is a plain
   // (cmd/ctrl-click) toggle, `shiftKey` true is a shift-range select. Range
   // selection computes ids between the anchor and `index` (inclusive) over
-  // the loaded `items` array; without an anchor it degrades to a plain
-  // toggle, per the brief.
+  // the timeline index — so it spans photos whose rows haven't been
+  // hydrated yet; without an anchor it degrades to a plain toggle, per the
+  // brief.
   //
   // `useCallback` here is load-bearing, not just tidy: `VirtualGrid` is
   // wrapped in `React.memo`, and an inline function identity that changes
-  // every render (as this closes over `items`/`anchorIndex`) would defeat
+  // every render (as this closes over `entries`/`anchorIndex`) would defeat
   // that memoization on every `GalleryPage` render, not just on selection
   // changes.
   const handleToggle = useCallback(
     (index: number, shiftKey: boolean) => {
       if (shiftKey && anchorIndex !== null) {
         const [lo, hi] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex];
-        const ids = items.slice(lo, hi + 1).map((it) => it.row.id);
+        const ids = entries.slice(lo, hi + 1).map((e) => e.id);
         selectRange(ids);
         return;
       }
-      const item = items[index];
-      if (!item) return;
-      toggleSelected(item.row.id, index);
+      const entry = entries[index];
+      if (!entry) return;
+      toggleSelected(entry.id, index);
     },
-    [anchorIndex, items, selectRange, toggleSelected],
+    [anchorIndex, entries, selectRange, toggleSelected],
+  );
+
+  // Selection mode is *derived*, never stored: the gallery is in it
+  // whenever anything is selected. It changes what a plain click on a tile
+  // body means (toggle, not open) — the Google Photos rule.
+  const selectionMode = selectedIds.length > 0;
+
+  // Where the live drag started. Read by `handleDragSelection` on every
+  // move, so it's a ref rather than state — it must not re-render the page
+  // itself, and the selection write that follows already does.
+  const dragOrigin = useRef<number | null>(null);
+
+  // The drag-select gesture hands back the COMPLETE desired selection on
+  // every move (see `useDragSelect`), so the store action it feeds is
+  // `selectAll` — a replace — rather than an additive one. That is what
+  // lets a reversed drag release the tiles it already passed.
+  //
+  // The origin is passed through as the anchor, so it survives the replace
+  // (`selectAll` otherwise clears it) and a Shift+click straight after a
+  // drag ranges from where the drag started.
+  const handleDragSelection = useCallback(
+    (ids: number[]) => selectAll(ids, dragOrigin.current),
+    [selectAll],
+  );
+
+  const {
+    onCheckPointerDown: startDrag,
+    onTileEnter,
+    isDragging,
+    consumeGestureClick,
+  } = useDragSelect({ entries, selectedIds, onSelectionChange: handleDragSelection });
+
+  const handleCheckPointerDown = useCallback(
+    (index: number, event: { preventDefault: () => void }) => {
+      // Set before the gesture starts: `startDrag` applies the origin
+      // immediately, and that first write already needs the anchor.
+      dragOrigin.current = index;
+      startDrag(index, event);
+    },
+    [startDrag],
+  );
+
+  // The checkmark's non-pointer path: `Tile` only calls this when no
+  // pointer press drove the activation (a press is a drag gesture, which
+  // already toggled its origin), so in practice this is Enter/Space on a
+  // focused checkmark.
+  const handleCheckToggle = useCallback(
+    (index: number) => handleToggle(index, false),
+    [handleToggle],
   );
 
   // Same reasoning as `handleToggle` above — kept stable so it doesn't
-  // defeat `VirtualGrid`'s memoization on every render.
-  const handleNearEnd = useCallback(() => {
-    if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
-  }, [media]);
+  // defeat `VirtualGrid`'s memoization on every render. The identity guard
+  // also keeps the grid's own report from bouncing back as a fresh object
+  // and re-keying the chunk queries for an unchanged range.
+  const handleRangeChange = useCallback((next: { start: number; end: number }) => {
+    setVisibleRange((prev) =>
+      prev.start === next.start && prev.end === next.end ? prev : next,
+    );
+  }, []);
 
   // `VirtualGrid`'s justified layout has no fixed items-per-row count, so
   // the keyboard Up/Down handler below needs the real row grouping to move
@@ -91,16 +219,36 @@ export function GalleryPage() {
     rowsRef.current = rows;
   }, []);
 
-  // `MonthHeader`'s select action: a plain click replaces the selection
-  // with just this section (`selectAll`); cmd/ctrl-click adds it to
+  // Closing the lightbox, from either of its two paths: `Lightbox`'s own
+  // `onClose`, or the Escape handler below when there is no `Lightbox`
+  // rendered to receive the keystroke.
+  const closeLightbox = useCallback(() => {
+    setOpenIndex(null);
+    // Guards against a stale `true` outliving the `MetaPanel` that set it
+    // (e.g. if the lightbox is ever closed by something other than its own
+    // Escape/CLOSE path while the nested panel was left open), which would
+    // otherwise permanently block the Escape-clears-selection behavior
+    // below.
+    setMetaTagPanelOpen(false);
+    setMetaPlacePanelOpen(false);
+  }, []);
+
+  // `MonthHeader`'s select action, which is a checkbox for its section: it
+  // toggles rather than only adding. With the section already entirely
+  // selected the only useful thing left to do is let go of it, so either
+  // click deselects just those ids (`deselectRange`) and leaves the rest
+  // of the selection alone. Otherwise a plain click replaces the selection
+  // with just this section (`selectAll`) and cmd/ctrl-click adds it to
   // whatever's already selected (`selectRange`), matching cmd-click's
-  // meaning everywhere else in the grid.
+  // meaning everywhere else in the grid — so a partially selected section
+  // gains its missing photos rather than losing the ones it has.
   const handleSelectMonth = useCallback(
-    (ids: number[], additive: boolean) => {
-      if (additive) selectRange(ids);
+    (ids: number[], additive: boolean, allSelected: boolean) => {
+      if (allSelected) deselectRange(ids);
+      else if (additive) selectRange(ids);
       else selectAll(ids);
     },
-    [selectRange, selectAll],
+    [deselectRange, selectRange, selectAll],
   );
 
   // Clear the selection when the page unmounts (e.g. navigating away), so a
@@ -151,18 +299,42 @@ export function GalleryPage() {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       if (tagPanelOpen || metaTagPanelOpen || placePanelOpen || metaPlacePanelOpen) return;
-      if (selectedIdsRef.current.length === 0) return;
-      e.stopImmediatePropagation();
-      clearSelection();
+      if (selectedIdsRef.current.length > 0) {
+        e.stopImmediatePropagation();
+        clearSelection();
+        return;
+      }
+      // A lightbox opened onto a row whose chunk hasn't landed renders
+      // nothing at all, so there is no Radix dismissable layer to receive
+      // this keystroke — close it from here instead. Without this the page
+      // would be keyboard-dead: the grid handler below yields to the
+      // lightbox whenever `openIndex` is set, so nothing would answer any
+      // key until the user reached for the mouse. Ordered *after* the
+      // selection branch so it matches what a hydrated lightbox does (its
+      // Radix layer only ever sees the keystroke once the selection is
+      // already clear).
+      const open = openIndexRef.current;
+      if (open !== null && rowAt(itemsRef.current, idsRef.current, open) === undefined) {
+        e.stopImmediatePropagation();
+        closeLightbox();
+      }
     }
     document.addEventListener("keydown", handleKeyDown, { capture: true });
     return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
-  }, [clearSelection, tagPanelOpen, metaTagPanelOpen, placePanelOpen, metaPlacePanelOpen]);
+  }, [
+    clearSelection,
+    // Stable for the page's lifetime (`useCallback` with no dependencies),
+    // so it never causes a re-registration — see `openIndexRef` above.
+    closeLightbox,
+    tagPanelOpen,
+    metaTagPanelOpen,
+    placePanelOpen,
+    metaPlacePanelOpen,
+  ]);
 
-  // Grid-level keyboard navigation: ⌘/Ctrl+A selects every *loaded* item
-  // (paging is infinite, so that's honestly not necessarily the whole
-  // library — SelectionBar's copy says "loaded" for the same reason);
-  // Left/Right move the roving focus one item; Up/Down move it a row, via
+  // Grid-level keyboard navigation: ⌘/Ctrl+A selects every item in the
+  // current filter (the timeline index covers the whole filtered set, not
+  // a page); Left/Right move the roving focus one item; Up/Down move it a row, via
   // `rowsRef` (see above — the justified layout has no fixed
   // items-per-row); Space toggles the focused item; Enter opens it in the
   // lightbox; Shift+Arrow extends/shrinks the selection from the anchor as
@@ -176,7 +348,7 @@ export function GalleryPage() {
   useEffect(() => {
     function idsInRange(lo: number, hi: number): number[] {
       const [from, to] = lo <= hi ? [lo, hi] : [hi, lo];
-      return items.slice(from, to + 1).map((it) => it.row.id);
+      return entries.slice(from, to + 1).map((e) => e.id);
     }
 
     function handleKeyDown(e: KeyboardEvent) {
@@ -187,15 +359,15 @@ export function GalleryPage() {
       if (isEditable) return;
       if (openIndex !== null) return;
       if (tagPanelOpen || placePanelOpen || metaTagPanelOpen || metaPlacePanelOpen) return;
-      if (items.length === 0) return;
+      if (entries.length === 0) return;
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        selectAll(items.map((it) => it.row.id));
+        selectAll(entries.map((entry) => entry.id));
         return;
       }
 
-      const current = focusIndex !== null ? Math.min(focusIndex, items.length - 1) : null;
+      const current = focusIndex !== null ? Math.min(focusIndex, entries.length - 1) : null;
 
       if (
         e.key === "ArrowLeft" ||
@@ -212,7 +384,7 @@ export function GalleryPage() {
         } else if (e.key === "ArrowLeft") {
           next = Math.max(0, current - 1);
         } else if (e.key === "ArrowRight") {
-          next = Math.min(items.length - 1, current + 1);
+          next = Math.min(entries.length - 1, current + 1);
         } else {
           next = moveFocusRow(rowsRef.current, current, e.key === "ArrowUp" ? -1 : 1);
         }
@@ -249,22 +421,26 @@ export function GalleryPage() {
       if (e.key === " ") {
         e.preventDefault();
         const spaceIndex = current ?? 0;
-        const item = items[spaceIndex];
-        if (item) toggleSelected(item.row.id, spaceIndex);
+        const entry = entries[spaceIndex];
+        if (entry) toggleSelected(entry.id, spaceIndex);
         if (current === null) setFocusIndex(spaceIndex);
         return;
       }
 
       if (e.key === "Enter" && current !== null) {
         e.preventDefault();
-        setOpenIndex(current);
+        // Same rule `Tile` applies to a click, and for the same two
+        // reasons: a row whose chunk hasn't landed has nothing to show,
+        // and a row belonging to a *different* photo must not be opened —
+        // the lightbox's tag and place panels write against `row.id`.
+        if (rowAt(itemsRef.current, idsRef.current, current)) setOpenIndex(current);
       }
     }
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [
-    items,
+    entries,
     focusIndex,
     anchorIndex,
     openIndex,
@@ -280,32 +456,32 @@ export function GalleryPage() {
     toggleSelected,
   ]);
 
-  // `items` can shrink out from under an open lightbox (e.g. a refetch after
-  // a scan removes media) — clamp `openIndex` back into range, or close it
-  // entirely once there's nothing left to show. Adjusted during render
-  // (React's documented pattern for state derived from a value that just
-  // changed: https://react.dev/learn/you-might-not-need-an-effect) rather
-  // than in an effect, so there's no extra frame where a stale, out-of-range
-  // index reaches `Lightbox`. The `prevItemsLength` guard makes this run at
-  // most once per `items.length` change instead of on every render.
-  const [prevItemsLength, setPrevItemsLength] = useState(items.length);
-  if (items.length !== prevItemsLength) {
-    setPrevItemsLength(items.length);
-    if (openIndex !== null && openIndex >= items.length) {
-      setOpenIndex(items.length ? items.length - 1 : null);
+  // The set can shrink out from under an open lightbox (e.g. a refetch
+  // after a scan removes media) — clamp `openIndex` back into range, or
+  // close it entirely once there's nothing left to show. Adjusted during
+  // render (React's documented pattern for state derived from a value that
+  // just changed: https://react.dev/learn/you-might-not-need-an-effect)
+  // rather than in an effect, so there's no extra frame where a stale,
+  // out-of-range index reaches `Lightbox`. The `prevCount` guard makes this
+  // run at most once per `entries.length` change instead of on every render.
+  const [prevCount, setPrevCount] = useState(entries.length);
+  if (entries.length !== prevCount) {
+    setPrevCount(entries.length);
+    if (openIndex !== null && openIndex >= entries.length) {
+      setOpenIndex(entries.length ? entries.length - 1 : null);
     }
   }
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Gallery">
-        <GalleryToolbar count={count} />
+        <GalleryToolbar count={loaded ? entries.length : undefined} />
       </PageHeader>
       <div className="flex-1 overflow-hidden">
-        {media.isError && (
-          <p className="px-5 pt-5 font-mono text-[11px] text-red-400">{(media.error as Error).message}</p>
+        {isError && (
+          <p className="px-5 pt-5 font-mono text-[11px] text-red-400">{(error as Error).message}</p>
         )}
-        {media.isSuccess && items.length === 0 ? (
+        {loaded && entries.length === 0 ? (
           <div className="p-5 font-mono text-[11px] text-faint">
             {searchQuery.trim() ? (
               `No photos match "${searchQuery.trim()}"`
@@ -331,47 +507,45 @@ export function GalleryPage() {
           </div>
         ) : (
           <VirtualGrid
+            entries={entries}
             items={items}
             targetRowHeight={DENSITY_ROW_HEIGHT[density]}
             onOpen={setOpenIndex}
-            onNearEnd={handleNearEnd}
             selectedIds={selectedIdSet}
             onToggle={handleToggle}
             focusIndex={focusIndex}
             onRowsChange={handleRowsChange}
+            onRangeChange={handleRangeChange}
             onSelectMonth={handleSelectMonth}
+            selectionMode={selectionMode}
+            onCheckToggle={handleCheckToggle}
+            onCheckPointerDown={handleCheckPointerDown}
+            onTileEnter={onTileEnter}
+            consumeGestureClick={consumeGestureClick}
+            isDragging={isDragging}
           />
         )}
       </div>
       <SelectionBar
         count={selectedIds.length}
-        total={items.length}
+        total={entries.length}
         onTag={() => setTagPanelOpen(true)}
         onPlace={() => setPlacePanelOpen(true)}
         onClear={clearSelection}
-        onSelectAll={() => selectAll(items.map((it) => it.row.id))}
-        onInvert={() => invertSelection(items.map((it) => it.row.id))}
+        onSelectAll={() => selectAll(entries.map((entry) => entry.id))}
+        onInvert={() => invertSelection(entries.map((entry) => entry.id))}
       />
       <TagPanel mediaIds={selectedIds} open={tagPanelOpen} onClose={() => setTagPanelOpen(false)} />
       <PlacePanel mediaIds={selectedIds} open={placePanelOpen} onClose={() => setPlacePanelOpen(false)} />
       {openIndex !== null && (
         <Lightbox
           items={items}
+          ids={ids}
           index={openIndex}
-          onClose={() => {
-            setOpenIndex(null);
-            // Guards against a stale `true` outliving the `MetaPanel` that
-            // set it (e.g. if the lightbox is ever closed by something
-            // other than its own Escape/CLOSE path while the nested panel
-            // was left open), which would otherwise permanently block the
-            // Escape-clears-selection behavior above.
-            setMetaTagPanelOpen(false);
-            setMetaPlacePanelOpen(false);
-          }}
+          onClose={closeLightbox}
           onPrev={() => setOpenIndex(openIndex > 0 ? openIndex - 1 : openIndex)}
           onNext={() => {
-            if (openIndex < items.length - 1) setOpenIndex(openIndex + 1);
-            else if (media.hasNextPage && !media.isFetchingNextPage) media.fetchNextPage();
+            if (openIndex < entries.length - 1) setOpenIndex(openIndex + 1);
           }}
           onTagPanelOpenChange={setMetaTagPanelOpen}
           onPlacePanelOpenChange={setMetaPlacePanelOpen}

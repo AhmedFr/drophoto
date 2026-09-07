@@ -1,6 +1,6 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { countMedia, getMedia, queryMedia } from "./media";
-import type { MediaItem, MediaQuery } from "./media";
+import { countMedia, getMedia, mediaIndex, queryMedia } from "./media";
+import type { MediaIndexEntry, MediaItem, MediaQuery } from "./media";
 
 const item: MediaItem = {
   row: {
@@ -59,6 +59,32 @@ it("invokes query_media with the query and returns the items", async () => {
 
   expect(args).toEqual({ query });
   expect(result).toEqual([item]);
+});
+
+it("invokes media_index with the query and returns the entries", async () => {
+  const entry: MediaIndexEntry = {
+    id: 1,
+    // The command serializes an offset rather than `Z` — unlike
+    // `MediaRow.taken_at`, which the frontend must never string-compare it
+    // against.
+    taken_at: "2024-06-15T12:00:00+00:00",
+    width: 100,
+    height: 200,
+    kind: "photo",
+  };
+  let args: unknown;
+  mockIPC((cmd, a) => {
+    if (cmd === "media_index") {
+      args = a;
+      return [entry];
+    }
+    return undefined;
+  });
+
+  const result = await mediaIndex(query);
+
+  expect(args).toEqual({ query });
+  expect(result).toEqual([entry]);
 });
 
 it("invokes count_media with the query and returns the count", async () => {

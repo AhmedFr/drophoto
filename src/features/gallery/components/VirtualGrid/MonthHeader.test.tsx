@@ -22,6 +22,27 @@ it("calls onSelect with this month's ids and additive=false on a plain click", (
   expect(onSelect).toHaveBeenCalledWith([1, 2, 3], false);
 });
 
+// The action toggles, so once the whole section is in, pressing it lets
+// the section go — and a control that still said "SELECT ALL" there would
+// be describing something it no longer does.
+it("names itself a deselect once the whole section is selected", () => {
+  render(
+    <MonthHeader
+      label="September 2026"
+      count={12}
+      ids={[1, 2, 3]}
+      allSelected
+      onSelect={() => {}}
+    />,
+  );
+
+  expect(screen.getByText("DESELECT ALL")).toBeInTheDocument();
+  expect(screen.queryByText("SELECT ALL")).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Deselect all 12 in September 2026" }),
+  ).toBeInTheDocument();
+});
+
 it("calls onSelect with additive=true on a cmd-click", () => {
   const onSelect = vi.fn();
   render(<MonthHeader label="September 2026" count={3} ids={[1, 2, 3]} onSelect={onSelect} />);

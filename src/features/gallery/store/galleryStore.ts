@@ -60,13 +60,19 @@ type GalleryState = {
   deselectRange: (ids: number[]) => void;
   /**
    * Replaces the selection outright with `ids` (deduped) — used by ⌘A
-   * ("select all loaded") and a plain (non-additive) month-header click
-   * ("select just this section"). Clears the anchor: `ids` isn't
-   * necessarily a single contiguous run in the loaded-items array (e.g.
-   * under an ADDED sort a month's ids can be non-consecutive), so there's
-   * no one meaningful shift-range start to keep.
+   * ("select everything in view"), a plain (non-additive) month-header
+   * click ("select just this section"), and every move of a drag-select
+   * (which recomputes the whole desired selection rather than adding to
+   * it).
+   *
+   * Clears the anchor unless one is given: `ids` isn't necessarily a
+   * single contiguous run in the timeline (e.g. under an ADDED sort a
+   * month's ids can be non-consecutive), so there's usually no one
+   * meaningful shift-range start to keep. A drag is the exception — it
+   * *has* an origin, and a shift-click straight after one should range
+   * from there — so it passes that index through.
    */
-  selectAll: (ids: number[]) => void;
+  selectAll: (ids: number[], anchorIndex?: number | null) => void;
   /**
    * Replaces the selection with its complement within `allIds` (the
    * currently loaded items) — SelectionBar's INVERT action. Clears the
@@ -164,7 +170,8 @@ export const useGalleryStore = create<GalleryState>()(
           const toRemove = new Set(ids);
           return { selectedIds: state.selectedIds.filter((id) => !toRemove.has(id)) };
         }),
-      selectAll: (ids) => set({ selectedIds: Array.from(new Set(ids)), anchorIndex: null }),
+      selectAll: (ids, anchorIndex = null) =>
+        set({ selectedIds: Array.from(new Set(ids)), anchorIndex }),
       invertSelection: (allIds) =>
         set((state) => {
           const selected = new Set(state.selectedIds);
@@ -208,14 +215,43 @@ export const useGalleryStore = create<GalleryState>()(
   ),
 );
 
+/** The filter/sort selection a media request is composed from. */
+export type GalleryFilters = {
+  typeFilter: TypeFilter;
+  sort: SortOption;
+  missingOnly?: boolean;
+  query?: string;
+  tagId?: number | null;
+};
+
+/**
+ * A stable identity for a filter/sort selection — the *generation* of a
+ * result set.
+ *
+ * The gallery reads two independently-cached sources that must describe
+ * the same photos: the timeline index (geometry and ids) and the hydrated
+ * chunks (thumbnails). They resolve at different speeds, and both hold the
+ * previous selection's data through a settle, so either can be a
+ * generation behind the other. Stamping each result with this key lets the
+ * grid paint a thumbnail only onto the tile whose id it actually belongs
+ * to.
+ *
+ * Mirrors `buildQuery`'s normalization (an untrimmed query and an absent
+ * `missingOnly` must not read as a different generation from the request
+ * they produce).
+ */
+export function filterKey(s: GalleryFilters): string {
+  return JSON.stringify([
+    s.typeFilter,
+    s.sort,
+    s.missingOnly ?? false,
+    s.query?.trim() ?? "",
+    s.tagId ?? null,
+  ]);
+}
+
 export function buildQuery(
-  s: {
-    typeFilter: TypeFilter;
-    sort: SortOption;
-    missingOnly?: boolean;
-    query?: string;
-    tagId?: number | null;
-  },
+  s: GalleryFilters,
   limit: number,
   offset: number,
 ): MediaQuery {

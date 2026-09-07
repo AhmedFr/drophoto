@@ -10,7 +10,7 @@ const DEBOUNCE_MS = 200;
  * `/search` page into the gallery's one query backend. Keeps its own
  * per-keystroke `value` so typing feels instant, and only commits to
  * `useGalleryStore`'s `query` (which drives the actual `query_media`
- * refetch, see `useMediaInfinite`) once the debounce settles.
+ * refetch, see `useMediaIndex`) once the debounce settles.
  */
 export function SearchBox() {
   const storeQuery = useGalleryStore((s) => s.query);

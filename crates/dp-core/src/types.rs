@@ -133,6 +133,16 @@ pub struct Tag {
 pub struct TagWithCount {
     pub tag: Tag,
     pub count: u64,
+    /// `hash` of the tag's newest photo — the album card's cover art. A
+    /// cover is art, not a presence claim: a row whose file is currently
+    /// missing still supplies one. `None` only when the tag has no media.
+    pub cover_hash: Option<String>,
+    /// `taken_at` of the same photo `cover_hash` was picked from — the
+    /// Tags page's "Recently updated" sort key. Picked by the same
+    /// `ORDER BY taken_at DESC NULLS LAST` as `cover_hash` (see
+    /// `dp_catalog::tags::list_tags_with_counts`), so the two always name
+    /// the same row; `None` exactly when `cover_hash` is `None`.
+    pub cover_taken_at: Option<DateTime<Utc>>,
 }
 
 /// Where a [`Place`] came from: `Geocoder` rows are found-or-created by
@@ -553,6 +563,26 @@ impl MediaQuery {
             ..self
         }
     }
+}
+
+/// One row of the gallery's timeline index: the minimum needed to place a
+/// tile in the justified layout and group it under a month header,
+/// without the strings that make [`MediaItem`] expensive to send in bulk.
+///
+/// The gallery fetches one of these per matching row — the *whole*
+/// filtered set, not a page — so that scroll height, the date scrubber's
+/// offset→date mapping, and selection across not-yet-loaded photos are
+/// exact rather than estimated. Measured at ~38 bytes/row.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MediaIndexEntry {
+    pub id: i64,
+    /// RFC3339, matching [`MediaRow::taken_at`]'s serialization exactly —
+    /// the frontend parses both with the same helpers. `None` sorts last,
+    /// the same `NULLS LAST` ordering `query_media` uses.
+    pub taken_at: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub kind: MediaKind,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

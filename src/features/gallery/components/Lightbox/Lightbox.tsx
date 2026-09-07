@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Maximize2, Minimize2 } from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { useKeyboardNav } from "@/lib/hooks/useKeyboardNav";
 import { basename } from "@/lib/media/format";
+import { rowAt } from "@/lib/media/hydration";
 import { LightboxImage } from "./LightboxImage";
 import { MetaPanel } from "./MetaPanel";
 import type { LightboxProps } from "./Lightbox.types";
@@ -12,6 +13,7 @@ const navButtonClass =
 
 export function Lightbox({
   items,
+  ids,
   index,
   onClose,
   onPrev,
@@ -19,7 +21,7 @@ export function Lightbox({
   onTagPanelOpenChange,
   onPlacePanelOpenChange,
 }: LightboxProps) {
-  const item = items[index];
+  const item = rowAt(items, ids, index);
 
   // Per-session only — reset every time a fresh `Lightbox` mounts (i.e.
   // whenever the lightbox is (re)opened), never persisted.
@@ -34,10 +36,14 @@ export function Lightbox({
   // doesn't know about.
   useKeyboardNav({ enabled: true, onPrev, onNext });
 
-  // `items` can shrink out from under an open lightbox (e.g. a refetch after
-  // a scan removes media); `GalleryPage` clamps `index` back in bounds on
-  // the next render, but this guards the render in between. Placed after
-  // the hook call above so hooks still run unconditionally on every render.
+  // Nothing to show: `items` can shrink out from under an open lightbox
+  // (e.g. a refetch after a scan removes media, with `GalleryPage`
+  // clamping `index` back in bounds on the next render), the row's chunk
+  // may not have arrived, or — see `rowAt` — the row sitting at this
+  // position may belong to another photo entirely. Rendering nothing is
+  // the right answer to all three; `GalleryPage`'s Escape handler is what
+  // gets the user back out. Placed after the hook call above so hooks
+  // still run unconditionally on every render.
   if (!item) return null;
 
   const stop = (e: MouseEvent) => e.stopPropagation();
