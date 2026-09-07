@@ -21,6 +21,15 @@ const CONTENT_PADDING = 16;
 /** A `layout` offset in the scroll container's own coordinates. */
 const withPadding = (offset: number) => offset + CONTENT_PADDING;
 
+/**
+ * Whether every photo of one month is already selected — what turns the
+ * header's select action from "select this section" into "deselect it".
+ * An empty section is never "all selected": there would be nothing to
+ * deselect.
+ */
+const isWholeSectionSelected = (ids: number[], selectedIds: Set<number>) =>
+  ids.length > 0 && ids.every((id) => selectedIds.has(id));
+
 function VirtualGridImpl({
   entries,
   items,
@@ -219,11 +228,20 @@ function VirtualGridImpl({
                 }}
               >
                 {row.kind === "header" ? (
+                  // Whether the section is entirely selected is derived
+                  // here, where both the section's ids and the selection
+                  // are already in hand, and passed to the header (which
+                  // names the action after it) and through the callback
+                  // (where the page acts on it) — one derivation, so the
+                  // label can never disagree with what pressing it does.
                   <MonthHeader
                     label={row.label}
                     count={row.count}
                     ids={row.ids}
-                    onSelect={(ids, additive) => onSelectMonth?.(ids, additive)}
+                    allSelected={isWholeSectionSelected(row.ids, selectedIds)}
+                    onSelect={(ids, additive) =>
+                      onSelectMonth?.(ids, additive, isWholeSectionSelected(ids, selectedIds))
+                    }
                   />
                 ) : (
                   <JustifiedRow

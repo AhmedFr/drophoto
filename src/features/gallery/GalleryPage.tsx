@@ -233,16 +233,22 @@ export function GalleryPage() {
     setMetaPlacePanelOpen(false);
   }, []);
 
-  // `MonthHeader`'s select action: a plain click replaces the selection
-  // with just this section (`selectAll`); cmd/ctrl-click adds it to
+  // `MonthHeader`'s select action, which is a checkbox for its section: it
+  // toggles rather than only adding. With the section already entirely
+  // selected the only useful thing left to do is let go of it, so either
+  // click deselects just those ids (`deselectRange`) and leaves the rest
+  // of the selection alone. Otherwise a plain click replaces the selection
+  // with just this section (`selectAll`) and cmd/ctrl-click adds it to
   // whatever's already selected (`selectRange`), matching cmd-click's
-  // meaning everywhere else in the grid.
+  // meaning everywhere else in the grid — so a partially selected section
+  // gains its missing photos rather than losing the ones it has.
   const handleSelectMonth = useCallback(
-    (ids: number[], additive: boolean) => {
-      if (additive) selectRange(ids);
+    (ids: number[], additive: boolean, allSelected: boolean) => {
+      if (allSelected) deselectRange(ids);
+      else if (additive) selectRange(ids);
       else selectAll(ids);
     },
-    [selectRange, selectAll],
+    [deselectRange, selectRange, selectAll],
   );
 
   // Clear the selection when the page unmounts (e.g. navigating away), so a

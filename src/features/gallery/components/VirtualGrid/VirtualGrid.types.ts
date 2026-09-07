@@ -36,8 +36,14 @@ export type VirtualGridProps = {
    * `useMediaChunks` to decide which chunks to hydrate.
    */
   onRangeChange?: (range: { start: number; end: number }) => void;
-  /** Fired by a `MonthHeader`'s select action: `ids` are that month's media ids, `additive` is true on cmd/ctrl-click (add to the selection) vs. a plain click (replace it). */
-  onSelectMonth?: (ids: number[], additive: boolean) => void;
+  /**
+   * Fired by a `MonthHeader`'s select action: `ids` are that month's media
+   * ids, `additive` is true on cmd/ctrl-click (add to the selection) vs. a
+   * plain click (replace it), and `allSelected` says the section was
+   * already entirely selected — which makes the action a deselect, since
+   * it reads as a checkbox for that section.
+   */
+  onSelectMonth?: (ids: number[], additive: boolean, allSelected: boolean) => void;
   /**
    * Whether anything is selected. Passed straight through to every `Tile`,
    * where it decides whether a plain body click opens the lightbox or

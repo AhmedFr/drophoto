@@ -1276,3 +1276,80 @@ it("still toggles the roving focus when Space is pressed outside any tile", asyn
 
   expect(useGalleryStore.getState().selectedIds).toEqual([2]);
 });
+
+// ---------------------------------------------------------------------
+// The month header's select action, which is a checkbox for its section:
+// it toggles rather than only adding.
+// ---------------------------------------------------------------------
+
+/** The month header's select/deselect action, whichever it currently is. */
+function monthAction() {
+  return screen.getByRole("button", { name: /^(Select|Deselect) all \d+ in / });
+}
+
+it("selects a whole month from its header", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  await user.click(monthAction());
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+});
+
+// The spec's requirement: pressing it again lets the section go, rather
+// than re-selecting what is already selected — and the label follows.
+it("deselects the month when every photo in it is already selected", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  await user.click(monthAction());
+  expect(await screen.findByText("DESELECT ALL")).toBeInTheDocument();
+
+  await user.click(monthAction());
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+  expect(await screen.findByText("SELECT ALL")).toBeInTheDocument();
+});
+
+// A half-selected section is not a selected one: the press finishes the
+// job. Deselecting here would throw away a selection the user built.
+it("selects the rest of a partially selected month rather than deselecting it", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  await user.click(checks()[1]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([2]);
+
+  await user.click(monthAction());
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+});
+
+// Cmd-click still means "add to what I already have" — and on a section
+// that is already wholly in, the only sensible addition is none: it comes
+// back out, leaving the rest of the selection alone.
+it("adds a month to an existing selection on cmd-click, and takes it back out when it is all in", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  await user.click(checks()[0]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+
+  await user.keyboard("{Meta>}");
+  await user.click(monthAction());
+  await user.keyboard("{/Meta}");
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+
+  await user.keyboard("{Meta>}");
+  await user.click(monthAction());
+  await user.keyboard("{/Meta}");
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+});
