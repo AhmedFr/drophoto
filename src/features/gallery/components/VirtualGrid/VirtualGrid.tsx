@@ -22,6 +22,7 @@ function VirtualGridImpl({
   onCheckToggle,
   onCheckPointerDown,
   onTileEnter,
+  consumeGestureClick,
   isDragging = false,
 }: VirtualGridProps) {
   // `useContainerWidth` measures `contentRect.width`, which already excludes
@@ -31,7 +32,10 @@ function VirtualGridImpl({
   // A drag-select that reaches the edge keeps going: the container scrolls
   // under the pointer, so a range can span more than one screenful without
   // the user letting go.
-  useEdgeAutoScroll(ref, isDragging);
+  // `onTileEnter` is handed over too: scrolling alone would move the grid
+  // without extending the selection, since a pointer held past the edge is
+  // over no tile and fires no `pointerenter`.
+  useEdgeAutoScroll(ref, isDragging, onTileEnter);
 
   // Built from the index, not the hydrated rows: the layout is complete and
   // final from the first render, so a chunk landing never reflows the grid
@@ -145,6 +149,7 @@ function VirtualGridImpl({
                   onCheckToggle={onCheckToggle}
                   onCheckPointerDown={onCheckPointerDown}
                   onTileEnter={onTileEnter}
+                  consumeGestureClick={consumeGestureClick}
                 />
               )}
             </div>

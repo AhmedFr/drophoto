@@ -1,4 +1,3 @@
-import { useRef } from "react";
 import { Check, ImageOff, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/media/format";
@@ -16,23 +15,9 @@ export function Tile({
   onCheckToggle,
   onCheckPointerDown,
   onPointerEnter,
+  consumeGestureClick,
 }: TileProps) {
   const { entry, width, height, index } = tile;
-
-  // A pointer press on the checkmark IS the toggle — `onCheckPointerDown`
-  // starts the drag gesture, which applies its origin immediately — so the
-  // `click` the browser synthesises afterwards must not toggle a second
-  // time and cancel it out.
-  //
-  // The flag is raised on this button's own `pointerup`, not on its
-  // pointerdown, and that ordering is the whole trick: `pointerup` on an
-  // element is exactly the condition under which a `click` on it follows.
-  // A press that wanders off and releases over another tile — the drag
-  // case — sends no `pointerup` and no `click` here, so it can't leave a
-  // flag stranded that would swallow a later keyboard activation of this
-  // same checkmark.
-  const pressed = useRef(false);
-  const suppressClick = useRef(false);
 
   // THE invariant, enforced where the paint actually happens: a tile shows
   // a row only if that row IS this tile's photo.
@@ -52,6 +37,11 @@ export function Tile({
       role="button"
       tabIndex={0}
       data-testid="tile"
+      // The tile's position in the timeline, readable from the DOM. Edge
+      // auto-scroll resolves which tile is under the pointer by hit-testing
+      // and reading this back, since a pointer held outside the container
+      // never fires `pointerenter` on anything.
+      data-tile-index={index}
       // The browser's own image drag would compete with the drag-select
       // gesture for the pointer stream and win.
       draggable={false}
@@ -78,7 +68,16 @@ export function Tile({
       // Google Photos rule, and the reason it comes before the `item`
       // check: a placeholder has no row to open, but it does have an id to
       // select.
+      //
+      // The gesture check comes first and covers the whole handler. A
+      // checkmark press that drifts a few pixels before releasing sends
+      // its `click` here — to the nearest common ancestor of press and
+      // release — rather than to the checkmark, and running any of the
+      // branches below on it would undo the gesture (or, once undoing it
+      // empties the selection and leaves selection mode, open the
+      // lightbox from what the user experienced as a checkmark press).
       onClick={(e) => {
+        if (consumeGestureClick?.()) return;
         if (e.metaKey || e.ctrlKey) onToggle(index, false);
         else if (e.shiftKey) onToggle(index, true);
         else if (selectionMode) onToggle(index, false);
@@ -119,21 +118,22 @@ export function Tile({
         onClick={(e) => {
           // The tile body's handler would otherwise open the lightbox too.
           e.stopPropagation();
-          const handledByPress = suppressClick.current;
-          pressed.current = false;
-          suppressClick.current = false;
-          if (handledByPress) return;
+          // A press that released on this same button lands its click
+          // here; one that drifted onto the tile lands it on the tile.
+          // Both consult the same gesture state.
+          if (consumeGestureClick?.()) return;
           if (onCheckToggle) onCheckToggle(index);
           else onToggle(index, false);
         }}
         onPointerDown={(e) => {
           if (!onCheckPointerDown) return;
+          // Primary button only. A right- or middle-click would otherwise
+          // toggle the photo and open a sweep that runs until the next
+          // release — the tile body never had this problem, since `click`
+          // doesn't fire for those buttons at all.
+          if (e.button !== 0) return;
           e.stopPropagation();
-          pressed.current = true;
           onCheckPointerDown(index, e);
-        }}
-        onPointerUp={() => {
-          suppressClick.current = pressed.current;
         }}
       >
         <Check size={12} strokeWidth={2.5} />

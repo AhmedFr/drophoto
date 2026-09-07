@@ -22,6 +22,8 @@ type JustifiedRowProps = {
   onCheckPointerDown?: (index: number, event: { preventDefault: () => void }) => void;
   /** Reports the pointer entering a tile, so a drag in progress extends to it. */
   onTileEnter?: (index: number) => void;
+  /** Whether the click being handled belongs to a checkmark gesture already applied. See `TileProps`. */
+  consumeGestureClick?: () => boolean;
 };
 
 export function JustifiedRow({
@@ -35,6 +37,7 @@ export function JustifiedRow({
   onCheckToggle,
   onCheckPointerDown,
   onTileEnter,
+  consumeGestureClick,
 }: JustifiedRowProps) {
   return (
     <div className="flex gap-2">
@@ -51,6 +54,7 @@ export function JustifiedRow({
           onCheckToggle={onCheckToggle}
           onCheckPointerDown={onCheckPointerDown}
           onPointerEnter={onTileEnter}
+          consumeGestureClick={consumeGestureClick}
         />
       ))}
     </div>

@@ -316,3 +316,29 @@ it("clicking a month header's select action calls onSelectMonth with that month'
   fireEvent.click(screen.getByRole("button", { name: /select all/i }));
   expect(onSelectMonth).toHaveBeenCalledWith([1, 2], false);
 });
+
+// A checkmark press whose click the gesture claims must not also run the
+// tile's own click handling — that click lands on the tile whenever the
+// pointer drifted off the small checkmark before releasing.
+it("does not open or toggle on a click the drag gesture claims", () => {
+  const { entries, items } = hydrated(2);
+  const onOpen = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={onOpen}
+      selectedIds={new Set()}
+      onToggle={onToggle}
+      onCheckPointerDown={() => {}}
+      consumeGestureClick={() => true}
+    />,
+  );
+
+  fireEvent.click(screen.getAllByRole("button", { name: /photos\// })[0]);
+
+  expect(onOpen).not.toHaveBeenCalled();
+  expect(onToggle).not.toHaveBeenCalled();
+});

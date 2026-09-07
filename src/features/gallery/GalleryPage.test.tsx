@@ -974,6 +974,17 @@ function dragFrom(fromCheck: number, toTile: number) {
   fireEvent.pointerUp(document);
 }
 
+/**
+ * Click a tile the way a browser does — press, then click. The press
+ * matters after a drag: a gesture that ended with no click reaching a tile
+ * leaves its claim on the *next* click standing, and it is the next press
+ * that drops it.
+ */
+function clickTile(index: number, init: MouseEventInit = {}) {
+  fireEvent.pointerDown(tileBoxes()[index], init);
+  fireEvent.click(tileBoxes()[index], init);
+}
+
 it("selects a photo from its checkmark without opening the lightbox", async () => {
   mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
@@ -1075,10 +1086,10 @@ it("stops extending the selection once the pointer has been released", async () 
 it("anchors a following shift-click at the tile the drag started from", async () => {
   mockMedia([item(1), item(2), item(3), item(4)]);
   renderPage();
-  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  await screen.findAllByRole("button", { name: /photos\// });
 
   dragFrom(0, 1);
-  fireEvent.click(tiles[3], { shiftKey: true });
+  clickTile(3, { shiftKey: true });
 
   expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3, 4]);
 });
@@ -1104,6 +1115,91 @@ it("drags a selection across photos whose rows have not arrived", async () => {
   await screen.findAllByRole("img");
 
   dragFrom(0, 2);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+});
+
+// THE regression the click guard exists for. The checkmark is a `size-5`
+// target, so a few pixels of trackpad drift between press and release is
+// routine — and per UI Events the browser then dispatches the click on the
+// nearest common ancestor of the two, which is the tile.
+it("keeps the selection when a checkmark press releases on the tile body", async () => {
+  mockMedia([item(1), item(2)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.pointerDown(checks()[0]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+
+  // Released a few pixels off the checkmark: the click goes to the tile.
+  fireEvent.pointerUp(document);
+  fireEvent.click(tileBoxes()[0]);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+});
+
+// The same drift on the LAST selected photo used to be worse than a
+// cancelled selection: the stray toggle emptied the selection, which
+// dropped the gallery out of selection mode within the same click, and the
+// click then fell through to opening the lightbox — from what the user did
+// as a checkmark press. "Click the checkmark | Toggles; never opens."
+it("never opens the lightbox from a checkmark press that drifts onto the tile", async () => {
+  mockMedia([item(1), item(2)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.pointerDown(checks()[0]);
+  fireEvent.pointerUp(document);
+  fireEvent.click(tileBoxes()[0]);
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+});
+
+// ...and the guard must not outlive its own gesture: the very next click
+// on a tile is an ordinary one again.
+it("still opens the lightbox on the click after a checkmark gesture", async () => {
+  mockMedia([item(1), item(2)]);
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.pointerDown(checks()[0]);
+  fireEvent.pointerUp(document);
+  fireEvent.click(tileBoxes()[0]);
+  // Take the selection back off, so the gallery leaves selection mode.
+  await user.click(checks()[0]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+
+  await user.click(tileBoxes()[0]);
+
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+});
+
+it("does not start a sweep from a right-click on the checkmark", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  renderPage();
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.pointerDown(checks()[0], { button: 2 });
+  fireEvent.pointerEnter(tiles[2]);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+});
+
+// The claim on a click has to be dropped by the next press, not linger:
+// a drag released off the grid produces no click at all, and the user's
+// next click on a tile is an ordinary one.
+it("does not swallow an unrelated click made after a drag released off the grid", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  dragFrom(0, 1);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2]);
+
+  // Selection mode is on, so this plain click toggles photo 3 in.
+  clickTile(2);
 
   expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
 });

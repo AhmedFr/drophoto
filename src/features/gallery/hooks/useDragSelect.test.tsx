@@ -186,3 +186,75 @@ it("ignores a pointerdown on an index the entries no longer cover", () => {
   expect(onSelectionChange).not.toHaveBeenCalled();
   expect(result.current.isDragging).toBe(false);
 });
+
+// ...and it has to abandon a drag already in progress, not merely decline
+// to start a new one. Leaving the old origin live would keep writing a
+// selection anchored to a position that isn't there.
+it("abandons a live drag when a later pointerdown lands on a missing index", () => {
+  const onSelectionChange = vi.fn();
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange }),
+  );
+
+  act(() => result.current.onCheckPointerDown(2, pointerEvent()));
+  act(() => result.current.onCheckPointerDown(99, pointerEvent()));
+  const callsAfterBail = onSelectionChange.mock.calls.length;
+
+  act(() => result.current.onTileEnter(6));
+
+  expect(onSelectionChange).toHaveBeenCalledTimes(callsAfterBail);
+  expect(result.current.isDragging).toBe(false);
+});
+
+// ---------------------------------------------------------------------
+// Click ownership. Per UI Events, a press and release with different
+// targets put the `click` on their nearest common ancestor — so a
+// checkmark press that drifts a few pixels lands its click on the TILE.
+// Whoever receives it has to know the gesture already ran, or the click
+// undoes it.
+// ---------------------------------------------------------------------
+
+it("claims the click that follows a checkmark press, once", () => {
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange: vi.fn() }),
+  );
+
+  expect(result.current.consumeGestureClick()).toBe(false);
+
+  act(() => result.current.onCheckPointerDown(2, pointerEvent()));
+
+  expect(result.current.consumeGestureClick()).toBe(true);
+  // Consumed, so a later keyboard activation of a checkmark still toggles.
+  expect(result.current.consumeGestureClick()).toBe(false);
+});
+
+it("does not claim a click when the press was ignored", () => {
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange: vi.fn() }),
+  );
+
+  act(() => result.current.onCheckPointerDown(99, pointerEvent()));
+
+  expect(result.current.consumeGestureClick()).toBe(false);
+});
+
+// A press that ends with no click reaching a tile — released outside the
+// window, or over the gap between two tiles — must not leave the claim
+// standing for the next, unrelated click to swallow.
+it("drops an unclaimed press when the next press begins", () => {
+  const { result } = renderHook(() =>
+    useDragSelect({ entries, selectedIds: [], onSelectionChange: vi.fn() }),
+  );
+
+  act(() => result.current.onCheckPointerDown(2, pointerEvent()));
+  act(() => {
+    document.dispatchEvent(new Event("pointerup"));
+  });
+
+  // Someone presses elsewhere — a tile body, a toolbar button, anything.
+  act(() => {
+    document.dispatchEvent(new Event("pointerdown"));
+  });
+
+  expect(result.current.consumeGestureClick()).toBe(false);
+});

@@ -15,8 +15,24 @@ function tick(times = 1) {
 
 function movePointerTo(clientY: number) {
   act(() => {
-    document.dispatchEvent(new PointerEvent("pointermove", { clientY }));
+    document.dispatchEvent(new PointerEvent("pointermove", { clientY, clientX: 40 }));
   });
+}
+
+/**
+ * jsdom has no `elementFromPoint`, so hit-testing is stubbed with a
+ * function the test drives: it records the y it was asked about and hands
+ * back whatever tile the test says is there.
+ */
+function stubHitTest(tileIndex: number | null) {
+  const asked: number[] = [];
+  const el = document.createElement("div");
+  el.setAttribute("data-tile-index", String(tileIndex));
+  document.elementFromPoint = (_x: number, y: number) => {
+    asked.push(y);
+    return tileIndex === null ? null : el;
+  };
+  return asked;
 }
 
 /**
@@ -58,6 +74,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // jsdom ships no `elementFromPoint`; the stub above adds one, so it has
+  // to be taken away again rather than left for the next test.
+  delete (document as Partial<Document>).elementFromPoint;
 });
 
 it("scrolls down while the pointer sits inside the bottom edge zone", () => {
@@ -188,4 +207,93 @@ it("scrolls at a steady rate, still scrolling, under prefers-reduced-motion", ()
 
   expect(shallow.scrollTop).toBe(REDUCED_SPEED);
   expect(deep.scrollTop).toBe(REDUCED_SPEED);
+});
+
+// ---------------------------------------------------------------------
+// Keeping the SELECTION moving, not just the scrollbar. The range grows
+// through each tile's `pointerenter`, and a pointer held past the bottom
+// of the window — the case this feature exists for — is over no tile and
+// fires nothing. So each scrolling frame re-resolves what is underneath.
+// ---------------------------------------------------------------------
+
+it("reports the tile under the pointer on each scrolling frame", () => {
+  stubHitTest(12);
+  const onTile = vi.fn();
+  const el = scroller();
+  renderHook(() => useEdgeAutoScroll({ current: el }, true, onTile));
+
+  movePointerTo(495);
+  tick();
+
+  expect(onTile).toHaveBeenCalledWith(12);
+});
+
+// Held still on the same tile, the report must not repeat — it writes the
+// selection, and doing so every frame would thrash the store.
+it("reports a tile only once while it stays under the pointer", () => {
+  stubHitTest(12);
+  const onTile = vi.fn();
+  const el = scroller();
+  renderHook(() => useEdgeAutoScroll({ current: el }, true, onTile));
+
+  movePointerTo(495);
+  tick(4);
+
+  expect(onTile).toHaveBeenCalledTimes(1);
+});
+
+// The pointer is routinely OUTSIDE the container — below the window, mid
+// drag. Hit-testing there finds nothing, so the y is pulled back inside
+// first: what the user means is "the tile at the bottom edge".
+it("clamps the hit-test back inside the container when the pointer is past it", () => {
+  const asked = stubHitTest(3);
+  const el = scroller();
+  renderHook(() => useEdgeAutoScroll({ current: el }, true, vi.fn()));
+
+  movePointerTo(5000);
+  tick();
+
+  expect(asked).not.toHaveLength(0);
+  expect(asked.every((y) => y > 0 && y < 500)).toBe(true);
+});
+
+it("says nothing when the hit-test finds no tile", () => {
+  stubHitTest(null);
+  const onTile = vi.fn();
+  const el = scroller();
+  renderHook(() => useEdgeAutoScroll({ current: el }, true, onTile));
+
+  movePointerTo(495);
+  tick(3);
+
+  expect(onTile).not.toHaveBeenCalled();
+});
+
+// Only while it is actually scrolling: away from the edges, ordinary
+// `pointerenter` is already doing this job and a second source would
+// fight it.
+it("does not report a tile while the pointer is away from the edges", () => {
+  stubHitTest(12);
+  const onTile = vi.fn();
+  const el = scroller();
+  renderHook(() => useEdgeAutoScroll({ current: el }, true, onTile));
+
+  movePointerTo(250);
+  tick(3);
+
+  expect(onTile).not.toHaveBeenCalled();
+});
+
+// jsdom has none, and neither does any environment without layout.
+// Scrolling without reporting beats throwing mid-gesture.
+it("scrolls without reporting when the environment has no hit-testing", () => {
+  const onTile = vi.fn();
+  const el = scroller();
+  renderHook(() => useEdgeAutoScroll({ current: el }, true, onTile));
+
+  movePointerTo(495);
+  tick();
+
+  expect(el.scrollTop).toBeGreaterThan(0);
+  expect(onTile).not.toHaveBeenCalled();
 });

@@ -39,10 +39,35 @@ function prefersReducedMotion(): boolean {
  * pointer is, and becomes a single steady rate. Disabling it outright
  * would leave a reduced-motion user unable to select past one screenful.
  */
-export function useEdgeAutoScroll(ref: RefObject<HTMLElement | null>, active: boolean) {
+export function useEdgeAutoScroll(
+  ref: RefObject<HTMLElement | null>,
+  active: boolean,
+  /**
+   * Reports the tile now under the pointer, as its `data-tile-index`.
+   *
+   * Auto-scroll would otherwise scroll but not select: the range only
+   * grows through each tile's `pointerenter`, and a pointer held still
+   * past the bottom of the window — the case this feature exists for — is
+   * over no tile at all and fires nothing. So every scrolling frame
+   * re-resolves what is under the pointer and says so.
+   */
+  onTileUnderPointer?: (index: number) => void,
+) {
   // Read by the animation loop, which must not be restarted every time the
   // pointer moves a pixel.
+  const pointerX = useRef(0);
   const pointerY = useRef<number | null>(null);
+  // The last index reported, so a frame that resolves the same tile as the
+  // one before doesn't write the selection again on every frame.
+  const reported = useRef<number | null>(null);
+  // Kept in a ref so a new callback identity doesn't tear down and restart
+  // the loop mid-gesture. Updated in an effect (not during render), and
+  // declared before the loop below so it is already current by the time
+  // the first frame runs.
+  const report = useRef(onTileUnderPointer);
+  useEffect(() => {
+    report.current = onTileUnderPointer;
+  }, [onTileUnderPointer]);
 
   useEffect(() => {
     if (!active) return;
@@ -56,7 +81,29 @@ export function useEdgeAutoScroll(ref: RefObject<HTMLElement | null>, active: bo
     // leaves the grid during a drag (that is what dragging past the edge
     // means), and the scroll has to keep following it.
     const onPointerMove = (e: PointerEvent) => {
+      pointerX.current = e.clientX;
       pointerY.current = e.clientY;
+    };
+
+    /**
+     * The tile under the pointer after this frame's scroll, with the
+     * pointer's Y pulled back inside the container first — outside it
+     * there is nothing to hit, and what the user means by holding the
+     * pointer below the grid is "the tile at the bottom edge".
+     */
+    const reportTileUnderPointer = (y: number) => {
+      // jsdom has no `elementFromPoint`, and neither does any environment
+      // without layout; scrolling without reporting is still better than
+      // throwing.
+      if (typeof document.elementFromPoint !== "function") return;
+      const { top, bottom } = el.getBoundingClientRect();
+      const clamped = Math.min(Math.max(y, top + 1), bottom - 1);
+      const hit = document.elementFromPoint(pointerX.current, clamped);
+      const tile = hit?.closest?.("[data-tile-index]");
+      const index = tile ? Number(tile.getAttribute("data-tile-index")) : null;
+      if (index === null || Number.isNaN(index) || index === reported.current) return;
+      reported.current = index;
+      report.current?.(index);
     };
 
     const step = () => {
@@ -85,6 +132,9 @@ export function useEdgeAutoScroll(ref: RefObject<HTMLElement | null>, active: bo
 
       const speed = reduced ? REDUCED_SPEED : MAX_SPEED * depth;
       el.scrollTop += direction * speed;
+      // After the scroll, not before: the tile now under the pointer is
+      // the one the grid just moved into place there.
+      reportTileUnderPointer(y);
     };
 
     document.addEventListener("pointermove", onPointerMove);
@@ -96,6 +146,7 @@ export function useEdgeAutoScroll(ref: RefObject<HTMLElement | null>, active: bo
       // The next gesture starts from wherever its own pointer is, not from
       // where this one ended.
       pointerY.current = null;
+      reported.current = null;
     };
   }, [ref, active]);
 }

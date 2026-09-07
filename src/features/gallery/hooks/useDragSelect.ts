@@ -36,6 +36,21 @@ export function useDragSelect({ entries, selectedIds, onSelectionChange }: Args)
   const mode = useRef<"select" | "deselect">("select");
   const snapshot = useRef<number[]>([]);
 
+  // Whether the `click` the browser is about to synthesise belongs to a
+  // gesture this hook already applied, and must therefore be ignored.
+  //
+  // It has to be answered here, not at the element that was pressed. Per
+  // UI Events, when a press and its release have different targets the
+  // `click` is dispatched on their nearest common ancestor — so pressing a
+  // tile's checkmark and drifting a few pixels onto the tile before
+  // releasing sends the click to the *tile*, which would then run its own
+  // click handling on top of the gesture: toggling the selection straight
+  // back off, or (once that empties the selection and drops the gallery
+  // out of selection mode) opening the lightbox from a checkmark press.
+  // `preventDefault()` on pointerdown does not help — it suppresses the
+  // compatibility `mousedown`, not `click`.
+  const pendingClick = useRef(false);
+
   const apply = useCallback(
     (from: number, to: number) => {
       const [lo, hi] = from <= to ? [from, to] : [to, from];
@@ -63,7 +78,16 @@ export function useDragSelect({ entries, selectedIds, onSelectionChange }: Args)
       // The index and the entries are cached separately, so a tile can
       // report a position this array no longer covers. Nothing to select
       // from a position that doesn't exist — and no gesture to start.
-      if (!entry) return;
+      //
+      // The origin is cleared rather than left alone: a bail *during* a
+      // live drag has to end that drag too, or its subsequent moves would
+      // keep writing a selection anchored to a position that isn't there.
+      if (!entry) {
+        origin.current = null;
+        setIsDragging(false);
+        return;
+      }
+      pendingClick.current = true;
       origin.current = index;
       snapshot.current = selectedIds;
       mode.current = selectedIds.includes(entry.id) ? "deselect" : "select";
@@ -84,6 +108,33 @@ export function useDragSelect({ entries, selectedIds, onSelectionChange }: Args)
     [apply],
   );
 
+  /**
+   * Whether the click now being handled was produced by a checkmark press
+   * this hook already acted on — read once, then cleared. Tiles call it
+   * from both their body and their checkmark click handlers, since either
+   * can be where the browser lands the click.
+   */
+  const consumeGestureClick = useCallback(() => {
+    const pending = pendingClick.current;
+    pendingClick.current = false;
+    return pending;
+  }, []);
+
+  // A press that ends without any click reaching a tile — released outside
+  // the window, or over the gap between two tiles — would otherwise leave
+  // the flag raised for the next, unrelated click to swallow. Every click
+  // is preceded by a press, so clearing at the start of the next press
+  // bounds that: this runs in the capture phase, ahead of React's own
+  // delegated `pointerdown`, so a checkmark press still raises the flag
+  // afterwards.
+  useEffect(() => {
+    const clear = () => {
+      pendingClick.current = false;
+    };
+    document.addEventListener("pointerdown", clear, { capture: true });
+    return () => document.removeEventListener("pointerdown", clear, { capture: true });
+  }, []);
+
   // Listening on `document` (not the grid) means a release anywhere —
   // outside the window included — ends the gesture, so a drag can never
   // get stuck "live" after the pointer is already up.
@@ -101,5 +152,5 @@ export function useDragSelect({ entries, selectedIds, onSelectionChange }: Args)
     };
   }, [isDragging]);
 
-  return { onCheckPointerDown, onTileEnter, isDragging };
+  return { onCheckPointerDown, onTileEnter, isDragging, consumeGestureClick };
 }

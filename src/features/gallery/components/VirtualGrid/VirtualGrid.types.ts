@@ -48,8 +48,14 @@ export type VirtualGridProps = {
   onCheckToggle?: (index: number) => void;
   /** Starts a drag-select from a tile's checkmark. */
   onCheckPointerDown?: (index: number, event: { preventDefault: () => void }) => void;
-  /** Reports the pointer entering a tile, so a drag in progress extends to it. */
+  /**
+   * Reports the pointer entering a tile, so a drag in progress extends to
+   * it. Also called by edge auto-scroll for the tile it scrolls under a
+   * held pointer, which fires no `pointerenter` of its own.
+   */
   onTileEnter?: (index: number) => void;
+  /** Whether the click being handled belongs to a checkmark gesture already applied. See `TileProps`. */
+  consumeGestureClick?: () => boolean;
   /**
    * Whether a drag-select is currently live. While it is, the grid scrolls
    * itself when the pointer nears its top or bottom edge, so a selection

@@ -176,6 +176,7 @@ export function GalleryPage() {
     onCheckPointerDown: startDrag,
     onTileEnter,
     isDragging,
+    consumeGestureClick,
   } = useDragSelect({ entries, selectedIds, onSelectionChange: handleDragSelection });
 
   const handleCheckPointerDown = useCallback(
@@ -514,6 +515,7 @@ export function GalleryPage() {
             onCheckToggle={handleCheckToggle}
             onCheckPointerDown={handleCheckPointerDown}
             onTileEnter={onTileEnter}
+            consumeGestureClick={consumeGestureClick}
             isDragging={isDragging}
           />
         )}

@@ -39,4 +39,14 @@ export type TileProps = {
   onCheckPointerDown?: (index: number, event: { preventDefault: () => void }) => void;
   /** Reports the pointer entering this tile, so a drag in progress can extend to it. */
   onPointerEnter?: (index: number) => void;
+  /**
+   * Whether the click currently being handled was produced by a checkmark
+   * press the drag gesture already acted on — read once, then cleared.
+   *
+   * Consulted by the tile *body* as well as the checkmark: when a press
+   * and its release have different targets the browser dispatches the
+   * click on their nearest common ancestor, so a press that drifts a few
+   * pixels off the checkmark lands its click on the tile.
+   */
+  consumeGestureClick?: () => boolean;
 };

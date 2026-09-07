@@ -423,10 +423,31 @@ it("starts the drag gesture on a pointer press of the checkmark", async () => {
   expect(onCheckPointerDown).toHaveBeenCalledWith(3, expect.anything());
 });
 
-// The press already toggled (the gesture applies its origin immediately),
-// so the click the browser synthesises on release must not undo it.
-it("does not toggle a second time on the click that follows a pointer press", async () => {
+// A press that ends off the checkmark lands its click on the tile — the
+// nearest common ancestor of press and release. Only a right-click is
+// exempt, since `click` never fires for it.
+it("ignores a non-primary pointer press on the checkmark", () => {
   const onCheckPointerDown = vi.fn();
+  render(
+    <Tile
+      tile={tile({ index: 3 })}
+      item={item()}
+      onOpen={() => {}}
+      selected={false}
+      onToggle={() => {}}
+      onCheckPointerDown={onCheckPointerDown}
+    />,
+  );
+
+  fireEvent.pointerDown(checkEl(), { button: 2 });
+
+  expect(onCheckPointerDown).not.toHaveBeenCalled();
+});
+
+// The press already toggled (the gesture applies its origin immediately),
+// so the click the browser synthesises on release must not undo it. The
+// gesture, not the tile, is the authority on whether it owns that click.
+it("does not toggle a second time on a click the gesture claims", async () => {
   const onCheckToggle = vi.fn();
   render(
     <Tile
@@ -436,18 +457,49 @@ it("does not toggle a second time on the click that follows a pointer press", as
       selected={false}
       onToggle={() => {}}
       onCheckToggle={onCheckToggle}
-      onCheckPointerDown={onCheckPointerDown}
+      onCheckPointerDown={() => {}}
+      consumeGestureClick={() => true}
     />,
   );
 
   await userEvent.click(checkEl());
 
-  expect(onCheckPointerDown).toHaveBeenCalledTimes(1);
   expect(onCheckToggle).not.toHaveBeenCalled();
 });
 
-// ...but a keyboard activation sends no pointer press, so it must still
-// toggle. This is the path that keeps the checkmark usable without a mouse.
+// THE regression this guard exists for. Press the checkmark, drift a few
+// pixels onto the tile, release: the browser retargets the click to the
+// tile. Without the guard the tile toggles the selection straight back
+// off — and on the last selected photo it then falls out of selection
+// mode and opens the lightbox, from what the user did as a checkmark
+// press.
+it("neither toggles nor opens when a claimed click lands on the tile body", async () => {
+  const onOpen = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <Tile
+      tile={tile({ index: 3 })}
+      item={item()}
+      onOpen={onOpen}
+      selected={false}
+      onToggle={onToggle}
+      onCheckPointerDown={() => {}}
+      consumeGestureClick={() => true}
+    />,
+  );
+
+  await userEvent.pointer({ target: checkEl(), keys: "[MouseLeft>]" });
+  await userEvent.pointer({ target: tileEl(), keys: "[/MouseLeft]" });
+  // The retargeted click the browser sends to the common ancestor.
+  fireEvent.click(tileEl());
+
+  expect(onToggle).not.toHaveBeenCalled();
+  expect(onOpen).not.toHaveBeenCalled();
+});
+
+// ...but a keyboard activation sends no pointer press, so the gesture
+// claims nothing and it must still toggle. This is the path that keeps the
+// checkmark usable without a mouse.
 it("toggles on a keyboard activation of the checkmark even with a drag handler wired", () => {
   const onCheckPointerDown = vi.fn();
   const onCheckToggle = vi.fn();
@@ -460,6 +512,7 @@ it("toggles on a keyboard activation of the checkmark even with a drag handler w
       onToggle={() => {}}
       onCheckToggle={onCheckToggle}
       onCheckPointerDown={onCheckPointerDown}
+      consumeGestureClick={() => false}
     />,
   );
 
@@ -469,30 +522,12 @@ it("toggles on a keyboard activation of the checkmark even with a drag handler w
   expect(onCheckPointerDown).not.toHaveBeenCalled();
 });
 
-// A press that wanders off and releases over another tile sends no click
-// here — so the suppression flag must not survive it and swallow the next
-// keyboard activation of this same checkmark.
-it("does not swallow a later keyboard activation after a drag left the tile", async () => {
-  const onCheckToggle = vi.fn();
-  render(
-    <Tile
-      tile={tile({ index: 3 })}
-      item={item()}
-      onOpen={() => {}}
-      selected={false}
-      onToggle={() => {}}
-      onCheckToggle={onCheckToggle}
-      onCheckPointerDown={() => {}}
-    />,
-  );
-
-  // Press the checkmark, then release somewhere else entirely.
-  await userEvent.pointer({ target: checkEl(), keys: "[MouseLeft>]" });
-  await userEvent.pointer({ target: document.body, keys: "[/MouseLeft]" });
-
-  fireEvent.click(checkEl(), { detail: 0 });
-
-  expect(onCheckToggle).toHaveBeenCalledWith(3);
+// Edge auto-scroll finds the tile under a held pointer by hit-testing and
+// reading this back — a pointer outside the container fires no
+// `pointerenter` on anything.
+it("exposes its timeline position in the DOM for hit-testing", () => {
+  render(<Tile tile={tile({ index: 7 })} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+  expect(tileEl()).toHaveAttribute("data-tile-index", "7");
 });
 
 it("reports the pointer entering the tile so a drag can extend to it", () => {
