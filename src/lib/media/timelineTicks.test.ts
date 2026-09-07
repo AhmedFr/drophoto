@@ -97,6 +97,50 @@ it("keeps every year's label when culling a library of twenty years", () => {
   expect(years).toHaveLength(20);
 });
 
+// The library this app is actually for: two decades of photos where one
+// year was a quiet one and contributed a single month. Spreading the ticks
+// evenly picks by position, so a year holding one header in a set of
+// hundreds is exactly the one that gets skipped — and since the track only
+// draws a label for a tick that opens a year, that year disappears from
+// the scrubber entirely. Keeping the year starts ahead of the months is
+// what stops it, and this is the shape that proves it: culling this layout
+// with a plain even spread drops 2011.
+it("keeps a year that contributed a single month when culling hundreds of headers", () => {
+  const months = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  const layout: LayoutItem[] = [];
+  const yearsInData: string[] = [];
+  for (let year = 2004; year <= 2025; year++) {
+    // 2011 is the sparse one: a single month against everyone else's
+    // twelve.
+    const inYear = year === 2011 ? ["July"] : months;
+    for (const month of inYear) layout.push(header(`${month} ${year}`), row());
+    yearsInData.push(String(year));
+  }
+  const offsets = layout.map((_, i) => i * 50);
+
+  // 253 month headers down to the scrubber's real cap.
+  const ticks = buildTicks(layout, offsets, layout.length * 50, 120);
+
+  const labelled = ticks.filter((t) => t.isYearStart).map((t) => yearOf(t.label));
+  expect(labelled).toContain("2011");
+  // Every year in the data, labelled exactly once — no year lost to the
+  // cull, and none drawn twice.
+  expect(labelled).toEqual(yearsInData);
+});
+
 // Whether a tick opens a year depends on the tick *before it that
 // survived*, so the flags have to be re-derived after culling — otherwise
 // two survivors of the same year both claim to open it and the track draws
