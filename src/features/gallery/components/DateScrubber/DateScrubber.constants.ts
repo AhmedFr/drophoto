@@ -28,3 +28,9 @@ export const MAX_TICKS = 120;
 
 /** How far one Arrow key moves the scrubber, as a fraction of the viewport. */
 export const KEY_STEP_RATIO = 0.15;
+
+/**
+ * What one line of `deltaY` is worth when a wheel reports its scroll in
+ * lines (`deltaMode` 1) rather than pixels, as some mice and browsers do.
+ */
+export const WHEEL_LINE_HEIGHT_PX = 16;

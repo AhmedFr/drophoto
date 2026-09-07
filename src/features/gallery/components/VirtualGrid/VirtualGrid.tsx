@@ -18,6 +18,9 @@ import type { VirtualGridProps } from "./VirtualGrid.types";
  */
 const CONTENT_PADDING = 16;
 
+/** A `layout` offset in the scroll container's own coordinates. */
+const withPadding = (offset: number) => offset + CONTENT_PADDING;
+
 function VirtualGridImpl({
   entries,
   items,
@@ -122,20 +125,15 @@ function VirtualGridImpl({
   // only reports the handful of items it is currently rendering — the
   // scrubber needs the whole timeline's geometry, and it is deterministic
   // from `layout` (each item's own `estimateSize`).
-  const { offsets, totalHeight } = useMemo(() => {
+  const offsets = useMemo(() => {
     const offsets: number[] = [];
     let y = 0;
     for (const item of layout) {
       offsets.push(y);
       y += item.height + GAP;
     }
-    return { offsets, totalHeight: y };
+    return offsets;
   }, [layout]);
-
-  const ticks = useMemo(
-    () => buildTicks(layout, offsets, totalHeight, MAX_TICKS),
-    [layout, offsets, totalHeight],
-  );
 
   // The scroll element as state, not just the ref: `DateScrubber` has to
   // re-render once it exists, and a ref's mutation doesn't do that.
@@ -143,6 +141,36 @@ function VirtualGridImpl({
   useEffect(() => {
     setScrollEl(ref.current);
   }, [ref]);
+
+  /**
+   * How far the container can actually be scrolled, measured from the DOM
+   * rather than derived from `layout`, which knows nothing of the viewport
+   * height.
+   *
+   * This is the denominator for everything the scrubber draws and reads —
+   * ticks, handle and pill alike — so a year label sits exactly at the
+   * scroll position that brings that year to the top, rather than at its
+   * fraction of the content, which is a different (and on a short library,
+   * a visibly different) number.
+   *
+   * Re-measured whenever the content or the container's width changes.
+   * A resize that changes only the height and leaves the width alone
+   * doesn't re-render this component, so the ticks stay put until the next
+   * change of either — visible as a small drift in where the labels sit,
+   * never as a wrong date.
+   */
+  const [scrollRange, setScrollRange] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    setScrollRange(el ? Math.max(0, el.scrollHeight - el.clientHeight) : 0);
+  }, [ref, layout, width]);
+
+  const ticks = useMemo(
+    // Shifted into the container's own coordinates: `scrollTop` counts the
+    // scroll element's `p-4` top padding and `layout` doesn't.
+    () => buildTicks(layout, offsets.map(withPadding), scrollRange, MAX_TICKS),
+    [layout, offsets, scrollRange],
+  );
 
   /**
    * The date of the photo at the top of the viewport for a given position
@@ -154,20 +182,20 @@ function VirtualGridImpl({
    */
   const dateAt = useCallback(
     (ratio: number) => {
-      const el = scrollEl;
-      const range = el ? Math.max(0, el.scrollHeight - el.clientHeight) : 0;
-      // `layout` coordinates start below the container's own `p-4` top
-      // padding, which `scrollTop` counts and they don't.
-      const offset = ratio * range - CONTENT_PADDING;
+      const offset = ratio * scrollRange - CONTENT_PADDING;
       const index = tileIndexAtOffset(layout, offsets, offset);
       return index === null ? "" : formatFullDate(entries[index]?.taken_at ?? null);
     },
-    [scrollEl, layout, offsets, entries],
+    [scrollRange, layout, offsets, entries],
   );
 
   return (
     <div className="relative h-full">
-      <div ref={ref} className="scrollbar-none h-full overflow-y-auto p-4">
+      <div
+        ref={ref}
+        data-testid="grid-scroll"
+        className="scrollbar-none h-full overflow-y-auto p-4"
+      >
         <div style={{ position: "relative", height: virtualizer.getTotalSize() }}>
           {virtualItems.map((virtualItem) => {
             const row = layout[virtualItem.index];

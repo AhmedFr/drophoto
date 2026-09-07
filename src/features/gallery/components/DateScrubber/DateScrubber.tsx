@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Tick } from "@/lib/media/timelineTicks";
+import { yearOf, type Tick } from "@/lib/media/timelineTicks";
 import {
   EDGE_PADDING_PX,
   MIN_LABEL_SPACING_PX,
@@ -41,12 +41,6 @@ function yearLabels(ticks: Tick[], trackHeight: number): Tick[] {
   return kept;
 }
 
-/** "March 2019" -> "2019"; "Undated" has no year and stands as itself. */
-function yearOf(label: string): string {
-  const parts = label.split(" ");
-  return parts[parts.length - 1] ?? label;
-}
-
 /**
  * Google Photos' date scrubber: a quiet strip down the right edge of the
  * grid that opens on hover to show the years the library spans, and can be
@@ -71,10 +65,8 @@ export function DateScrubber({
   disabled = false,
 }: DateScrubberProps) {
   const [hovered, setHovered] = useState(false);
-  const { trackRef, ratio, scrubbing, onPointerDown, onKeyDown } = useScrubber(
-    scrollElement,
-    disabled,
-  );
+  const { trackRef, handleRef, ratio, scrubbing, scrollable, onPointerDown, onWheel, onKeyDown } =
+    useScrubber(scrollElement, disabled, ticks);
 
   // Open while the pointer is over it or a scrub is in flight — a drag
   // that has wandered off the track must not collapse it mid-gesture.
@@ -89,8 +81,17 @@ export function DateScrubber({
     [ticks, scrollElement],
   );
 
-  // Centre of the handle, kept clear of both ends of the track.
-  const handleTop = `calc(${EDGE_PADDING_PX}px + ${ratio} * (100% - ${EDGE_PADDING_PX * 2}px))`;
+  /**
+   * Where a position along the track is drawn, inset from both ends by
+   * `EDGE_PADDING_PX` so nothing centred on it is clipped by the
+   * container's edge. The handle, the year labels and the pointer mapping
+   * in `useScrubber` all use this one run, so a label sits exactly where
+   * the handle lands when it reaches that month.
+   */
+  const trackTop = (at: number) =>
+    `calc(${EDGE_PADDING_PX}px + ${at} * (100% - ${EDGE_PADDING_PX * 2}px))`;
+
+  const handleTop = trackTop(ratio);
 
   return (
     <div
@@ -105,6 +106,7 @@ export function DateScrubber({
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
       onPointerDown={onPointerDown}
+      onWheel={onWheel}
     >
       <div
         aria-hidden
@@ -126,27 +128,43 @@ export function DateScrubber({
           transition: reduced ? undefined : "opacity 140ms ease-out",
         }}
       >
-        {labels.map((tick) => (
+        {labels.map((tick, i) => (
+          // Keyed by position as well as label: `buildLayout` supports a
+          // month recurring non-consecutively (the `added_desc` sort puts
+          // the same month in two places), so the label alone is not
+          // unique.
           <span
-            key={tick.label}
+            key={`${i}:${tick.label}`}
             className="absolute right-2 -translate-y-1/2 whitespace-nowrap"
-            style={{ top: `${tick.offsetRatio * 100}%` }}
+            style={{ top: trackTop(tick.offsetRatio) }}
           >
             {yearOf(tick.label)}
           </span>
         ))}
       </div>
 
+      {/*
+        A slider only while there is something to scroll. With the whole
+        library on one screen there is no value for it to report and no key
+        it could answer, and a tab stop like that is exactly the reachable
+        dead end this gallery is not allowed to have — so it stays a
+        drawing instead.
+      */}
       <div
-        role="slider"
-        tabIndex={0}
-        aria-label="Scroll the gallery by date"
-        aria-orientation="vertical"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(ratio * 100)}
-        aria-valuetext={dateLabel}
-        onKeyDown={onKeyDown}
+        ref={handleRef}
+        {...(scrollable
+          ? {
+              role: "slider",
+              tabIndex: 0,
+              "aria-label": "Scroll the gallery by date",
+              "aria-orientation": "vertical" as const,
+              "aria-valuemin": 0,
+              "aria-valuemax": 100,
+              "aria-valuenow": Math.round(ratio * 100),
+              "aria-valuetext": dateLabel,
+              onKeyDown,
+            }
+          : { "aria-hidden": true })}
         className="absolute right-0 left-0 -translate-y-1/2 outline-none focus-visible:ring-1 focus-visible:ring-ring"
         style={{ top: handleTop, height: 6 }}
       >

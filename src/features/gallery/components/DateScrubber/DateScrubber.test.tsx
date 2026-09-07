@@ -29,11 +29,12 @@ function scrollElementStub(over: Partial<Record<string, unknown>> = {}): ScrollS
 }
 
 /**
- * The track's own box, which jsdom reports as all zeros. 200px tall
- * starting at the top of the viewport, so a `clientY` reads directly as a
- * fraction of it.
+ * The track's own box, which jsdom reports as all zeros. 216px tall
+ * starting at the top of the viewport: the handle travels between
+ * `EDGE_PADDING_PX` (8) and 208, so that is a 200px run, and a `clientY`
+ * of `8 + n` is `n`/200 of the way down it.
  */
-function stubTrackBox(el: HTMLElement, { top = 0, height = 200 } = {}) {
+function stubTrackBox(el: HTMLElement, { top = 0, height = 216 } = {}) {
   el.getBoundingClientRect = () =>
     ({ top, bottom: top + height, height, left: 0, right: 8, width: 8, x: 0, y: top }) as DOMRect;
 }
@@ -51,17 +52,18 @@ function renderScrubber(props: Partial<React.ComponentProps<typeof DateScrubber>
 it("scrolls the element when the track is clicked", () => {
   const { el, track } = renderScrubber();
 
-  fireEvent.pointerDown(track, { clientY: 50 });
+  fireEvent.pointerDown(track, { clientY: 58 });
 
-  // Track is 200px tall, so clientY 50 is a quarter of the way down; the
-  // scrollable range is scrollHeight - clientHeight = 800, so 0.25 * 800.
+  // The handle's run is 200px starting 8px down, so clientY 58 is a
+  // quarter of the way along it; the scrollable range is
+  // scrollHeight - clientHeight = 800, so 0.25 * 800.
   expect(el.scrollTo).toHaveBeenCalledWith({ top: 200, behavior: "auto" });
 });
 
 it("shows the date for the dragged position", () => {
   const { track } = renderScrubber();
 
-  fireEvent.pointerDown(track, { clientY: 50 });
+  fireEvent.pointerDown(track, { clientY: 58 });
 
   expect(screen.getByText("12 March 2019")).toBeInTheDocument();
 });
@@ -71,8 +73,8 @@ it("shows the date for the dragged position", () => {
 it("keeps scrolling as the pointer moves after the press", () => {
   const { el, track } = renderScrubber();
 
-  fireEvent.pointerDown(track, { clientY: 50 });
-  fireEvent.pointerMove(document, { clientY: 150 });
+  fireEvent.pointerDown(track, { clientY: 58 });
+  fireEvent.pointerMove(document, { clientY: 158 });
 
   expect(el.scrollTo).toHaveBeenLastCalledWith({ top: 600, behavior: "auto" });
 });
@@ -80,9 +82,9 @@ it("keeps scrolling as the pointer moves after the press", () => {
 it("stops following the pointer once it is released", () => {
   const { el, track } = renderScrubber();
 
-  fireEvent.pointerDown(track, { clientY: 50 });
+  fireEvent.pointerDown(track, { clientY: 58 });
   fireEvent.pointerUp(document);
-  fireEvent.pointerMove(document, { clientY: 150 });
+  fireEvent.pointerMove(document, { clientY: 158 });
 
   expect(el.scrollTo).toHaveBeenCalledTimes(1);
 });
@@ -90,7 +92,7 @@ it("stops following the pointer once it is released", () => {
 it("hides the date pill once the scrub ends", () => {
   const { track } = renderScrubber();
 
-  fireEvent.pointerDown(track, { clientY: 50 });
+  fireEvent.pointerDown(track, { clientY: 58 });
   fireEvent.pointerUp(document);
 
   expect(screen.queryByText("12 March 2019")).not.toBeInTheDocument();
@@ -115,7 +117,7 @@ it("exposes the handle as a slider with the date as its value text", () => {
 it("refuses to scrub while another gesture owns the scroll container", () => {
   const { el, track } = renderScrubber({ disabled: true });
 
-  fireEvent.pointerDown(track, { clientY: 50 });
+  fireEvent.pointerDown(track, { clientY: 58 });
 
   expect(el.scrollTo).not.toHaveBeenCalled();
   expect(screen.queryByText("12 March 2019")).not.toBeInTheDocument();
@@ -176,11 +178,80 @@ it("follows the container when something else scrolls it", () => {
   expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "50");
 });
 
-it("renders nothing interactive when there is nothing to scroll", () => {
+// A control the keyboard can reach that answers no key, and reports a
+// value it could never change, is the reachable dead end invariant (A)
+// exists to prevent — so with nothing to scroll the handle stops being a
+// control at all.
+it("is not a slider, or a tab stop, when there is nothing to scroll", () => {
   const el = scrollElementStub({ scrollHeight: 200, clientHeight: 200 });
   const { track } = renderScrubber({ scrollElement: el });
 
-  fireEvent.pointerDown(track, { clientY: 50 });
+  expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+  expect(document.querySelector("[tabindex]")).toBeNull();
+
+  fireEvent.pointerDown(track, { clientY: 58 });
 
   expect((el as ScrollStub).scrollTo).not.toHaveBeenCalled();
+});
+
+// The track overlays the grid's right edge as a sibling, so a wheel that
+// lands on it has no scrollable ancestor to bubble to — without this the
+// strip would be a 56px-wide dead zone exactly where the pointer is.
+it("forwards a wheel over the track to the grid underneath", () => {
+  const { el, track } = renderScrubber();
+
+  fireEvent.wheel(track, { deltaY: 120 });
+
+  expect(el.scrollTo).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
+});
+
+it("reads a wheel that reports lines rather than pixels", () => {
+  const { el, track } = renderScrubber();
+
+  fireEvent.wheel(track, { deltaY: 3, deltaMode: 1 });
+
+  expect(el.scrollTo).toHaveBeenCalledWith({ top: 48, behavior: "auto" });
+});
+
+it("does not wheel the grid past either end", () => {
+  const { el, track } = renderScrubber();
+
+  fireEvent.wheel(track, { deltaY: -120 });
+  expect(el.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: "auto" });
+
+  fireEvent.wheel(track, { deltaY: 5000 });
+  expect(el.scrollTo).toHaveBeenLastCalledWith({ top: 800, behavior: "auto" });
+});
+
+// The pointer press has to move focus itself: `preventDefault` on
+// pointerdown would suppress the focus the press carries, and the slider
+// would then be reachable only by Tab.
+it("focuses the slider when the track is pressed", () => {
+  const { track } = renderScrubber();
+
+  fireEvent.pointerDown(track, { clientY: 58 });
+
+  expect(screen.getByRole("slider")).toHaveFocus();
+});
+
+// The pointer maps onto the same run the handle is drawn along, so the
+// handle lands where it was grabbed rather than jumping by the edge inset.
+it("puts the handle exactly where the pointer pressed", () => {
+  const { track } = renderScrubber();
+
+  fireEvent.pointerDown(track, { clientY: 58 });
+
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "25");
+});
+
+// `DateScrubber` unmounts the moment the timeline does — a search that
+// matches nothing — which can happen mid-drag.
+it("drops its document listeners if it unmounts mid-scrub", () => {
+  const { el, track, unmount } = renderScrubber();
+
+  fireEvent.pointerDown(track, { clientY: 58 });
+  unmount();
+  fireEvent.pointerMove(document, { clientY: 158 });
+
+  expect(el.scrollTo).toHaveBeenCalledTimes(1);
 });

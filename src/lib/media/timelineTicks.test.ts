@@ -1,5 +1,5 @@
 import type { LayoutItem } from "./layout";
-import { buildTicks, tileIndexAtOffset } from "./timelineTicks";
+import { buildTicks, tileIndexAtOffset, yearOf } from "./timelineTicks";
 
 let seq = 0;
 
@@ -63,10 +63,71 @@ it("treats the Undated header's own label as its year", () => {
   expect(ticks.map((t) => t.isYearStart)).toEqual([true, false]);
 });
 
+// The track draws a label only for a tick that opens a year, so a year
+// whose one opening tick is culled vanishes from the track entirely —
+// evenly-spaced culling silently deleted half of them for a library this
+// size, which is the ordinary case for this app.
+it("keeps every year's label when culling a library of twenty years", () => {
+  const months = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  const layout: LayoutItem[] = [];
+  for (let year = 2006; year <= 2025; year++) {
+    for (const month of months) layout.push(header(`${month} ${year}`), row());
+  }
+  const offsets = layout.map((_, i) => i * 50);
+
+  // 240 months down to 60 ticks — a quarter of them survive.
+  const ticks = buildTicks(layout, offsets, layout.length * 50, 60);
+
+  const years = ticks.filter((t) => t.isYearStart).map((t) => t.label.split(" ")[1]);
+  expect(new Set(years).size).toBe(20);
+  // One label per year, and no year labelled twice.
+  expect(years).toHaveLength(20);
+});
+
+// Whether a tick opens a year depends on the tick *before it that
+// survived*, so the flags have to be re-derived after culling — otherwise
+// two survivors of the same year both claim to open it and the track draws
+// the year twice.
+it("re-marks year starts against the surviving ticks, not the original ones", () => {
+  const layout: LayoutItem[] = [];
+  for (const year of [2020, 2019, 2020, 2019, 2020, 2019]) {
+    layout.push(header(`June ${year}`), row());
+  }
+  const offsets = layout.map((_, i) => i * 50);
+
+  const ticks = buildTicks(layout, offsets, layout.length * 50, 3);
+
+  expect(ticks.map((t) => t.label)).toEqual(["June 2020", "June 2019", "June 2019"]);
+  expect(ticks.map((t) => t.isYearStart)).toEqual([true, true, false]);
+});
+
+// A month inside the last screenful can never be scrolled to the top, so
+// its tick belongs at the end of the track rather than past it.
+it("clamps a tick past the end of the scrollable range to the bottom of the track", () => {
+  const layout = [header("March 2019"), row(), header("February 2019"), row()];
+
+  const ticks = buildTicks(layout, [0, 52, 900, 952], 500, 100);
+
+  expect(ticks[1].offsetRatio).toBe(1);
+});
+
 describe("tileIndexAtOffset", () => {
   // The pill's date comes from a real photo, not from the month header the
   // year labels are built from — only the index knows individual dates.
-  it("returns the first tile of the last row at or above the offset", () => {
+  it("returns the first tile of the last row starting at or before the offset", () => {
     const layout = [header("March 2019"), row(0, 1), row(2, 3)];
     const offsets = [0, 52, 252];
 
@@ -93,5 +154,15 @@ describe("tileIndexAtOffset", () => {
   it("returns null when the layout has no rows at all", () => {
     expect(tileIndexAtOffset([], [], 0)).toBeNull();
     expect(tileIndexAtOffset([header("March 2019")], [0], 0)).toBeNull();
+  });
+});
+
+describe("yearOf", () => {
+  it("takes the year off a month label", () => {
+    expect(yearOf("March 2019")).toBe("2019");
+  });
+
+  it("leaves a label with no year part as itself", () => {
+    expect(yearOf("Undated")).toBe("Undated");
   });
 });

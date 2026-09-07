@@ -3,17 +3,28 @@ import type { LayoutItem } from "./layout";
 export type Tick = {
   /** The month header's own label, e.g. "March 2019" — or "Undated". */
   label: string;
-  /** Where the month begins, as a fraction of the grid's total height. */
+  /** Where the month begins, as a fraction of the scrubber's track. */
   offsetRatio: number;
-  /** Whether this tick opens a year the previous tick didn't belong to. */
+  /** Whether this tick opens a year the previous surviving tick didn't belong to. */
   isYearStart: boolean;
 };
+
+/** "March 2019" -> "2019"; "Undated" has no year and stands as itself. */
+export function yearOf(label: string): string {
+  const parts = label.split(" ");
+  return parts[parts.length - 1] ?? label;
+}
 
 /**
  * Reduces the layout's month headers into positions along the scrubber
  * track. Offsets come from the grid's own row geometry (real pixel
  * positions), so a tick sits exactly where its month begins — the whole
  * reason the gallery loads a full index rather than estimating.
+ *
+ * `rowOffsets` and `totalHeight` are in whatever coordinates the caller
+ * uses to *drive* the scroll, so a tick's `offsetRatio` is directly the
+ * position the handle must reach to land on that month — one denominator
+ * for the labels, the handle and the pointer alike.
  *
  * `maxTicks` caps how many labels render so they never overlap on a short
  * track; the first and last always survive so the track's ends stay
@@ -28,30 +39,74 @@ export function buildTicks(
   if (totalHeight <= 0 || layout.length === 0) return [];
 
   const all: Tick[] = [];
-  let previousYear: string | null = null;
   layout.forEach((item, i) => {
     if (item.kind !== "header") return;
-    // "March 2019" -> "2019"; "Undated" has no year part, so it stands as
-    // its own — two consecutive undated headers can't both read as the
-    // start of something new.
-    const parts = item.label.split(" ");
-    const year = parts[parts.length - 1] ?? "";
     all.push({
       label: item.label,
-      offsetRatio: (rowOffsets[i] ?? 0) / totalHeight,
-      isYearStart: year !== previousYear,
+      // Clamped: a month inside the final viewport-worth of the grid can
+      // never reach the top of the screen, so its tick belongs at the very
+      // bottom of the track rather than past the end of it.
+      offsetRatio: Math.min(1, Math.max(0, (rowOffsets[i] ?? 0) / totalHeight)),
+      isYearStart: false,
     });
-    previousYear = year;
   });
 
-  return cull(all, maxTicks);
+  // Marked twice on purpose. The first pass is what lets `cull` know which
+  // ticks open a year and so must be kept; the second re-derives the flags
+  // over the survivors, because a year start whose predecessor was culled
+  // may no longer open anything, and the tick after a culled year start
+  // may now be the first of its year.
+  return markYearStarts(cull(markYearStarts(all), maxTicks));
 }
 
-/** Keeps the first and last tick and spreads the rest evenly between them. */
+/** Flags each tick that opens a year the one before it didn't belong to. */
+function markYearStarts(ticks: Tick[]): Tick[] {
+  let previousYear: string | null = null;
+  return ticks.map((tick) => {
+    const year = yearOf(tick.label);
+    const isYearStart = year !== previousYear;
+    previousYear = year;
+    return { ...tick, isYearStart };
+  });
+}
+
+/**
+ * Thins the ticks to at most `maxTicks`, keeping the ones that open a year
+ * ahead of the ones that don't.
+ *
+ * Culling evenly across all the months would quietly delete years: the
+ * track only ever draws a label for a tick that opens a year, and a year
+ * whose single opening tick is dropped disappears from the track
+ * altogether — half of them, for a library of twenty years of full months.
+ * The years are the whole point of the track, so they are what survives;
+ * the months between them fill whatever room is left.
+ */
 function cull(ticks: Tick[], maxTicks: number): Tick[] {
-  if (ticks.length <= maxTicks || maxTicks < 2) return ticks.slice(0, Math.max(maxTicks, 0));
-  const step = (ticks.length - 1) / (maxTicks - 1);
-  return Array.from({ length: maxTicks }, (_, i) => ticks[Math.round(i * step)]);
+  if (maxTicks <= 0) return [];
+  if (ticks.length <= maxTicks) return ticks;
+
+  const starts = ticks.filter((t) => t.isYearStart);
+  // More years than the track has room for (a library would need over a
+  // century of them) — spread the years themselves and drop every month.
+  if (starts.length >= maxTicks) return spread(starts, maxTicks);
+
+  const kept = new Set(starts);
+  const fill = new Set(
+    spread(
+      ticks.filter((t) => !kept.has(t)),
+      maxTicks - starts.length,
+    ),
+  );
+  return ticks.filter((t) => kept.has(t) || fill.has(t));
+}
+
+/** `count` ticks taken evenly from `ticks`, always including its ends. */
+function spread(ticks: Tick[], count: number): Tick[] {
+  if (count <= 0) return [];
+  if (ticks.length <= count) return ticks;
+  if (count === 1) return [ticks[0]];
+  const step = (ticks.length - 1) / (count - 1);
+  return Array.from({ length: count }, (_, i) => ticks[Math.round(i * step)]);
 }
 
 /**
@@ -75,7 +130,7 @@ export function tileIndexAtOffset(
 ): number | null {
   if (layout.length === 0) return null;
 
-  // The last layout item that starts at or above `offset` — i.e. the one
+  // The last layout item that starts at or before `offset` — i.e. the one
   // occupying the top of the viewport.
   let lo = 0;
   let hi = layout.length - 1;

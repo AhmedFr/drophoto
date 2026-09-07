@@ -13,6 +13,30 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://mock/${path}`,
 }));
 
+// jsdom lays nothing out: every element reports 0 for both of these, which
+// would leave the grid with no scrollable range at all — and so no ticks
+// and no scrubber. These are the numbers the scrubber's arithmetic runs
+// on: 1400px of content in a 400px viewport is a 1000px scrollable range.
+const SCROLL_HEIGHT = 1400;
+const CLIENT_HEIGHT = 400;
+Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+  configurable: true,
+  get: () => SCROLL_HEIGHT,
+});
+Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+  configurable: true,
+  get: () => CLIENT_HEIGHT,
+});
+
+/** Scrolls the grid's own container and lets the scrubber hear about it. */
+function scrollTo(top: number) {
+  const scroller = screen.getByTestId("grid-scroll");
+  // jsdom's `scrollTop` setter is inert without layout, so the position is
+  // installed on the element directly.
+  Object.defineProperty(scroller, "scrollTop", { configurable: true, value: top });
+  fireEvent.scroll(scroller);
+}
+
 let latestResizeCallback: ResizeObserverCallback | null = null;
 
 class ResizeObserverStub {
@@ -55,14 +79,32 @@ function hydrated(count: number): { entries: LayoutEntry[]; items: MediaItem[] }
 
 it("renders a month header with a label and item count", () => {
   const { entries, items } = hydrated(2);
-  render(<VirtualGrid entries={entries} items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
   expect(screen.getByText("September 2025")).toBeInTheDocument();
   expect(screen.getByText("2")).toBeInTheDocument();
 });
 
 it("renders a tile per item with alt text", () => {
   const { entries, items } = hydrated(3);
-  render(<VirtualGrid entries={entries} items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
   const imgs = screen.getAllByRole("img");
   expect(imgs).toHaveLength(3);
   expect(imgs[0]).toHaveAttribute("alt", "photos/1.jpg");
@@ -149,7 +191,16 @@ it("does not re-report the range when only the hydrated items change", () => {
 
 it("re-measures the virtualizer when the container is resized", () => {
   const { entries, items } = hydrated(2);
-  render(<VirtualGrid entries={entries} items={items} targetRowHeight={200} onOpen={() => {}} selectedIds={new Set()} onToggle={() => {}} />);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
 
   const callsAfterMount = virtualizerSpies.measure.mock.calls.length;
   expect(callsAfterMount).toBeGreaterThan(0);
@@ -353,9 +404,7 @@ it("leaves the scrubber off when there is no timeline to scrub", () => {
 
 // The year labels come from the month headers; the scrubber's value text
 // comes from the index, which is the only thing that knows a given photo's
-// day. jsdom gives the container no layout (`scrollHeight` and
-// `clientHeight` are both 0), so the position under test is the top of the
-// timeline — the first photo's own capture date.
+// day.
 it("reports the exact date of the photo at the scrubber's position, not just its month", () => {
   const items = [item(1, { row: { ...mediaItem(1).row, taken_at: "2025-09-10T12:00:00Z" } })];
   render(
@@ -369,6 +418,44 @@ it("reports the exact date of the photo at the scrubber's position, not just its
     />,
   );
 
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "10 September 2025");
+});
+
+/**
+ * Ten square photos at a 1000px container width pack five to a row, each
+ * (1000 - 4 gaps) / 5 = 193.6px tall. So in the layout's own coordinates
+ * the month header occupies 0–60 (52 + an 8px gap), the first row starts
+ * at 60, and the second starts at 261.6.
+ *
+ * `scrollTop` counts the container's 16px top padding and those offsets
+ * don't, which is the whole job of `CONTENT_PADDING`: the second row
+ * reaches the top of the viewport at a `scrollTop` of 277.6, not 261.6.
+ * The two assertions below sit either side of that line, so the constant
+ * is pinned to within a pixel — with no padding correction at all, the
+ * first of them reads the wrong row's date.
+ */
+it("maps a scroll position to the photo actually at the top of the viewport", () => {
+  const entries = Array.from({ length: 10 }, (_, i) => ({
+    id: i + 1,
+    taken_at: i < 5 ? "2025-09-20T12:00:00Z" : "2025-09-10T12:00:00Z",
+    width: 100,
+    height: 100,
+  }));
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={[]}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  scrollTo(277);
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "20 September 2025");
+
+  scrollTo(278);
   expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "10 September 2025");
 });
 
