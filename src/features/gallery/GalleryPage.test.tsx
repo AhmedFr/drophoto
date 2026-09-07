@@ -982,7 +982,9 @@ function dragFrom(fromCheck: number, toTile: number) {
  */
 function clickTile(index: number, init: MouseEventInit = {}) {
   fireEvent.pointerDown(tileBoxes()[index], init);
-  fireEvent.click(tileBoxes()[index], init);
+  // `detail: 1` marks it a pointer click; a keyboard activation is 0, and
+  // the two are treated differently by the gesture's click guard.
+  fireEvent.click(tileBoxes()[index], { detail: 1, ...init });
 }
 
 it("selects a photo from its checkmark without opening the lightbox", async () => {
@@ -1133,7 +1135,7 @@ it("keeps the selection when a checkmark press releases on the tile body", async
 
   // Released a few pixels off the checkmark: the click goes to the tile.
   fireEvent.pointerUp(document);
-  fireEvent.click(tileBoxes()[0]);
+  fireEvent.click(tileBoxes()[0], { detail: 1 });
 
   expect(useGalleryStore.getState().selectedIds).toEqual([1]);
 });
@@ -1150,7 +1152,7 @@ it("never opens the lightbox from a checkmark press that drifts onto the tile", 
 
   fireEvent.pointerDown(checks()[0]);
   fireEvent.pointerUp(document);
-  fireEvent.click(tileBoxes()[0]);
+  fireEvent.click(tileBoxes()[0], { detail: 1 });
 
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(useGalleryStore.getState().selectedIds).toEqual([1]);
@@ -1166,7 +1168,7 @@ it("still opens the lightbox on the click after a checkmark gesture", async () =
 
   fireEvent.pointerDown(checks()[0]);
   fireEvent.pointerUp(document);
-  fireEvent.click(tileBoxes()[0]);
+  fireEvent.click(tileBoxes()[0], { detail: 1 });
   // Take the selection back off, so the gallery leaves selection mode.
   await user.click(checks()[0]);
   expect(useGalleryStore.getState().selectedIds).toEqual([]);
@@ -1202,4 +1204,75 @@ it("does not swallow an unrelated click made after a drag released off the grid"
   clickTile(2);
 
   expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+});
+
+// A drag released anywhere but its origin tile produces no click at all,
+// so its claim on the next click is still standing. A keyboard activation
+// has no press in front of it and can never be that click — if it consumed
+// the claim, the first Enter after a sweep would silently do nothing.
+// Bounded, but still a state where a keystroke is swallowed.
+it("still toggles from the keyboard on the first activation after a drag", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  dragFrom(0, 1);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2]);
+
+  // Tab to a checkmark and press Enter: a click with no press before it.
+  fireEvent.click(checks()[2], { detail: 0 });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+});
+
+// ---------------------------------------------------------------------
+// Real DOM focus vs. the roving `focusIndex`. GalleryPage handles Enter and
+// Space on `document`, against `focusIndex`; a Tab-focused tile handles
+// them itself, against its own index. Both used to run on one keystroke,
+// and when the two indices differ that acted on two different photos.
+// ---------------------------------------------------------------------
+
+it("toggles only the tile that holds focus, not also the roving focusIndex", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  // Roving focus lands on index 0...
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(useGalleryStore.getState().focusIndex).toBe(0);
+
+  // ...while real DOM focus is on a different tile entirely.
+  fireEvent.keyDown(tileBoxes()[2], { key: " " });
+
+  // Photo 3 alone. Before the fix this was [3, 1]: the tile's own handler
+  // and the document handler both acted, on two different photos.
+  expect(useGalleryStore.getState().selectedIds).toEqual([3]);
+});
+
+it("opens only the tile that holds focus when Enter is pressed on it", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" }); // roving focus at 0
+  fireEvent.keyDown(tileBoxes()[2], { key: "Enter" });
+
+  // "03 / 3", not "01 / 3" — the document handler must not have opened the
+  // roving index on top of the focused tile's own open.
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("03 / 3")).toBeInTheDocument();
+});
+
+// The grid handler still owns these keys when no tile holds focus, which
+// is the ordinary case — the roving focus is the only cursor there is.
+it("still toggles the roving focus when Space is pressed outside any tile", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  fireEvent.keyDown(document.body, { key: " " });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([2]);
 });

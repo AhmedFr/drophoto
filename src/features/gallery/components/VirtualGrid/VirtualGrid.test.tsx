@@ -337,7 +337,8 @@ it("does not open or toggle on a click the drag gesture claims", () => {
     />,
   );
 
-  fireEvent.click(screen.getAllByRole("button", { name: /photos\// })[0]);
+  // A pointer click (`detail` 1), which is what a drifted press produces.
+  fireEvent.click(screen.getAllByRole("button", { name: /photos\// })[0], { detail: 1 });
 
   expect(onOpen).not.toHaveBeenCalled();
   expect(onToggle).not.toHaveBeenCalled();

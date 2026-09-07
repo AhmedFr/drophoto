@@ -32,6 +32,20 @@ export function Tile({
   // yet — where inferring coherence from arrival timing would not.
   const item = hydrated?.row.id === entry.id ? hydrated : undefined;
 
+  /**
+   * Whether this click belongs to a checkmark gesture that already acted
+   * on it — asked of the gesture, since the browser decides which element
+   * receives the click and it isn't always the checkmark.
+   *
+   * A keyboard activation is excluded before the question is even asked.
+   * It synthesises a click with `detail === 0` and, crucially, no pointer
+   * press ahead of it — so it can never be a gesture's own click, and
+   * letting it consume a claim left by an earlier drag would silently eat
+   * the keystroke.
+   */
+  const isGestureClick = (e: { detail: number }) =>
+    e.detail !== 0 && (consumeGestureClick?.() ?? false);
+
   return (
     <div
       role="button"
@@ -77,7 +91,7 @@ export function Tile({
       // empties the selection and leaves selection mode, open the
       // lightbox from what the user experienced as a checkmark press).
       onClick={(e) => {
-        if (consumeGestureClick?.()) return;
+        if (isGestureClick(e)) return;
         if (e.metaKey || e.ctrlKey) onToggle(index, false);
         else if (e.shiftKey) onToggle(index, true);
         else if (selectionMode) onToggle(index, false);
@@ -85,11 +99,21 @@ export function Tile({
       }}
       onMouseDown={(e) => e.shiftKey && e.preventDefault()}
       onPointerEnter={() => onPointerEnter?.(index)}
+      // `stopPropagation` is what makes exactly one handler act. GalleryPage
+      // also listens for Enter and Space on `document`, against its *roving*
+      // focus (`focusIndex`) — but when a tile holds real DOM focus, this
+      // tile is the truth about what the user is acting on, and the two
+      // indices are routinely different. Without this, one keystroke
+      // toggled two different photos, or opened a photo other than the
+      // focused one. Only the keys handled here are stopped; arrows still
+      // reach the grid handler, so the keyboard is never left dead.
       onKeyDown={(e) => {
         if (e.key === "Enter") {
+          e.stopPropagation();
           if (item) onOpen(index);
         } else if (e.key === " ") {
           e.preventDefault();
+          e.stopPropagation();
           onToggle(index, false);
         }
       }}
@@ -121,7 +145,7 @@ export function Tile({
           // A press that released on this same button lands its click
           // here; one that drifted onto the tile lands it on the tile.
           // Both consult the same gesture state.
-          if (consumeGestureClick?.()) return;
+          if (isGestureClick(e)) return;
           if (onCheckToggle) onCheckToggle(index);
           else onToggle(index, false);
         }}

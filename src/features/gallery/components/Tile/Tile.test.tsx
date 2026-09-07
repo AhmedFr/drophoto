@@ -490,8 +490,10 @@ it("neither toggles nor opens when a claimed click lands on the tile body", asyn
 
   await userEvent.pointer({ target: checkEl(), keys: "[MouseLeft>]" });
   await userEvent.pointer({ target: tileEl(), keys: "[/MouseLeft]" });
-  // The retargeted click the browser sends to the common ancestor.
-  fireEvent.click(tileEl());
+  // The retargeted click the browser sends to the common ancestor. A
+  // pointer click, so `detail` is 1 — that is what distinguishes it from a
+  // keyboard activation.
+  fireEvent.click(tileEl(), { detail: 1 });
 
   expect(onToggle).not.toHaveBeenCalled();
   expect(onOpen).not.toHaveBeenCalled();
@@ -520,6 +522,79 @@ it("toggles on a keyboard activation of the checkmark even with a drag handler w
 
   expect(onCheckToggle).toHaveBeenCalledWith(3);
   expect(onCheckPointerDown).not.toHaveBeenCalled();
+});
+
+// ...and it must still toggle even when a claim IS standing — a drag that
+// released off its origin leaves one, since no click ever reached a tile
+// to consume it. A keyboard activation has no press in front of it, so it
+// cannot be that gesture's click and must not eat the claim. Asserted by
+// the gesture never being asked: `detail === 0` settles it first.
+it("does not consume a standing gesture claim on a keyboard activation", () => {
+  const consumeGestureClick = vi.fn(() => true);
+  const onCheckToggle = vi.fn();
+  render(
+    <Tile
+      tile={tile({ index: 3 })}
+      item={item()}
+      onOpen={() => {}}
+      selected={false}
+      onToggle={() => {}}
+      onCheckToggle={onCheckToggle}
+      onCheckPointerDown={() => {}}
+      consumeGestureClick={consumeGestureClick}
+    />,
+  );
+
+  fireEvent.click(checkEl(), { detail: 0 });
+
+  expect(onCheckToggle).toHaveBeenCalledWith(3);
+  expect(consumeGestureClick).not.toHaveBeenCalled();
+});
+
+// Same rule on the tile body: Enter on a Tab-focused tile reaches the DOM
+// as a click there too.
+it("does not consume a standing gesture claim on a keyboard activation of the tile body", () => {
+  const consumeGestureClick = vi.fn(() => true);
+  const onToggle = vi.fn();
+  render(
+    <Tile
+      tile={tile({ index: 3 })}
+      item={item()}
+      onOpen={() => {}}
+      selected={false}
+      onToggle={onToggle}
+      selectionMode
+      consumeGestureClick={consumeGestureClick}
+    />,
+  );
+
+  fireEvent.click(tileEl(), { detail: 0 });
+
+  expect(onToggle).toHaveBeenCalledWith(3, false);
+  expect(consumeGestureClick).not.toHaveBeenCalled();
+});
+
+// GalleryPage runs its own Enter/Space handling on `document`, against its
+// roving focus rather than real DOM focus. A tile that holds focus is the
+// truth about what the user is acting on, so it keeps these keys to
+// itself — otherwise one keystroke reaches two handlers targeting two
+// different photos.
+it("keeps Enter and Space from reaching the grid's document handler", () => {
+  const onGridKeyDown = vi.fn();
+  document.addEventListener("keydown", onGridKeyDown);
+  try {
+    render(<Tile tile={tile({ index: 3 })} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+
+    fireEvent.keyDown(tileEl(), { key: " " });
+    fireEvent.keyDown(tileEl(), { key: "Enter" });
+    expect(onGridKeyDown).not.toHaveBeenCalled();
+
+    // Arrows are not the tile's to handle, so they still get through.
+    fireEvent.keyDown(tileEl(), { key: "ArrowRight" });
+    expect(onGridKeyDown).toHaveBeenCalledTimes(1);
+  } finally {
+    document.removeEventListener("keydown", onGridKeyDown);
+  }
 });
 
 // Edge auto-scroll finds the tile under a held pointer by hit-testing and
