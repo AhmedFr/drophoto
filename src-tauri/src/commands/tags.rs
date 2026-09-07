@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use chrono::{DateTime, Utc};
 use dp_core::{DpError, DpResult, Tag, TagWithCount};
 use dp_thumbs::ThumbStore;
 use tauri::State;
@@ -10,13 +11,16 @@ const MAX_TAG_NAME_LEN: usize = 64;
 /// A tag as the Tags page renders it: an album card with cover art.
 /// `thumb_path`/`has_thumb` are resolved here rather than in the catalog
 /// for the same reason `to_item` does it — the thumbnail store is an
-/// app-layer concern the catalog knows nothing about.
+/// app-layer concern the catalog knows nothing about. `cover_taken_at` is
+/// carried straight through from the catalog (no resolution needed) so
+/// the frontend can sort by it — see `TagWithCount::cover_taken_at`.
 #[derive(serde::Serialize)]
 pub struct TagCard {
     pub tag: Tag,
     pub count: u64,
     pub thumb_path: Option<String>,
     pub has_thumb: bool,
+    pub cover_taken_at: Option<DateTime<Utc>>,
 }
 
 /// Maps a catalog [`TagWithCount`] into the [`TagCard`] shape sent to the
@@ -26,7 +30,8 @@ pub struct TagCard {
 /// A tag with no `cover_hash` (no linked media) gets `thumb_path: None`,
 /// `has_thumb: false` — the same shape a hash whose thumbnail was never
 /// generated gets, so the frontend renders one placeholder treatment for
-/// both.
+/// both. `cover_taken_at` needs no such resolution — it isn't a path, so
+/// it's passed through unchanged.
 fn to_card(store: &ThumbStore, t: TagWithCount) -> TagCard {
     let thumb_path = t
         .cover_hash
@@ -38,6 +43,7 @@ fn to_card(store: &ThumbStore, t: TagWithCount) -> TagCard {
         count: t.count,
         thumb_path,
         has_thumb,
+        cover_taken_at: t.cover_taken_at,
     }
 }
 
@@ -159,6 +165,7 @@ pub(crate) fn normalize_tag_names(add: Vec<String>) -> DpResult<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn trims_whitespace_around_names() {
@@ -245,6 +252,7 @@ mod tests {
             },
             count: 3,
             cover_hash: cover_hash.map(String::from),
+            cover_taken_at: None,
         }
     }
 
@@ -301,5 +309,18 @@ mod tests {
 
         assert_eq!(card.thumb_path, None);
         assert!(!card.has_thumb);
+    }
+
+    #[test]
+    fn to_card_carries_cover_taken_at_through_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThumbStore::new(dir.path());
+        let taken_at = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap();
+        let mut input = tag_with_count(Some("abc123"));
+        input.cover_taken_at = Some(taken_at);
+
+        let card = to_card(&store, input);
+
+        assert_eq!(card.cover_taken_at, Some(taken_at));
     }
 }

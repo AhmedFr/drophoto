@@ -20,7 +20,13 @@ describe("AlbumCard", () => {
     const user = userEvent.setup();
     render(
       <AlbumCard
-        card={{ tag: { id: 1, name: "Trip" }, count: 42, thumb_path: "/t/x.webp", has_thumb: true }}
+        card={{
+          tag: { id: 1, name: "Trip" },
+          count: 42,
+          thumb_path: "/t/x.webp",
+          has_thumb: true,
+          cover_taken_at: "2024-01-01T00:00:00Z",
+        }}
         {...handlers}
         onOpen={onOpen}
       />,
@@ -37,7 +43,7 @@ describe("AlbumCard", () => {
   it("falls back to a placeholder when the tag has no cover", () => {
     render(
       <AlbumCard
-        card={{ tag: { id: 2, name: "Empty" }, count: 0, thumb_path: null, has_thumb: false }}
+        card={{ tag: { id: 2, name: "Empty" }, count: 0, thumb_path: null, has_thumb: false, cover_taken_at: null }}
         {...handlers}
       />,
     );
@@ -54,7 +60,7 @@ describe("AlbumCard", () => {
     const user = userEvent.setup();
     render(
       <AlbumCard
-        card={{ tag: { id: 3, name: "Beach" }, count: 5, thumb_path: null, has_thumb: false }}
+        card={{ tag: { id: 3, name: "Beach" }, count: 5, thumb_path: null, has_thumb: false, cover_taken_at: null }}
         onOpen={onOpen}
         onRename={onRename}
         onMerge={onMerge}

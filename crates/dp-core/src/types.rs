@@ -137,6 +137,12 @@ pub struct TagWithCount {
     /// cover is art, not a presence claim: a row whose file is currently
     /// missing still supplies one. `None` only when the tag has no media.
     pub cover_hash: Option<String>,
+    /// `taken_at` of the same photo `cover_hash` was picked from — the
+    /// Tags page's "Recently updated" sort key. Picked by the same
+    /// `ORDER BY taken_at DESC NULLS LAST` as `cover_hash` (see
+    /// `dp_catalog::tags::list_tags_with_counts`), so the two always name
+    /// the same row; `None` exactly when `cover_hash` is `None`.
+    pub cover_taken_at: Option<DateTime<Utc>>,
 }
 
 /// Where a [`Place`] came from: `Geocoder` rows are found-or-created by

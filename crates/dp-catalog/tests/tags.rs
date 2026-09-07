@@ -724,7 +724,9 @@ async fn has_sidecar_pending_ignores_rows_marked_missing() {
 }
 
 /// The Tags page's album card needs cover art: `list_tags_with_counts`
-/// picks the tag's newest-`taken_at` photo's hash as `cover_hash`.
+/// picks the tag's newest-`taken_at` photo's hash as `cover_hash`, and
+/// that same photo's `taken_at` as `cover_taken_at` — the two always name
+/// the same row (see `list_tags_with_counts`'s doc comment).
 #[tokio::test]
 async fn tags_with_counts_carry_the_newest_photos_hash_as_cover() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
@@ -745,11 +747,13 @@ async fn tags_with_counts_carry_the_newest_photos_hash_as_cover() {
 
     assert_eq!(entry.count, 2);
     assert_eq!(entry.cover_hash.as_deref(), Some("hash-new"));
+    assert_eq!(entry.cover_taken_at, Some(ymd(2024, 1, 1)));
 }
 
 /// A tag with zero linked media (e.g. every photo it was on got
 /// untagged, leaving the tag itself behind) has no cover — `cover_hash`
-/// is `None`, not the empty string or some other sentinel.
+/// and `cover_taken_at` are both `None`, not the empty string or some
+/// other sentinel.
 #[tokio::test]
 async fn a_tag_with_no_media_has_no_cover() {
     let c = SqliteCatalog::open_in_memory().await.unwrap();
@@ -764,4 +768,5 @@ async fn a_tag_with_no_media_has_no_cover() {
 
     assert_eq!(entry.count, 0);
     assert_eq!(entry.cover_hash, None);
+    assert_eq!(entry.cover_taken_at, None);
 }

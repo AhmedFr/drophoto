@@ -25,21 +25,33 @@ const SORT_LABELS: Record<SortOption, string> = {
   COUNT: "Count",
 };
 
+function byName(a: TagCardData, b: TagCardData): number {
+  return a.tag.name.localeCompare(b.tag.name, undefined, { sensitivity: "base" });
+}
+
 /**
- * Orders `cards` for the grid. `RECENT` (the default) makes no client-side
- * comparison at all — the catalog's cover subquery already picks each
- * tag's newest photo, so the fetched order *is* "recently updated" as far
- * as this page is concerned, and is left untouched. `NAME`/`COUNT` are
- * genuine client-side sorts over the whole (already in-memory) list.
+ * `RECENT`'s comparator: newest `cover_taken_at` first. The server's own
+ * row order is alphabetical by name regardless of `cover_taken_at` (see
+ * `TagCard`'s doc comment) — it is *not* recency order — so this is a
+ * genuine client-side sort, the same as `NAME`/`COUNT`, not a pass-through.
+ * A tag with no cover (`cover_taken_at: null`) sorts after every dated
+ * tag; when both sides are undated, or tie on the same instant, `byName`
+ * breaks the tie so the order stays deterministic across renders.
  */
+function byRecency(a: TagCardData, b: TagCardData): number {
+  if (a.cover_taken_at == null && b.cover_taken_at == null) return byName(a, b);
+  if (a.cover_taken_at == null) return 1;
+  if (b.cover_taken_at == null) return -1;
+  const diff = Date.parse(b.cover_taken_at) - Date.parse(a.cover_taken_at);
+  return diff !== 0 ? diff : byName(a, b);
+}
+
+/** Orders `cards` for the grid — a client-side sort in every case, over the whole (already in-memory) fetched list. */
 function sortCards(cards: TagCardData[], sort: SortOption): TagCardData[] {
-  if (sort === "RECENT") return cards;
   const sorted = [...cards];
-  if (sort === "NAME") {
-    sorted.sort((a, b) => a.tag.name.localeCompare(b.tag.name, undefined, { sensitivity: "base" }));
-  } else {
-    sorted.sort((a, b) => b.count - a.count);
-  }
+  if (sort === "RECENT") sorted.sort(byRecency);
+  else if (sort === "NAME") sorted.sort(byName);
+  else sorted.sort((a, b) => b.count - a.count);
   return sorted;
 }
 

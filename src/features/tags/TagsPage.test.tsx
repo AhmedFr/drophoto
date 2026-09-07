@@ -57,7 +57,9 @@ it("renders the Tags header", async () => {
 
 describe("TagsPage", () => {
   function mockTagCommands(
-    cards = [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false }],
+    cards = [
+      { tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false, cover_taken_at: null },
+    ],
   ) {
     mockIPC((cmd) => {
       if (cmd === "list_tags_with_counts") return cards;
@@ -73,8 +75,8 @@ describe("TagsPage", () => {
 
   it("renders every tag as a card with its photo count", async () => {
     mockTagCommands([
-      { tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false },
-      { tag: { id: 2, name: "Trip" }, count: 0, thumb_path: null, has_thumb: false },
+      { tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false, cover_taken_at: null },
+      { tag: { id: 2, name: "Trip" }, count: 0, thumb_path: null, has_thumb: false, cover_taken_at: null },
     ]);
     renderTagsPage();
     expect(await screen.findByText("Family")).toBeInTheDocument();
@@ -100,7 +102,7 @@ describe("TagsPage", () => {
     let renameArgs: unknown;
     mockIPC((cmd, args) => {
       if (cmd === "list_tags_with_counts") {
-        return [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false }];
+        return [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false, cover_taken_at: null }];
       }
       if (cmd === "rename_tag") {
         renameArgs = args;
@@ -128,8 +130,8 @@ describe("TagsPage", () => {
     mockIPC((cmd, args) => {
       if (cmd === "list_tags_with_counts") {
         return [
-          { tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false },
-          { tag: { id: 2, name: "Relatives" }, count: 1, thumb_path: null, has_thumb: false },
+          { tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false, cover_taken_at: null },
+          { tag: { id: 2, name: "Relatives" }, count: 1, thumb_path: null, has_thumb: false, cover_taken_at: null },
         ];
       }
       if (cmd === "merge_tags") {
@@ -156,7 +158,7 @@ describe("TagsPage", () => {
     let deleteArgs: unknown;
     mockIPC((cmd, args) => {
       if (cmd === "list_tags_with_counts") {
-        return [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false }];
+        return [{ tag: { id: 1, name: "Family" }, count: 3, thumb_path: null, has_thumb: false, cover_taken_at: null }];
       }
       if (cmd === "delete_tag") {
         deleteArgs = args;
@@ -181,34 +183,106 @@ describe("TagsPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
-  it("sorts the grid by name and by count via the sort menu", async () => {
+  /**
+   * "Recently updated" is a genuine client-side sort by `cover_taken_at`,
+   * not a pass-through of whatever order the server returned (the server
+   * always orders by name — see `TagCard`'s doc comment). This fixture is
+   * built so RECENT and NAME visibly disagree — proving RECENT is really
+   * sorting by recency, not silently rendering the alphabetical order —
+   * and also exercises the two edge cases the sort has to get right: a
+   * tag with no cover (`cover_taken_at: null`) sorts last regardless of
+   * its name, and two tags whose covers share the exact same instant fall
+   * back to name order between themselves.
+   */
+  function mockRecencyFixture() {
     mockIPC((cmd) => {
       if (cmd === "list_tags_with_counts") {
         return [
-          { tag: { id: 1, name: "Zebra" }, count: 1, thumb_path: null, has_thumb: false },
-          { tag: { id: 2, name: "Apple" }, count: 9, thumb_path: null, has_thumb: false },
+          // Alphabetically first, but its cover is the oldest — RECENT
+          // must not put this first the way NAME does.
+          {
+            tag: { id: 1, name: "Apple" },
+            count: 1,
+            thumb_path: null,
+            has_thumb: false,
+            cover_taken_at: "2020-01-01T00:00:00Z",
+          },
+          // Same cover instant as Cherry — the name tiebreaker decides
+          // which of the two comes first.
+          {
+            tag: { id: 2, name: "Banana" },
+            count: 1,
+            thumb_path: null,
+            has_thumb: false,
+            cover_taken_at: "2022-01-01T00:00:00Z",
+          },
+          {
+            tag: { id: 3, name: "Cherry" },
+            count: 1,
+            thumb_path: null,
+            has_thumb: false,
+            cover_taken_at: "2022-01-01T00:00:00Z",
+          },
+          // No cover at all — must sort last under RECENT despite an
+          // alphabetically middling name.
+          { tag: { id: 4, name: "Mango" }, count: 0, thumb_path: null, has_thumb: false, cover_taken_at: null },
+          // Newest cover — must sort first under RECENT despite being
+          // alphabetically last.
+          {
+            tag: { id: 5, name: "Zebra" },
+            count: 1,
+            thumb_path: null,
+            has_thumb: false,
+            cover_taken_at: "2024-01-01T00:00:00Z",
+          },
         ];
       }
       return undefined;
     });
-    const user = userEvent.setup();
+  }
+
+  const NAMES = /^(Apple|Banana|Cherry|Mango|Zebra)$/;
+
+  it("defaults to Recently updated: newest cover first, no-cover tags last, same-instant covers tied by name", async () => {
+    mockRecencyFixture();
     renderTagsPage();
 
     await screen.findByText("Zebra");
 
-    function cardOrder() {
-      return screen.getAllByText(/^(Zebra|Apple)$/).map((el) => el.textContent);
-    }
+    expect(screen.getAllByText(NAMES).map((el) => el.textContent)).toEqual([
+      "Zebra",
+      "Banana",
+      "Cherry",
+      "Apple",
+      "Mango",
+    ]);
+  });
 
-    // Default "Recently updated" keeps the fetched (server) order.
-    expect(cardOrder()).toEqual(["Zebra", "Apple"]);
+  it("switches to Name and Count via the sort menu", async () => {
+    mockRecencyFixture();
+    const user = userEvent.setup();
+    renderTagsPage();
+
+    await screen.findByText("Zebra");
+    function cardOrder() {
+      return screen.getAllByText(NAMES).map((el) => el.textContent);
+    }
 
     await user.click(screen.getByRole("button", { name: /Recently updated/ }));
     await user.click(await screen.findByRole("menuitem", { name: "Name" }));
-    await waitFor(() => expect(cardOrder()).toEqual(["Apple", "Zebra"]));
+    await waitFor(() =>
+      expect(cardOrder()).toEqual(["Apple", "Banana", "Cherry", "Mango", "Zebra"]),
+    );
 
     await user.click(screen.getByRole("button", { name: /^Name/ }));
     await user.click(await screen.findByRole("menuitem", { name: "Count" }));
-    await waitFor(() => expect(cardOrder()).toEqual(["Apple", "Zebra"]));
+    // Every tag here has count 1 except Mango (0) — Count sorts
+    // descending, so Mango lands last. `sortCards` always re-sorts from
+    // the originally-fetched array (not from whichever sort was active
+    // before), so the count-1 tags keep *that* array's relative order —
+    // which happens to already be alphabetical in this fixture.
+    await waitFor(() =>
+      expect(cardOrder()).toEqual(["Apple", "Banana", "Cherry", "Zebra", "Mango"]),
+    );
   });
 });
