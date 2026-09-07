@@ -27,9 +27,13 @@ it("shows the selected count", () => {
   expect(screen.getByText("3 SELECTED")).toBeInTheDocument();
 });
 
-it("shows the loaded total, honestly labeled as loaded rather than the library total", () => {
+// With paging gone the timeline index covers the whole filtered set, so
+// `total` really is every match — but still only within the current
+// filter, which is why it reads "IN VIEW" and not "TOTAL".
+it("shows the current view's total, labeled as the view rather than the library", () => {
   renderBar({ count: 3, total: 5 });
-  expect(screen.getByText("5 LOADED")).toBeInTheDocument();
+  expect(screen.getByText("5 IN VIEW")).toBeInTheDocument();
+  expect(screen.queryByText(/LOADED/)).not.toBeInTheDocument();
 });
 
 it("calls onTag when the TAG button is clicked", () => {
@@ -60,11 +64,11 @@ it("calls onSelectAll when the SELECT ALL button is clicked", () => {
   expect(onSelectAll).toHaveBeenCalledTimes(1);
 });
 
-it("gives the SELECT ALL button a title honest about it selecting loaded items", () => {
+it("gives the SELECT ALL button a title scoped to the current view", () => {
   renderBar({ count: 2, total: 9 });
   expect(screen.getByRole("button", { name: "SELECT ALL" })).toHaveAttribute(
     "title",
-    "Select all 9 loaded items",
+    "Select all 9 items in this view",
   );
 });
 
