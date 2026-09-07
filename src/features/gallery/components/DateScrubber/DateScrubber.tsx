@@ -70,7 +70,12 @@ export function DateScrubber({
 
   // Open while the pointer is over it or a scrub is in flight — a drag
   // that has wandered off the track must not collapse it mid-gesture.
-  const expanded = hovered || scrubbing;
+  //
+  // Never while another gesture owns the container, though: a drag-select
+  // sweeping past the right edge would otherwise widen the strip from 8px
+  // to 56px under its own pointer, and the widened strip is what the
+  // drag's hit-testing would then find instead of a tile.
+  const expanded = !disabled && (hovered || scrubbing);
   const reduced = prefersReducedMotion();
   const dateLabel = dateAt(ratio);
 
@@ -102,6 +107,14 @@ export function DateScrubber({
         width: expanded ? TRACK_WIDTH_ACTIVE : TRACK_WIDTH_REST,
         transition: reduced ? undefined : "width 140ms ease-out",
         touchAction: "none",
+        // While a drag-select owns the scroll container the track is
+        // scenery, not a control. It sits over the container's right edge,
+        // and `useEdgeAutoScroll` resolves what the pointer is over with
+        // `elementFromPoint(...).closest("[data-tile-index]")` — a hit on
+        // the track resolves to nothing, so the grid would auto-scroll
+        // while selecting nothing. Taking it out of hit-testing hands
+        // every point over the strip back to the tile underneath.
+        pointerEvents: disabled ? "none" : undefined,
       }}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}

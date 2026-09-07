@@ -123,6 +123,27 @@ it("refuses to scrub while another gesture owns the scroll container", () => {
   expect(screen.queryByText("12 March 2019")).not.toBeInTheDocument();
 });
 
+// The track overlays the right edge of the grid's scroll container — 8px
+// at rest, 56px once hovered. `useEdgeAutoScroll` finds the tile under the
+// pointer with `elementFromPoint(...)?.closest("[data-tile-index]")` and
+// gives up when that is null, so a track still in the hit-test path turns
+// a drag that sweeps into it into a grid that scrolls and selects nothing.
+// jsdom does no hit testing at all (there is no `elementFromPoint`), so
+// what is asserted is the property the browser hit-tests on.
+it("takes itself out of hit-testing while another gesture owns the scroll", () => {
+  const { track, rerender, el } = renderScrubber({ disabled: true });
+
+  expect(track).toHaveStyle({ pointerEvents: "none" });
+  // And a pointer sweeping across it mid-drag cannot widen it into a
+  // 56px-wide blocker either.
+  fireEvent.pointerEnter(track);
+  expect(track).toHaveStyle({ width: "8px" });
+
+  // Once the drag is over it is a control again.
+  rerender(<DateScrubber scrollElement={el} ticks={ticks} dateAt={() => "12 March 2019"} />);
+  expect(track).not.toHaveStyle({ pointerEvents: "none" });
+});
+
 // The handle is focusable and carries `role="slider"`, so it has to answer
 // the keys a slider answers — a reachable control that does nothing is the
 // state this gallery is not allowed to have.
