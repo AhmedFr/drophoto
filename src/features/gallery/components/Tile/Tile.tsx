@@ -46,6 +46,16 @@ export function Tile({
   const isGestureClick = (e: { detail: number }) =>
     e.detail !== 0 && (consumeGestureClick?.() ?? false);
 
+  /**
+   * Whether this grid does selection at all. The checkmark is mounted only
+   * where it is, because a grid that supplies neither callback (the Places
+   * page's place-filtered strip, which is out of scope for this phase and
+   * passes a no-op `onToggle`) would otherwise show a "Select" button on
+   * every photo that does nothing — and double the grid's tab stops with
+   * dead ones.
+   */
+  const selectable = Boolean(onCheckPointerDown || onCheckToggle);
+
   return (
     <div
       role="button"
@@ -119,49 +129,51 @@ export function Tile({
       }}
     >
       {/*
-        Always mounted, whether or not the row has hydrated: selection is
-        keyed on `tile.entry.id`, which the timeline index knows for every
-        tile. Hidden until the tile is hovered (or the gallery is already
-        in selection mode, where showing every target is the point), so an
+        Mounted whether or not the row has hydrated: selection is keyed on
+        `tile.entry.id`, which the timeline index knows for every tile.
+        Hidden until the tile is hovered (or the gallery is already in
+        selection mode, where showing every target is the point), so an
         idle grid stays quiet.
       */}
-      <button
-        type="button"
-        aria-label={selected ? "Deselect" : "Select"}
-        aria-pressed={selected}
-        data-testid="tile-check"
-        className={cn(
-          "absolute top-1.5 left-1.5 z-10 flex size-5 items-center justify-center rounded-full transition-opacity focus-visible:opacity-100",
-          selected
-            ? "bg-foreground text-background opacity-100"
-            : cn(
-                "bg-black/40 text-white group-hover:opacity-100",
-                selectionMode ? "opacity-100" : "opacity-0",
-              ),
-        )}
-        onClick={(e) => {
-          // The tile body's handler would otherwise open the lightbox too.
-          e.stopPropagation();
-          // A press that released on this same button lands its click
-          // here; one that drifted onto the tile lands it on the tile.
-          // Both consult the same gesture state.
-          if (isGestureClick(e)) return;
-          if (onCheckToggle) onCheckToggle(index);
-          else onToggle(index, false);
-        }}
-        onPointerDown={(e) => {
-          if (!onCheckPointerDown) return;
-          // Primary button only. A right- or middle-click would otherwise
-          // toggle the photo and open a sweep that runs until the next
-          // release — the tile body never had this problem, since `click`
-          // doesn't fire for those buttons at all.
-          if (e.button !== 0) return;
-          e.stopPropagation();
-          onCheckPointerDown(index, e);
-        }}
-      >
-        <Check size={12} strokeWidth={2.5} />
-      </button>
+      {selectable && (
+        <button
+          type="button"
+          aria-label={selected ? "Deselect" : "Select"}
+          aria-pressed={selected}
+          data-testid="tile-check"
+          className={cn(
+            "absolute top-1.5 left-1.5 z-10 flex size-5 items-center justify-center rounded-full transition-opacity focus-visible:opacity-100",
+            selected
+              ? "bg-foreground text-background opacity-100"
+              : cn(
+                  "bg-black/40 text-white group-hover:opacity-100",
+                  selectionMode ? "opacity-100" : "opacity-0",
+                ),
+          )}
+          onClick={(e) => {
+            // The tile body's handler would otherwise open the lightbox too.
+            e.stopPropagation();
+            // A press that released on this same button lands its click
+            // here; one that drifted onto the tile lands it on the tile.
+            // Both consult the same gesture state.
+            if (isGestureClick(e)) return;
+            if (onCheckToggle) onCheckToggle(index);
+            else onToggle(index, false);
+          }}
+          onPointerDown={(e) => {
+            if (!onCheckPointerDown) return;
+            // Primary button only. A right- or middle-click would otherwise
+            // toggle the photo and open a sweep that runs until the next
+            // release — the tile body never had this problem, since `click`
+            // doesn't fire for those buttons at all.
+            if (e.button !== 0) return;
+            e.stopPropagation();
+            onCheckPointerDown(index, e);
+          }}
+        >
+          <Check size={12} strokeWidth={2.5} />
+        </button>
+      )}
 
       {item && <TileContent item={item} />}
     </div>

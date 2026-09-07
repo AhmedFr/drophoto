@@ -93,6 +93,45 @@ it("renders a month header with a label and item count", () => {
   expect(screen.getByText("2")).toBeInTheDocument();
 });
 
+// The header's action is a checkbox for its section, so the grid — which
+// holds both the section's ids and the selection — is what decides whether
+// pressing it means select or deselect, and tells the header and the page
+// the same thing.
+it("reports a month whose every photo is selected as an already-selected section", () => {
+  const { entries, items } = hydrated(2);
+  const onSelectMonth = vi.fn();
+  const { rerender } = render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set([1])}
+      onToggle={() => {}}
+      onSelectMonth={onSelectMonth}
+    />,
+  );
+
+  // One of the two selected: still a section to finish selecting.
+  fireEvent.click(screen.getByRole("button", { name: /^Select all 2 in September 2025$/ }));
+  expect(onSelectMonth).toHaveBeenLastCalledWith([1, 2], false, false);
+
+  rerender(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set([1, 2])}
+      onToggle={() => {}}
+      onSelectMonth={onSelectMonth}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Deselect all 2 in September 2025" }));
+  expect(onSelectMonth).toHaveBeenLastCalledWith([1, 2], false, true);
+});
+
 it("renders a tile per item with alt text", () => {
   const { entries, items } = hydrated(3);
   render(
@@ -225,12 +264,36 @@ it("marks a tile as selected when its id is in selectedIds", () => {
       onOpen={() => {}}
       selectedIds={new Set([2])}
       onToggle={() => {}}
+      onCheckPointerDown={() => {}}
     />,
   );
-  // The checkmark is mounted on every tile (it doubles as the hover
-  // affordance), so "selected" is its pressed state, not its presence.
+  // The checkmark is mounted on every tile of a selecting grid (it doubles
+  // as the hover affordance), so "selected" is its pressed state, not its
+  // presence.
   const checks = screen.getAllByTestId("tile-check");
   expect(checks.map((c) => c.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+});
+
+// The Places page mounts this same grid to browse one place's photos, with
+// no selection callbacks and a no-op `onToggle` — selection there is out
+// of scope for this phase. Every tile would otherwise carry a "Select"
+// button that does nothing, doubling the strip's tab stops with dead ones.
+it("renders no checkmarks when the grid is given no selection callbacks", () => {
+  const { entries, items } = hydrated(3);
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+    />,
+  );
+
+  expect(screen.getAllByTestId("tile")).toHaveLength(3);
+  expect(screen.queryAllByTestId("tile-check")).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: "Select" })).toHaveLength(0);
 });
 
 it("puts every tile into selection mode once anything is selected", () => {
@@ -365,7 +428,8 @@ it("clicking a month header's select action calls onSelectMonth with that month'
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: /select all/i }));
-  expect(onSelectMonth).toHaveBeenCalledWith([1, 2], false);
+  // Nothing selected here, so the section is not an already-selected one.
+  expect(onSelectMonth).toHaveBeenCalledWith([1, 2], false, false);
 });
 
 // The date scrubber replaces the native scrollbar this container would

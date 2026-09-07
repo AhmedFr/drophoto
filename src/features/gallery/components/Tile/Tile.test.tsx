@@ -173,19 +173,19 @@ it("does not prevent default on a plain mousedown", () => {
 
 it("shows a selected ring and a filled, pressed check mark when selected", () => {
   const t = tile({ index: 3 });
-  render(<Tile tile={t} item={item()} onOpen={() => {}} selected onToggle={() => {}} />);
+  render(<Tile tile={t} item={item()} onOpen={() => {}} selected onToggle={() => {}} onCheckPointerDown={() => {}} />);
   expect(tileEl()).toHaveClass("ring-2");
   expect(checkEl()).toHaveAttribute("aria-pressed", "true");
   expect(checkEl()).toHaveAccessibleName("Deselect");
   expect(checkEl()).toHaveClass("opacity-100");
 });
 
-// The checkmark is always mounted — it's the hover affordance, not just a
-// selected badge — so "not selected" means transparent and unpressed
-// rather than absent.
+// Wherever selection exists the checkmark is mounted on every tile — it's
+// the hover affordance, not just a selected badge — so "not selected"
+// means transparent and unpressed rather than absent.
 it("keeps the check mark mounted but transparent and unpressed when not selected", () => {
   const t = tile({ index: 3 });
-  render(<Tile tile={t} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+  render(<Tile tile={t} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} onCheckPointerDown={() => {}} />);
   expect(tileEl()).not.toHaveClass("ring-2");
   expect(checkEl()).toHaveAttribute("aria-pressed", "false");
   expect(checkEl()).toHaveAccessibleName("Select");
@@ -196,7 +196,7 @@ it("keeps the check mark mounted but transparent and unpressed when not selected
 // behind hover.
 it("shows an unselected check mark without hover once selection mode is on", () => {
   render(
-    <Tile tile={tile()} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} selectionMode />,
+    <Tile tile={tile()} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} onCheckPointerDown={() => {}} selectionMode />,
   );
   expect(checkEl()).toHaveClass("opacity-100");
   expect(checkEl()).not.toHaveClass("opacity-0");
@@ -274,7 +274,7 @@ it("still toggles selection on a placeholder", () => {
 });
 
 it("still shows the selected check on a placeholder", () => {
-  render(<Tile tile={tile({ index: 3 })} onOpen={() => {}} selected onToggle={() => {}} />);
+  render(<Tile tile={tile({ index: 3 })} onOpen={() => {}} selected onToggle={() => {}} onCheckPointerDown={() => {}} />);
   expect(checkEl()).toHaveAttribute("aria-pressed", "true");
 });
 
@@ -359,15 +359,37 @@ it("shows a checkmark button that selects without opening", async () => {
   expect(onOpen).not.toHaveBeenCalled();
 });
 
-// With no `onCheckToggle` wired the checkmark is still a working toggle —
-// it just falls back to the tile's plain (non-range) toggle.
+// With a drag wired but no `onCheckToggle`, the checkmark is still a
+// working toggle — it just falls back to the tile's plain (non-range) one.
 it("falls back to the plain toggle when no onCheckToggle is given", async () => {
   const onToggle = vi.fn();
-  render(<Tile tile={tile({ index: 3 })} item={item()} onOpen={() => {}} selected={false} onToggle={onToggle} />);
+  render(<Tile tile={tile({ index: 3 })} item={item()} onOpen={() => {}} selected={false} onToggle={onToggle} onCheckPointerDown={() => {}} />);
 
   await userEvent.click(checkEl());
 
   expect(onToggle).toHaveBeenCalledWith(3, false);
+});
+
+// The Places page mounts the same grid purely to browse a place's photos:
+// it supplies neither selection callback (and a no-op `onToggle`), and
+// selection is out of scope for it this phase. A checkmark there would be
+// an `aria-label="Select"` button on every photo that does nothing, and a
+// second dead tab stop per tile.
+it("renders no checkmark at all when neither selection callback is given", () => {
+  render(<Tile tile={tile({ index: 3 })} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} />);
+
+  expect(screen.queryByTestId("tile-check")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Select" })).not.toBeInTheDocument();
+  // The tile itself is untouched: still one button, still openable.
+  expect(screen.getAllByRole("button")).toHaveLength(1);
+});
+
+// Either callback on its own is enough — the keyboard path and the drag
+// path are wired separately, and a grid that has one has selection.
+it("renders the checkmark when only onCheckToggle is given", () => {
+  render(<Tile tile={tile({ index: 3 })} item={item()} onOpen={() => {}} selected={false} onToggle={() => {}} onCheckToggle={() => {}} />);
+
+  expect(checkEl()).toBeInTheDocument();
 });
 
 it("opens on a body click when not in selection mode", async () => {
