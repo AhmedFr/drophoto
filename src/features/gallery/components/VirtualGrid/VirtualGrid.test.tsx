@@ -176,7 +176,72 @@ it("marks a tile as selected when its id is in selectedIds", () => {
       onToggle={() => {}}
     />,
   );
-  expect(screen.getByTestId("tile-selected-check")).toBeInTheDocument();
+  // The checkmark is mounted on every tile (it doubles as the hover
+  // affordance), so "selected" is its pressed state, not its presence.
+  const checks = screen.getAllByTestId("tile-check");
+  expect(checks.map((c) => c.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+});
+
+it("puts every tile into selection mode once anything is selected", () => {
+  const { entries, items } = hydrated(2);
+  const onOpen = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={onOpen}
+      selectedIds={new Set([2])}
+      onToggle={onToggle}
+      selectionMode
+    />,
+  );
+
+  fireEvent.click(screen.getAllByRole("button", { name: /photos\// })[0]);
+
+  expect(onToggle).toHaveBeenCalledWith(0, false);
+  expect(onOpen).not.toHaveBeenCalled();
+});
+
+it("reports a tile's pointer entry through onTileEnter so a drag can extend to it", () => {
+  const { entries, items } = hydrated(2);
+  const onTileEnter = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onTileEnter={onTileEnter}
+    />,
+  );
+
+  fireEvent.pointerEnter(screen.getAllByRole("button", { name: /photos\// })[1]);
+
+  expect(onTileEnter).toHaveBeenCalledWith(1);
+});
+
+it("starts a drag-select from a tile's checkmark", () => {
+  const { entries, items } = hydrated(2);
+  const onCheckPointerDown = vi.fn();
+  render(
+    <VirtualGrid
+      entries={entries}
+      items={items}
+      targetRowHeight={200}
+      onOpen={() => {}}
+      selectedIds={new Set()}
+      onToggle={() => {}}
+      onCheckPointerDown={onCheckPointerDown}
+    />,
+  );
+
+  fireEvent.pointerDown(screen.getAllByTestId("tile-check")[1]);
+
+  expect(onCheckPointerDown).toHaveBeenCalledWith(1, expect.anything());
 });
 
 it("passes cmd/ctrl-clicks through to onToggle instead of onOpen", () => {

@@ -147,6 +147,15 @@ describe("selection", () => {
     expect(state.anchorIndex).toBeNull();
   });
 
+  // A drag-select replaces the selection on every move but does have a
+  // meaningful range start — its origin — so it hands one through.
+  it("selectAll keeps an anchor when one is given", () => {
+    useGalleryStore.getState().selectAll([2, 3], 7);
+    const state = useGalleryStore.getState();
+    expect(state.selectedIds).toEqual([2, 3]);
+    expect(state.anchorIndex).toBe(7);
+  });
+
   it("invertSelection selects the complement of the current selection within allIds", () => {
     useGalleryStore.getState().selectAll([1, 2]);
     useGalleryStore.getState().invertSelection([1, 2, 3, 4]);

@@ -11,6 +11,7 @@ import { Lightbox } from "./components/Lightbox";
 import { SelectionBar } from "./components/SelectionBar";
 import { TagPanel } from "./components/TagPanel";
 import { VirtualGrid } from "./components/VirtualGrid";
+import { useDragSelect } from "./hooks/useDragSelect";
 import { useMediaChunks } from "./hooks/useMediaChunks";
 import { useMediaIndex } from "./hooks/useMediaIndex";
 import { DENSITY_ROW_HEIGHT, useGalleryStore } from "./store/galleryStore";
@@ -146,6 +147,54 @@ export function GalleryPage() {
       toggleSelected(entry.id, index);
     },
     [anchorIndex, entries, selectRange, toggleSelected],
+  );
+
+  // Selection mode is *derived*, never stored: the gallery is in it
+  // whenever anything is selected. It changes what a plain click on a tile
+  // body means (toggle, not open) — the Google Photos rule.
+  const selectionMode = selectedIds.length > 0;
+
+  // Where the live drag started. Read by `handleDragSelection` on every
+  // move, so it's a ref rather than state — it must not re-render the page
+  // itself, and the selection write that follows already does.
+  const dragOrigin = useRef<number | null>(null);
+
+  // The drag-select gesture hands back the COMPLETE desired selection on
+  // every move (see `useDragSelect`), so the store action it feeds is
+  // `selectAll` — a replace — rather than an additive one. That is what
+  // lets a reversed drag release the tiles it already passed.
+  //
+  // The origin is passed through as the anchor, so it survives the replace
+  // (`selectAll` otherwise clears it) and a Shift+click straight after a
+  // drag ranges from where the drag started.
+  const handleDragSelection = useCallback(
+    (ids: number[]) => selectAll(ids, dragOrigin.current),
+    [selectAll],
+  );
+
+  const {
+    onCheckPointerDown: startDrag,
+    onTileEnter,
+    isDragging,
+  } = useDragSelect({ entries, selectedIds, onSelectionChange: handleDragSelection });
+
+  const handleCheckPointerDown = useCallback(
+    (index: number, event: { preventDefault: () => void }) => {
+      // Set before the gesture starts: `startDrag` applies the origin
+      // immediately, and that first write already needs the anchor.
+      dragOrigin.current = index;
+      startDrag(index, event);
+    },
+    [startDrag],
+  );
+
+  // The checkmark's non-pointer path: `Tile` only calls this when no
+  // pointer press drove the activation (a press is a drag gesture, which
+  // already toggled its origin), so in practice this is Enter/Space on a
+  // focused checkmark.
+  const handleCheckToggle = useCallback(
+    (index: number) => handleToggle(index, false),
+    [handleToggle],
   );
 
   // Same reasoning as `handleToggle` above — kept stable so it doesn't
@@ -461,6 +510,11 @@ export function GalleryPage() {
             onRowsChange={handleRowsChange}
             onRangeChange={handleRangeChange}
             onSelectMonth={handleSelectMonth}
+            selectionMode={selectionMode}
+            onCheckToggle={handleCheckToggle}
+            onCheckPointerDown={handleCheckPointerDown}
+            onTileEnter={onTileEnter}
+            isDragging={isDragging}
           />
         )}
       </div>

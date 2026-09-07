@@ -1,11 +1,38 @@
+import { useRef } from "react";
 import { Check, ImageOff, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/media/format";
 import { thumbUrl } from "@/lib/media/thumbUrl";
 import type { TileProps } from "./Tile.types";
 
-export function Tile({ tile, item: hydrated, onOpen, selected, onToggle, focused = false }: TileProps) {
+export function Tile({
+  tile,
+  item: hydrated,
+  onOpen,
+  selected,
+  onToggle,
+  focused = false,
+  selectionMode = false,
+  onCheckToggle,
+  onCheckPointerDown,
+  onPointerEnter,
+}: TileProps) {
   const { entry, width, height, index } = tile;
+
+  // A pointer press on the checkmark IS the toggle — `onCheckPointerDown`
+  // starts the drag gesture, which applies its origin immediately — so the
+  // `click` the browser synthesises afterwards must not toggle a second
+  // time and cancel it out.
+  //
+  // The flag is raised on this button's own `pointerup`, not on its
+  // pointerdown, and that ordering is the whole trick: `pointerup` on an
+  // element is exactly the condition under which a `click` on it follows.
+  // A press that wanders off and releases over another tile — the drag
+  // case — sends no `pointerup` and no `click` here, so it can't leave a
+  // flag stranded that would swallow a later keyboard activation of this
+  // same checkmark.
+  const pressed = useRef(false);
+  const suppressClick = useRef(false);
 
   // THE invariant, enforced where the paint actually happens: a tile shows
   // a row only if that row IS this tile's photo.
@@ -24,6 +51,10 @@ export function Tile({ tile, item: hydrated, onOpen, selected, onToggle, focused
     <div
       role="button"
       tabIndex={0}
+      data-testid="tile"
+      // The browser's own image drag would compete with the drag-select
+      // gesture for the pointer stream and win.
+      draggable={false}
       // Placeholders have no path to name themselves with, and no content
       // to describe — `aria-busy` says the box is a stand-in for something
       // still arriving.
@@ -42,12 +73,19 @@ export function Tile({ tile, item: hydrated, onOpen, selected, onToggle, focused
       // across a set the grid hasn't loaded. Opening doesn't: the lightbox
       // needs the row itself, so a plain click on a placeholder is inert
       // rather than opening an empty dialog.
+      //
+      // In selection mode a plain click toggles rather than opens — the
+      // Google Photos rule, and the reason it comes before the `item`
+      // check: a placeholder has no row to open, but it does have an id to
+      // select.
       onClick={(e) => {
         if (e.metaKey || e.ctrlKey) onToggle(index, false);
         else if (e.shiftKey) onToggle(index, true);
+        else if (selectionMode) onToggle(index, false);
         else if (item) onOpen(index);
       }}
       onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+      onPointerEnter={() => onPointerEnter?.(index)}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           if (item) onOpen(index);
@@ -57,14 +95,49 @@ export function Tile({ tile, item: hydrated, onOpen, selected, onToggle, focused
         }
       }}
     >
-      {selected && (
-        <div
-          data-testid="tile-selected-check"
-          className="absolute top-1.5 left-1.5 z-10 flex size-4 items-center justify-center bg-foreground text-background"
-        >
-          <Check size={11} strokeWidth={2.5} />
-        </div>
-      )}
+      {/*
+        Always mounted, whether or not the row has hydrated: selection is
+        keyed on `tile.entry.id`, which the timeline index knows for every
+        tile. Hidden until the tile is hovered (or the gallery is already
+        in selection mode, where showing every target is the point), so an
+        idle grid stays quiet.
+      */}
+      <button
+        type="button"
+        aria-label={selected ? "Deselect" : "Select"}
+        aria-pressed={selected}
+        data-testid="tile-check"
+        className={cn(
+          "absolute top-1.5 left-1.5 z-10 flex size-5 items-center justify-center rounded-full transition-opacity focus-visible:opacity-100",
+          selected
+            ? "bg-foreground text-background opacity-100"
+            : cn(
+                "bg-black/40 text-white group-hover:opacity-100",
+                selectionMode ? "opacity-100" : "opacity-0",
+              ),
+        )}
+        onClick={(e) => {
+          // The tile body's handler would otherwise open the lightbox too.
+          e.stopPropagation();
+          const handledByPress = suppressClick.current;
+          pressed.current = false;
+          suppressClick.current = false;
+          if (handledByPress) return;
+          if (onCheckToggle) onCheckToggle(index);
+          else onToggle(index, false);
+        }}
+        onPointerDown={(e) => {
+          if (!onCheckPointerDown) return;
+          e.stopPropagation();
+          pressed.current = true;
+          onCheckPointerDown(index, e);
+        }}
+        onPointerUp={() => {
+          suppressClick.current = pressed.current;
+        }}
+      >
+        <Check size={12} strokeWidth={2.5} />
+      </button>
 
       {item && <TileContent item={item} />}
     </div>

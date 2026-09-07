@@ -38,4 +38,22 @@ export type VirtualGridProps = {
   onRangeChange?: (range: { start: number; end: number }) => void;
   /** Fired by a `MonthHeader`'s select action: `ids` are that month's media ids, `additive` is true on cmd/ctrl-click (add to the selection) vs. a plain click (replace it). */
   onSelectMonth?: (ids: number[], additive: boolean) => void;
+  /**
+   * Whether anything is selected. Passed straight through to every `Tile`,
+   * where it decides whether a plain body click opens the lightbox or
+   * toggles. Defaults to false.
+   */
+  selectionMode?: boolean;
+  /** A tile checkmark's discrete toggle — in practice its keyboard path, since a pointer press is a drag gesture. */
+  onCheckToggle?: (index: number) => void;
+  /** Starts a drag-select from a tile's checkmark. */
+  onCheckPointerDown?: (index: number, event: { preventDefault: () => void }) => void;
+  /** Reports the pointer entering a tile, so a drag in progress extends to it. */
+  onTileEnter?: (index: number) => void;
+  /**
+   * Whether a drag-select is currently live. While it is, the grid scrolls
+   * itself when the pointer nears its top or bottom edge, so a selection
+   * can run past what is on screen. See `useEdgeAutoScroll`.
+   */
+  isDragging?: boolean;
 };

@@ -17,4 +17,26 @@ export type TileProps = {
   onToggle: (index: number, shiftKey: boolean) => void;
   /** Whether this tile is the current target of GalleryPage's roving keyboard focus. Defaults to false. */
   focused?: boolean;
+  /**
+   * Whether the gallery is in selection mode (derived by GalleryPage from
+   * "anything is selected"). It changes what a plain click on the tile
+   * *body* means: opening the lightbox when off, toggling when on — the
+   * Google Photos rule. Defaults to false.
+   */
+  selectionMode?: boolean;
+  /**
+   * The checkmark button's discrete toggle. Only reached when no pointer
+   * press drove the activation — a pointer press is `onCheckPointerDown`'s
+   * gesture, which already toggles its origin — so in practice this is the
+   * keyboard path (Enter/Space on the focused checkmark). Defaults to a
+   * plain `onToggle(index, false)`.
+   */
+  onCheckToggle?: (index: number) => void;
+  /**
+   * Starts the drag-select gesture from this tile's checkmark. When
+   * omitted the checkmark is a plain toggle button and nothing is dragged.
+   */
+  onCheckPointerDown?: (index: number, event: { preventDefault: () => void }) => void;
+  /** Reports the pointer entering this tile, so a drag in progress can extend to it. */
+  onPointerEnter?: (index: number) => void;
 };

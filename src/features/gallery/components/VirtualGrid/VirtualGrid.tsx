@@ -4,6 +4,7 @@ import { buildLayout, GAP, type LayoutItem } from "@/lib/media/layout";
 import { JustifiedRow } from "./JustifiedRow";
 import { MonthHeader } from "./MonthHeader";
 import { useContainerWidth } from "./useContainerWidth";
+import { useEdgeAutoScroll } from "./useEdgeAutoScroll";
 import type { VirtualGridProps } from "./VirtualGrid.types";
 
 function VirtualGridImpl({
@@ -17,10 +18,20 @@ function VirtualGridImpl({
   onRowsChange,
   onRangeChange,
   onSelectMonth,
+  selectionMode = false,
+  onCheckToggle,
+  onCheckPointerDown,
+  onTileEnter,
+  isDragging = false,
 }: VirtualGridProps) {
   // `useContainerWidth` measures `contentRect.width`, which already excludes
   // the scroll element's `p-4` padding — no further subtraction needed here.
   const { ref, width } = useContainerWidth<HTMLDivElement>();
+
+  // A drag-select that reaches the edge keeps going: the container scrolls
+  // under the pointer, so a range can span more than one screenful without
+  // the user letting go.
+  useEdgeAutoScroll(ref, isDragging);
 
   // Built from the index, not the hydrated rows: the layout is complete and
   // final from the first render, so a chunk landing never reflows the grid
@@ -130,6 +141,10 @@ function VirtualGridImpl({
                   selectedIds={selectedIds}
                   onToggle={onToggle}
                   focusIndex={focusIndex}
+                  selectionMode={selectionMode}
+                  onCheckToggle={onCheckToggle}
+                  onCheckPointerDown={onCheckPointerDown}
+                  onTileEnter={onTileEnter}
                 />
               )}
             </div>

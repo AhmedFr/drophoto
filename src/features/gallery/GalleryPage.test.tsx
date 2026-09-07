@@ -65,6 +65,21 @@ function item(id: number, overrides: Partial<MediaItem> = {}): MediaItem {
 }
 
 /**
+ * Opens the lightbox at `index` from the keyboard.
+ *
+ * Every test that needs a selection AND an open lightbox at once has to go
+ * this way: once anything is selected the gallery is in selection mode, so
+ * a plain click on a tile toggles rather than opens (the Google Photos
+ * rule). Enter on the roving focus still opens — the mouse path just isn't
+ * available while a selection is up.
+ */
+function openLightboxWithKeyboard(index: number) {
+  // The first arrow only establishes focus at 0; each one after advances.
+  for (let i = 0; i <= index; i++) fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  fireEvent.keyDown(document.body, { key: "Enter" });
+}
+
+/**
  * The gallery reads a set through two commands that must agree: the
  * timeline index (`media_index`, the whole filtered set as geometry) and
  * chunked hydration (`query_media` at chunk-aligned offsets). Mocking both
@@ -283,21 +298,10 @@ it("a shift-click after a cmd-click selects the range between them", async () =>
   expect(await screen.findByText("3 SELECTED")).toBeInTheDocument();
 });
 
-it("still opens the lightbox on a plain click of a selected tile", async () => {
-  mockMedia([item(1), item(2)]);
-  const user = userEvent.setup();
-  renderPage();
-
-  const tiles = await screen.findAllByRole("button", { name: /photos\// });
-  fireEvent.click(tiles[0], { metaKey: true });
-  await screen.findByText("1 SELECTED");
-
-  await user.click(tiles[0]);
-  expect(await screen.findByRole("dialog")).toBeInTheDocument();
-  expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
-});
-
-it("Escape clears a non-empty selection without closing the open lightbox", async () => {
+// Selection mode (Phase 7.5): once anything is selected, a plain click on
+// a tile body toggles it instead of opening it. This replaces the old
+// contract, where a plain click always opened.
+it("toggles instead of opening on a plain click once anything is selected", async () => {
   mockMedia([item(1), item(2)]);
   const user = userEvent.setup();
   renderPage();
@@ -307,6 +311,53 @@ it("Escape clears a non-empty selection without closing the open lightbox", asyn
   await screen.findByText("1 SELECTED");
 
   await user.click(tiles[1]);
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(await screen.findByText("2 SELECTED")).toBeInTheDocument();
+});
+
+// ...and the same click on an already-selected tile takes it back out,
+// which is the only way to leave selection mode by clicking.
+it("deselects the last selected tile on a plain click, leaving selection mode", async () => {
+  mockMedia([item(1), item(2)]);
+  const user = userEvent.setup();
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  await user.click(tiles[0]);
+
+  await waitFor(() => expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument());
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+// The mouse path to the lightbox closes in selection mode, so the keyboard
+// one has to stay open — otherwise a user with a selection has no way in.
+it("still opens the lightbox from the keyboard while a selection is up", async () => {
+  mockMedia([item(1), item(2)]);
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  openLightboxWithKeyboard(0);
+
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  expect(screen.getByText("1 SELECTED")).toBeInTheDocument();
+});
+
+it("Escape clears a non-empty selection without closing the open lightbox", async () => {
+  mockMedia([item(1), item(2)]);
+  renderPage();
+
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[0], { metaKey: true });
+  await screen.findByText("1 SELECTED");
+
+  openLightboxWithKeyboard(1);
   const dialog = await screen.findByRole("dialog");
 
   fireEvent.keyDown(dialog, { key: "Escape" });
@@ -331,7 +382,7 @@ it("still clears the selection instead of closing the lightbox after stepping it
   fireEvent.click(tiles[0], { metaKey: true });
   await screen.findByText("1 SELECTED");
 
-  await user.click(tiles[1]);
+  openLightboxWithKeyboard(1);
   const dialog = await screen.findByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: /next/i }));
   expect(within(screen.getByRole("dialog")).getByText("03 / 3")).toBeInTheDocument();
@@ -385,7 +436,7 @@ it("Escape while MetaPanel's +-opened TagPanel is open keeps the background sele
   fireEvent.click(tiles[0], { metaKey: true });
   await screen.findByText("1 SELECTED");
 
-  await user.click(tiles[1]);
+  openLightboxWithKeyboard(1);
   const lightboxDialog = await screen.findByRole("dialog");
 
   await user.click(within(lightboxDialog).getByRole("button", { name: /add tag/i }));
@@ -443,7 +494,7 @@ it("Escape while MetaPanel's Change-opened PlacePanel is open keeps the backgrou
   fireEvent.click(tiles[0], { metaKey: true });
   await screen.findByText("1 SELECTED");
 
-  await user.click(tiles[1]);
+  openLightboxWithKeyboard(1);
   const lightboxDialog = await screen.findByRole("dialog");
 
   await user.click(within(lightboxDialog).getByRole("button", { name: /change/i }));
@@ -687,7 +738,7 @@ it("clears the selection before closing an unrendered lightbox", async () => {
   const tiles = await screen.findAllByRole("button", { name: /photos\// });
   fireEvent.click(tiles[0], { metaKey: true });
   await screen.findByText("1 SELECTED");
-  await user.click(tiles[0]);
+  openLightboxWithKeyboard(0);
   await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /next/i }));
 
   fireEvent.keyDown(document.body, { key: "Escape" });
@@ -695,7 +746,10 @@ it("clears the selection before closing an unrendered lightbox", async () => {
 
   fireEvent.keyDown(document.body, { key: "Escape" });
   fireEvent.keyDown(document.body, { key: "ArrowRight" });
-  expect(useGalleryStore.getState().focusIndex).toBe(0);
+  // Opening from the keyboard already put focus on index 0, so the arrow
+  // advances rather than establishing focus — either way, the grid is
+  // answering the keyboard again.
+  expect(useGalleryStore.getState().focusIndex).toBe(1);
 });
 
 // ---------------------------------------------------------------------
@@ -895,4 +949,161 @@ it("does not swap the displayed photo when a refetch lands under an open lightbo
   fireEvent.keyDown(document.body, { key: "Escape" });
   fireEvent.keyDown(document.body, { key: "ArrowRight" });
   expect(useGalleryStore.getState().focusIndex).toBe(0);
+});
+
+// ---------------------------------------------------------------------
+// Google Photos selection (Phase 7.5): the hover checkmark and the
+// drag-select gesture, end to end through the store. The drag is driven
+// with raw pointer events — `userEvent` has no sweep-across-elements
+// gesture, and what matters here is the sequence, not the pixels.
+// ---------------------------------------------------------------------
+
+function checks() {
+  return screen.getAllByTestId("tile-check");
+}
+
+/** Every tile box, hydrated or not — a drag sweeps across both alike. */
+function tileBoxes() {
+  return screen.getAllByTestId("tile");
+}
+
+/** Press a tile's checkmark, sweep to another tile, release off the grid. */
+function dragFrom(fromCheck: number, toTile: number) {
+  fireEvent.pointerDown(checks()[fromCheck]);
+  fireEvent.pointerEnter(tileBoxes()[toTile]);
+  fireEvent.pointerUp(document);
+}
+
+it("selects a photo from its checkmark without opening the lightbox", async () => {
+  mockMedia([item(1), item(2)]);
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  await user.click(checks()[0]);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(await screen.findByText("1 SELECTED")).toBeInTheDocument();
+});
+
+it("deselects from the checkmark of an already-selected photo", async () => {
+  mockMedia([item(1), item(2)]);
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  await user.click(checks()[0]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1]);
+
+  await user.click(checks()[0]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+});
+
+it("selects the swept range when a drag starts from a checkmark", async () => {
+  mockMedia([item(1), item(2), item(3), item(4)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  dragFrom(0, 2);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
+});
+
+// The reason the gesture emits a whole desired selection rather than ids
+// to add: pulling back has to release what the sweep already passed.
+it("releases the tiles a drag passed when it reverses back toward the origin", async () => {
+  mockMedia([item(1), item(2), item(3), item(4)]);
+  renderPage();
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.pointerDown(checks()[0]);
+  fireEvent.pointerEnter(tiles[3]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3, 4]);
+
+  fireEvent.pointerEnter(tiles[1]);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2]);
+
+  fireEvent.pointerUp(document);
+});
+
+// ...and the other half of the same property: a selection made before the
+// drag must survive it.
+it("keeps a pre-existing selection while a drag sweeps elsewhere", async () => {
+  mockMedia([item(1), item(2), item(3), item(4)]);
+  renderPage();
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+  fireEvent.click(tiles[3], { metaKey: true });
+  expect(useGalleryStore.getState().selectedIds).toEqual([4]);
+
+  dragFrom(0, 1);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([4, 1, 2]);
+});
+
+it("deselects the swept range when the drag starts on an already-selected photo", async () => {
+  mockMedia([item(1), item(2), item(3), item(4)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  fireEvent.keyDown(document.body, { key: "a", metaKey: true });
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3, 4]);
+
+  dragFrom(0, 2);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([4]);
+});
+
+// The release is listened for on `document`, so letting go anywhere —
+// including outside the window — ends the gesture. Nothing may keep
+// selecting after that.
+it("stops extending the selection once the pointer has been released", async () => {
+  mockMedia([item(1), item(2), item(3), item(4)]);
+  renderPage();
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+
+  dragFrom(0, 1);
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2]);
+
+  fireEvent.pointerEnter(tiles[3]);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2]);
+});
+
+// A drag leaves a usable anchor behind, so the range can be extended by
+// shift-clicking rather than dragged again from the start.
+it("anchors a following shift-click at the tile the drag started from", async () => {
+  mockMedia([item(1), item(2), item(3), item(4)]);
+  renderPage();
+  const tiles = await screen.findAllByRole("button", { name: /photos\// });
+
+  dragFrom(0, 1);
+  fireEvent.click(tiles[3], { shiftKey: true });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3, 4]);
+});
+
+it("clears a drag-made selection on Escape", async () => {
+  mockMedia([item(1), item(2), item(3)]);
+  renderPage();
+  await screen.findAllByRole("button", { name: /photos\// });
+
+  dragFrom(0, 2);
+  expect(await screen.findByText("3 SELECTED")).toBeInTheDocument();
+
+  fireEvent.keyDown(document.body, { key: "Escape" });
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([]);
+});
+
+// Selection is keyed on the timeline index's ids, so it reaches photos the
+// grid has not hydrated — the whole point of selecting over the index.
+it("drags a selection across photos whose rows have not arrived", async () => {
+  mockPartiallyHydrated();
+  renderPage();
+  await screen.findAllByRole("img");
+
+  dragFrom(0, 2);
+
+  expect(useGalleryStore.getState().selectedIds).toEqual([1, 2, 3]);
 });
